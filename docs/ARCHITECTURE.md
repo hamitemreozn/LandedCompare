@@ -57,6 +57,34 @@ src/
 `features/`, `infrastructure/`, and `i18n/` directories still do not exist —
 they will be added in later phases when there is real code to put in them.
 
+## Phase 2 state — core calculation engine
+
+`src/calculation/` now exists alongside `src/domain/` and holds the first
+slice of the calculation engine: exchange rate representation, currency
+conversion, and merchandise (line/quote) totals. It has the same constraints
+as `src/domain/` — no React, DOM, browser storage, or i18n dependency — and
+is built entirely out of pure functions and immutable value objects on top
+of the Phase 1 `Money`/`Quantity` foundation; there is no hidden mutable
+calculation state.
+
+```text
+src/
+  calculation/
+    ExchangeRate.ts             # value object: "1 fromCurrency = rate toCurrency"
+    ExchangeRateTable.ts        # per-project rates, all converting into one base currency
+    CurrencyConversion.ts       # convertToBaseCurrency(amount, rateTable)
+    MerchandiseCalculation.ts   # line subtotal, merchandise total, quote-level result
+```
+
+This engine deliberately does not depend on `QuoteItem`'s `moq` /
+`unitsPerQuotedUnit` / `orderQuantity` fields. It consumes a plain
+`{ unitPrice, calculationQuantity }` pair per line — `calculationQuantity` is
+treated as an already-resolved input. *Why* that quantity has the value it
+has (required quantity vs. MOQ vs. pack-rounded order quantity) is Phase 3
+scope; keeping the arithmetic engine decoupled from quantity resolution
+means Phase 3 can plug a different quantity source in without reworking this
+engine.
+
 ### Monetary representation
 
 See [Calculation Rules](CALCULATION_RULES.md) for the precision/rounding
@@ -93,8 +121,10 @@ calculation engine that does not exist yet, not persisted domain state.
 These are constraints for future phases, recorded here so early architectural
 decisions don't accidentally violate them:
 
-- The calculation engine (Phase 2+) will consume the domain model above and
-  produce derived results; it does not exist yet.
+- Phase 2 implements only currency conversion and merchandise (line/quote)
+  totals. MOQ/pack/order-quantity resolution (Phase 3), additional costs and
+  allocation (Phase 4), and supplier ranking/completeness (Phase 5) are not
+  implemented and are not derivable from Phase 2's API.
 - Persistence (planned: IndexedDB, Phase 7) will be kept behind an interface
   separate from domain logic, using each type's `toJSON()`/`fromJSON()`
   contract, so the domain layer does not depend on browser storage APIs.

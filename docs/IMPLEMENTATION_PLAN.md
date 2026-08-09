@@ -12,7 +12,15 @@ are not started until the current phase is accepted.
   `QuoteItem`) under `src/domain/`, independent of React/UI/persistence/i18n.
   No landed-cost formula, exchange-rate conversion, MOQ logic, or persistence
   implemented — those remain scoped to later phases below.
-- **Phase 2 — Core Calculation Engine**: landed cost calculation logic.
+- **Phase 2 — Core Calculation Engine** (done): manual exchange rate
+  representation (`ExchangeRate`, `ExchangeRateTable`) and validation,
+  exact-decimal currency conversion into the project base currency
+  (`convertToBaseCurrency`), and merchandise line/quote total calculation
+  (`calculateLineSubtotal`, `calculateMerchandiseTotal`,
+  `calculateQuoteMerchandise`) under `src/calculation/`, independent of
+  React/UI/persistence/i18n. No MOQ/pack/order-quantity resolution,
+  additional costs, allocation, discounts, or supplier ranking implemented —
+  those remain scoped to later phases below.
 - **Phase 3 — MOQ / Quantity / Pack**: MOQ, order quantity, and pack/unit
   normalization rules.
 - **Phase 4 — Additional Cost Engine**: fixed and percentage-based costs,
