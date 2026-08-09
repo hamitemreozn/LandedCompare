@@ -21,8 +21,16 @@ are not started until the current phase is accepted.
   React/UI/persistence/i18n. No MOQ/pack/order-quantity resolution,
   additional costs, allocation, discounts, or supplier ranking implemented —
   those remain scoped to later phases below.
-- **Phase 3 — MOQ / Quantity / Pack**: MOQ, order quantity, and pack/unit
-  normalization rules.
+- **Phase 3 — MOQ / Quantity / Pack** (done): SKU-level MOQ resolution
+  (`max(requiredQuantity, moq)`), user-defined pack/quoted-unit conversion
+  with decimal-safe whole-pack ceiling (`Quantity.ceilDivide`, never native
+  `Math.ceil()`), MOQ-then-pack operation order, and excess-quantity
+  tracing, in `resolveOrderQuantity` (`src/calculation/QuantityResolution.ts`).
+  `QuoteItem.orderQuantity` was removed (see
+  [Calculation Rules](CALCULATION_RULES.md)) since a derived quantity has no
+  business being a persisted field. Order multiple was scoped out as a
+  `LATER` item (see Calculation Rules). No additional costs, allocation, or
+  supplier ranking implemented — those remain scoped to later phases below.
 - **Phase 4 — Additional Cost Engine**: fixed and percentage-based costs,
   freight, insurance, duty/customs, brokerage, fees, local transport, tax,
   discounts, surcharges, shared cost allocation.

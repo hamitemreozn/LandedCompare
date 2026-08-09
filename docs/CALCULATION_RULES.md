@@ -90,17 +90,100 @@ These rules are approved and implemented (see `src/calculation/`).
   display formatting and business rounding boundaries remain later-phase
   decisions (see the Phase 1 rounding principle above).
 
-## Phase 3+ (not yet defined)
+## Phase 3 — quantity, MOQ & pack resolution
 
-No calculation rules are defined or implemented yet for MOQ/pack
-normalization, additional cost application (fixed, percentage-based,
-freight, insurance, duty, brokerage, fees, local transport, tax, discounts,
-surcharges), shared cost allocation, or incomplete-quote detection. This file
-is a placeholder for those so future calculation-engine phases (see
-[Implementation Plan](IMPLEMENTATION_PLAN.md), Phase 3 onward) have a known
+These rules are approved and implemented (see
+`src/calculation/QuantityResolution.ts`). They govern *how many units are
+actually ordered*, not price or currency — Phase 3 introduces no exchange
+rate, freight, or landed-cost logic, and does not rewrite Phase 2 arithmetic.
+
+- **Required quantity vs. resolved order quantity are distinct.** A
+  `RequirementItem.requiredQuantity` (what the user needs) is never mutated
+  by MOQ or pack constraints. Quantity resolution produces a separate,
+  derived `resolvedQuantity` (what will actually be purchased, in the
+  comparison unit). Neither value is a persisted "order quantity" field on
+  `QuoteItem` — `QuoteItem` carries only the supplier-provided *inputs*
+  (`moq`, `unitsPerQuotedUnit`); the resolved quantity is always computed on
+  demand, never stored, so it cannot drift out of sync with its inputs.
+- **MOQ is SKU-level only.** `QuoteItem.moq`, when present, is a minimum
+  quantity for that one SKU, expressed in the requirement's comparison unit
+  (e.g. `moq = 100` means "minimum 100 pcs"). There is no supplier-wide
+  minimum order/invoice value, product-family MOQ, container MOQ, or pallet
+  MOQ in this MVP, and no arbitrary-unit MOQ (e.g. "10 boxes") — that would
+  require a unit-conversion system not built in Phase 3.
+- **MOQ formula:** if `moq` is present, the effective minimum quantity is
+  `max(requiredQuantity, moq)`. A `moq` of `undefined` means "no MOQ"; `moq`
+  must be a strictly positive quantity when present — a bare `0` is rejected
+  (`InvalidMoqError`) rather than used to mean "no MOQ".
+- **Pack conversion is optional and user-defined per quote item.**
+  `QuoteItem.unitsPerQuotedUnit`, when present, states how many comparison
+  units make up one quoted unit (e.g. `unitsPerQuotedUnit = 10` with
+  `quotedUnit = "box"` and `comparisonUnit = "pcs"` means 1 box = 10 pcs).
+  It must be a strictly positive quantity when present — `0` is rejected
+  (`InvalidPackSizeError`) rather than used to mean "no pack", and a
+  negative or malformed value is rejected earlier, at `Quantity` construction
+  (`InvalidQuantityError` / Phase 1's `InvalidDecimalError`).
+- **A pack cannot be fractional.** The number of quoted units to buy is
+  computed by dividing the post-MOQ minimum quantity by
+  `unitsPerQuotedUnit` and always rounding **up** to the next whole quoted
+  unit (`Quantity.ceilDivide`, built on decimal.js's `.ceil()` — never native
+  `Math.ceil()`). Example: 105 pcs required, 10 pcs/box → 10.5 → 11 boxes →
+  110 pcs resolved.
+- **Order of operations is fixed: MOQ first, then pack.** MOQ raises the
+  effective minimum quantity; whole-pack rounding is then applied to that
+  post-MOQ minimum, not to the original required quantity. Example: 105 pcs
+  required, MOQ 123, 10 pcs/box → post-MOQ minimum is 123 → 12.3 → 13 boxes
+  → 130 pcs resolved (not 11 boxes / 110 pcs, which would ignore MOQ).
+- **No pack, no rounding.** When `unitsPerQuotedUnit` is absent, the resolved
+  quantity is exactly the post-MOQ minimum, decimal value included — a
+  requirement like `2.5 kg` with no MOQ and no pack resolves to `2.5 kg`,
+  not an integer. Quantity resolution never imposes a global
+  "quantities must be whole numbers" rule; whole-number rounding only
+  happens because of pack semantics specifically.
+- **Excess quantity:** `resolvedQuantity - requiredQuantity`, always
+  non-negative by construction (MOQ and pack rounding can only raise the
+  quantity, never lower it below what was required). This is the trace value
+  a later phase (Results UI) can use to explain "why did I order more than I
+  asked for".
+- **Pricing quantity for Phase 2:** a supplier's `quotedUnitPrice` is priced
+  per quoted unit, not necessarily per comparison unit. Quantity resolution
+  therefore also produces `quotedUnitQuantity` — the whole number of quoted
+  units actually bought. When there is no pack, `quotedUnitQuantity` equals
+  `resolvedQuantity` (the quoted unit *is* the comparison unit), so no
+  separate conversion is needed. Phase 2's `calculateLineSubtotal`
+  (`unitPrice x calculationQuantity`) is unchanged; Phase 3 only supplies the
+  correct `calculationQuantity` input (`quotedUnitQuantity`), it does not
+  rewrite the multiplication itself.
+- **A lower unit price does not guarantee a lower purchase cost.** Because
+  MOQ can force a larger order than requested, a supplier with a higher unit
+  price but no MOQ excess can cost less in total than a supplier with a
+  lower unit price but a binding MOQ (see the MOQ trap golden scenario in
+  `src/calculation/QuantityResolution.test.ts`). Phase 3 only exposes the
+  two resulting merchandise totals; it does not rank suppliers or decide a
+  "winner" (Phase 5 scope).
+
+### Order multiple — deferred
+
+Order multiple (rounding the resolved quantity up to the next multiple of a
+supplier-defined increment, independent of MOQ/pack) was scoped as a
+"should have, not must have" for Phase 3. It is **not implemented**: it
+introduces a third constraint that interacts with MOQ and pack in ways this
+phase does not have a reviewed rule for (e.g. whether the multiple applies to
+comparison units or quoted units when a pack is also present). It is left as
+a documented `LATER` item for a future phase rather than guessed at here.
+
+## Phase 4+ (not yet defined)
+
+No calculation rules are defined or implemented yet for additional cost
+application (fixed, percentage-based, freight, insurance, duty, brokerage,
+fees, local transport, tax, discounts, surcharges), shared cost allocation,
+order multiple (see above), or incomplete-quote detection. This file is a
+placeholder for those so future calculation-engine phases (see
+[Implementation Plan](IMPLEMENTATION_PLAN.md), Phase 4 onward) have a known
 place to record approved, reviewed financial rules, including the
-minor-unit rounding rule for final totals referenced above.
+minor-unit rounding rule for final totals referenced in the Phase 1 section
+above.
 
-Nothing beyond the Phase 1 and Phase 2 sections above should be treated as an
-implemented or approved rule until a calculation phase explicitly adds it
-here.
+Nothing beyond the Phase 1, Phase 2, and Phase 3 sections above should be
+treated as an implemented or approved rule until a calculation phase
+explicitly adds it here.

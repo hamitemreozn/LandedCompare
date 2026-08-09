@@ -3,10 +3,13 @@ import { Quantity } from '../quantity/Quantity'
 
 /**
  * One priced line within a supplier's Quote, pointing back at the
- * RequirementItem it prices. `unitsPerQuotedUnit`, `moq`, and `orderQuantity`
- * are carried as optional data slots so Phase 3 (MOQ / pack normalization)
- * has somewhere to read from and write to — no MOQ satisfaction, pack
- * rounding, or order-quantity derivation logic is implemented here.
+ * RequirementItem it prices. `unitsPerQuotedUnit` and `moq` are supplier-
+ * provided constraints (SKU-level pack size and minimum order quantity) for
+ * Phase 3's quantity resolution (`src/calculation/QuantityResolution.ts`) to
+ * read. This entity does not carry a derived/resolved order quantity field —
+ * that value is always calculated on demand, never stored here, so there is
+ * no risk of a stale persisted quantity drifting from what MOQ/pack
+ * resolution would actually produce.
  */
 export interface QuoteItem {
   readonly id: string
@@ -15,7 +18,6 @@ export interface QuoteItem {
   readonly quotedUnit: string
   readonly unitsPerQuotedUnit?: Quantity
   readonly moq?: Quantity
-  readonly orderQuantity?: Quantity
 }
 
 export interface CreateQuoteItemInput {
@@ -25,7 +27,6 @@ export interface CreateQuoteItemInput {
   quotedUnit: string
   unitsPerQuotedUnit?: Quantity
   moq?: Quantity
-  orderQuantity?: Quantity
 }
 
 export class InvalidQuoteItemError extends Error {
@@ -52,6 +53,5 @@ export function createQuoteItem(input: CreateQuoteItemInput): QuoteItem {
     quotedUnit: input.quotedUnit,
     unitsPerQuotedUnit: input.unitsPerQuotedUnit,
     moq: input.moq,
-    orderQuantity: input.orderQuantity,
   }
 }

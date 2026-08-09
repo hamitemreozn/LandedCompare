@@ -77,13 +77,13 @@ src/
 ```
 
 This engine deliberately does not depend on `QuoteItem`'s `moq` /
-`unitsPerQuotedUnit` / `orderQuantity` fields. It consumes a plain
+`unitsPerQuotedUnit` fields. It consumes a plain
 `{ unitPrice, calculationQuantity }` pair per line — `calculationQuantity` is
 treated as an already-resolved input. *Why* that quantity has the value it
-has (required quantity vs. MOQ vs. pack-rounded order quantity) is Phase 3
-scope; keeping the arithmetic engine decoupled from quantity resolution
-means Phase 3 can plug a different quantity source in without reworking this
-engine.
+has (required quantity vs. MOQ vs. pack-rounded order quantity) was Phase 3
+scope; the arithmetic engine stayed decoupled from quantity resolution so
+Phase 3 could plug its resolved quantity in without reworking this engine —
+see the Phase 3 section below.
 
 ### Monetary representation
 
@@ -116,15 +116,49 @@ currency matching its quote's currency). They carry no calculated fields —
 landed totals, rankings, and effective unit costs are derived output from a
 calculation engine that does not exist yet, not persisted domain state.
 
+## Phase 3 state — quantity, MOQ & pack resolution
+
+`src/calculation/QuantityResolution.ts` adds `resolveOrderQuantity`, which
+turns a `RequirementItem.requiredQuantity` plus a `QuoteItem`'s `moq` /
+`unitsPerQuotedUnit` into the quantity that must actually be ordered. It has
+the same constraints as the rest of `src/calculation/` (no React/DOM/storage/
+i18n) and is built on Phase 1's `Quantity` type — it introduces no currency,
+freight, or landed-cost logic and does not rewrite Phase 2's arithmetic.
+
+```text
+src/
+  calculation/
+    QuantityResolution.ts   # resolveOrderQuantity(required, moq?, unitsPerQuotedUnit?)
+```
+
+`Quantity` (Phase 1) gained the small set of exact-decimal operations this
+required: `max` (MOQ), `multiply`/`subtract` (pack conversion, excess), and
+`ceilDivide` (whole-pack rounding, built on decimal.js's `.ceil()` rather
+than native `Math.ceil()`). See [Calculation Rules](CALCULATION_RULES.md)
+for the full MOQ/pack rule set, including why MOQ is applied before pack
+rounding and why order multiple was deferred.
+
+### Domain model change
+
+`QuoteItem.orderQuantity` (an optional field Phase 1 left for "Phase 3 to
+read from and write to") was removed. Its semantics were ambiguous — nothing
+distinguished a persisted user override from a Phase-3-calculated result —
+and the project's stated principle is that a derived/calculated value must
+never become a persisted source of truth. `resolveOrderQuantity` computes
+the resolved quantity on demand from `QuoteItem.moq` /
+`QuoteItem.unitsPerQuotedUnit` (which remain as genuine supplier-provided
+inputs) every time it is needed, instead of caching it on the entity.
+
 ## Forward-looking principles (not yet implemented)
 
 These are constraints for future phases, recorded here so early architectural
 decisions don't accidentally violate them:
 
-- Phase 2 implements only currency conversion and merchandise (line/quote)
-  totals. MOQ/pack/order-quantity resolution (Phase 3), additional costs and
-  allocation (Phase 4), and supplier ranking/completeness (Phase 5) are not
-  implemented and are not derivable from Phase 2's API.
+- Phase 3 implements only SKU-level MOQ and user-defined pack/quoted-unit
+  resolution. Additional costs and allocation (Phase 4) and supplier
+  ranking/completeness (Phase 5) are not implemented and are not derivable
+  from Phase 3's API. Order multiple (a Phase 3 "should have") was also
+  deferred — see [Calculation Rules](CALCULATION_RULES.md).
 - Persistence (planned: IndexedDB, Phase 7) will be kept behind an interface
   separate from domain logic, using each type's `toJSON()`/`fromJSON()`
   contract, so the domain layer does not depend on browser storage APIs.

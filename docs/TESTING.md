@@ -71,10 +71,47 @@ completeness/coverage-percentage target.
   base currency, USD quote at 43.50, two lines (12.50 USD × 100, 3.75 USD ×
   40) pinned to a quote total of 1400 USD and a base total of 60900 TRY.
 
+## Phase 3 — quantity, MOQ & pack resolution coverage
+
+Tests are colocated with the code they cover, same convention as Phase 1/2.
+Coverage is business-risk-driven: every scenario below would silently change
+what a user actually ends up ordering (and paying) if it broke.
+
+- `src/domain/quantity/Quantity.test.ts` — new arithmetic added for Phase 3:
+  `max` (MOQ resolution), `multiply`/`subtract` exactness, `ceilDivide`
+  rounding up on a fractional division and leaving an exact division
+  unchanged, and a pack round-trip (`0.3 / 0.1` then `x 0.1`) chosen because
+  it is a case where native binary floating point would drift.
+- `src/calculation/QuantityResolution.test.ts` — `resolveOrderQuantity`:
+  - no MOQ / no pack (resolved equals required);
+  - MOQ below the requirement (no effect) and MOQ above it (raises the
+    resolved quantity, `moqApplied` true);
+  - an exact pack (no rounding) and a fractional pack (rounds up to the next
+    whole quoted unit);
+  - MOQ combined with an exact pack, and MOQ combined with a pack that
+    requires rounding — proving MOQ is applied *before* pack, not after;
+  - a decimal required quantity with no pack staying decimal (no forced
+    whole-number rounding when pack semantics don't apply);
+  - a zero MOQ and a zero pack size rejected (`InvalidMoqError` /
+    `InvalidPackSizeError` — "no MOQ"/"no pack" must be `undefined`, not
+    zero), and negative/malformed MOQ or pack size rejected earlier, at
+    `Quantity` construction;
+  - excess quantity computed correctly and never negative;
+  - large-quantity precision preserved without overflow;
+  - a **Phase 2 integration** section: a pack-resolved `quotedUnitQuantity`
+    fed into `calculateLineSubtotal` (105 pcs, 10 pcs/box, 70 USD/box → 11
+    boxes → 770 USD), and the no-pack case feeding `quotedUnitQuantity`
+    straight through unchanged;
+  - the **MOQ trap golden scenario**: a supplier at 11 USD/pcs with no
+    binding MOQ (100 pcs → 1100 USD) costs less in total than a supplier at
+    9 USD/pcs whose MOQ of 150 forces a larger order (150 pcs → 1350 USD) —
+    proving a lower quoted unit price does not always mean a lower purchase
+    cost. This test only pins the two totals; it does not rank suppliers.
+
 ## Future priority
 
-Once MOQ/pack/order-quantity resolution and additional-cost logic exist
-(Phase 3 onward, see [Implementation Plan](IMPLEMENTATION_PLAN.md)), the
-highest testing priority remains financial calculation correctness and
-business-risk scenarios — since errors there directly affect the numbers
-users rely on to make purchasing decisions.
+Once additional-cost logic and supplier comparison exist (Phase 4 onward,
+see [Implementation Plan](IMPLEMENTATION_PLAN.md)), the highest testing
+priority remains financial calculation correctness and business-risk
+scenarios — since errors there directly affect the numbers users rely on to
+make purchasing decisions.
