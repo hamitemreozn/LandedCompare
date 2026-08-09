@@ -1,4 +1,4 @@
-import { parseExactDecimal, type Decimal } from './decimal'
+import { parseExactDecimal, roundHalfUp, truncateTowardZero, type Decimal } from './decimal'
 import { parseCurrencyCode, type CurrencyCode } from './CurrencyCode'
 
 /**
@@ -76,6 +76,51 @@ export class Money {
 
   isGreaterThan(other: Money): boolean {
     return this.compareTo(other) > 0
+  }
+
+  isZero(): boolean {
+    return this.amount.isZero()
+  }
+
+  isNegative(): boolean {
+    return this.amount.isNegative() && !this.amount.isZero()
+  }
+
+  isPositive(): boolean {
+    return this.amount.isPositive() && !this.amount.isZero()
+  }
+
+  /**
+   * Magnitude, discarding the sign. Phase 4's allocator runs entirely on
+   * magnitudes and re-applies the sign at the end, so "largest remainder"
+   * always means the same thing regardless of whether the amount being
+   * allocated is a cost (positive) or a discount (negative).
+   */
+  abs(): Money {
+    return new Money(this.amount.abs(), this.currencyCode)
+  }
+
+  /** Sign flip. Used to turn a discount's positive magnitude into its negative effect. */
+  negate(): Money {
+    return new Money(this.amount.negated(), this.currencyCode)
+  }
+
+  /**
+   * Rounds to a currency's minor-unit precision (half-up), e.g. 2 for TRY.
+   * This is a deliberate *settlement* boundary — Phase 1's rule that
+   * arithmetic never rounds still holds for `add`/`subtract`/`multiply`; this
+   * method exists so a calculation can round explicitly, at a boundary it
+   * names. See docs/CALCULATION_RULES.md for where Phase 4 applies it.
+   *
+   * `minorUnitDigits` is a scale (digit count), not a monetary value.
+   */
+  roundToMinorUnit(minorUnitDigits: number): Money {
+    return new Money(roundHalfUp(this.amount, minorUnitDigits), this.currencyCode)
+  }
+
+  /** Truncates toward zero at a currency's minor-unit precision. The "floor" step of allocation. */
+  truncateToMinorUnit(minorUnitDigits: number): Money {
+    return new Money(truncateTowardZero(this.amount, minorUnitDigits), this.currencyCode)
   }
 
   /** Canonical exact decimal string, e.g. "0.0047". Never exponential notation. */

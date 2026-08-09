@@ -71,3 +71,29 @@ export function parseExactDecimal(value: string): Decimal {
 
   return decimal
 }
+
+/**
+ * Rounds to `decimalPlaces` using half-up (0.005 → 0.01). This is the only
+ * place a rounding *mode* is named outside the configuration above, so the
+ * settlement behaviour of the whole application is decided here rather than
+ * per call site. Half-up is the commercial-invoicing convention this product
+ * targets; it is deliberately not banker's rounding, which would make an
+ * allocation's remainder depend on the parity of the digit before it.
+ *
+ * `decimalPlaces` is a *scale* (a count of digits), not a financial value, so
+ * a native `number` is the correct type here — no exact-decimal guarantee is
+ * being weakened.
+ */
+export function roundHalfUp(value: Decimal, decimalPlaces: number): Decimal {
+  return value.toDecimalPlaces(decimalPlaces, ExactDecimal.ROUND_HALF_UP)
+}
+
+/**
+ * Truncates toward zero at `decimalPlaces` (0.019 → 0.01, -0.019 → -0.01).
+ * Used as the "floor" step of largest-remainder allocation; see
+ * docs/CALCULATION_RULES.md. Allocation only ever applies it to non-negative
+ * magnitudes, where truncation toward zero and flooring coincide.
+ */
+export function truncateTowardZero(value: Decimal, decimalPlaces: number): Decimal {
+  return value.toDecimalPlaces(decimalPlaces, ExactDecimal.ROUND_DOWN)
+}

@@ -108,10 +108,118 @@ what a user actually ends up ordering (and paying) if it broke.
     proving a lower quoted unit price does not always mean a lower purchase
     cost. This test only pins the two totals; it does not rank suppliers.
 
+## Phase 4 — additional cost, adjustment & allocation coverage
+
+Tests are colocated with the code they cover, same convention as Phase 1–3.
+Phase 4 is the first phase that produces the number a user actually acts on
+(the calculated landed total), so coverage here is weighted toward the
+scenarios where a wrong result would be *plausible-looking* rather than
+obviously broken: a lost kuruş in an allocation, a percentage taken on the
+wrong intermediate subtotal, a cost counted twice, a discount applied with
+the wrong sign.
+
+Alongside example-based assertions, several tests assert **invariants**
+rather than single expected values:
+
+- `sum(allocations) === settledAmount` — swept across three methods, seven
+  amounts, six line counts, and separately across negative amounts;
+- the landed total is reproducible from the published breakdown, both by
+  summing every entry's `signedEffect` and by the
+  `merchandise − discounts + surcharges + costs` formulation;
+- identical input produces byte-identical output on repeated runs.
+
+These are plain parameterised loops — no property-testing dependency was
+added for them.
+
+- `src/domain/monetary/Money.test.ts` — the settlement primitives Phase 4
+  added: sign classification with zero counting as neither positive nor
+  negative, a signed zero not reported as negative, `abs`/`negate`,
+  half-up minor-unit rounding (including the banker's-rounding
+  counter-example 33.345 → 33.35), a 0-decimal scale, truncation toward zero,
+  and proof that ordinary arithmetic still does not round.
+- `src/calculation/Percentage.test.ts` — the `"5"` = 5% convention and the
+  explicit counter-test that `"0.05"` is 0.05% and not 5%, fractional rates
+  left unrounded, zero accepted, negative rejected, malformed input
+  surfacing Phase 1's `InvalidDecimalError`, and no invented upper bound.
+- `src/calculation/CurrencyMinorUnit.test.ts` — TRY/USD/EUR known, an unknown
+  currency **blocking** instead of defaulting to 2, JPY supported at 0
+  decimals through an explicit override, overrides beating the built-in
+  table, malformed overrides rejected.
+- `src/calculation/AdditionalCost.test.ts` — construction-time validation:
+  documented defaults, exactly-one-of fixed/percentage, negative amounts
+  rejected for all three kinds with the same reduction accepted as a positive
+  discount, percentage discount >100% rejected while exactly 100% is allowed,
+  stage derivation, and the full percentage-base availability matrix
+  (discount limited to `MERCHANDISE`; freight/insurance refused the base they
+  help build — the circular case; every base allowed for later stages).
+- `src/calculation/Allocation.test.ts` — all three methods; mixed
+  comparison units rejected for `BY_QUANTITY`; zero merchandise base, zero
+  quantity base, empty line list (for every method), negative weight and
+  mixed-currency weights all rejected; an unusable base rejected **even when
+  the amount is zero** (the base is validated independently of the amount),
+  contrasted with a zero amount allocating cleanly over a usable base; the
+  100.00/3 split; the leftover
+  minor unit going to the largest remainder rather than the first line
+  (a case constructed so the winner is the *last* line); stable tie-breaking;
+  repeated-run determinism; a sub-minor-unit amount settling with its
+  residual exposed; a very small allocation (0.01 over 3 lines); a large
+  amount (1,000,000,000,000.01); a 0-decimal currency; and the sign-safety
+  set — a negative allocation as the exact mirror of its positive twin, the
+  invariant held across negative amounts, and no negative zero emitted.
+- `src/calculation/CostCalculation.test.ts` — the engine end to end: fixed
+  costs in base and foreign currency, a missing rate blocking (for a
+  contributing cost, for one excluded from the comparison, and for one
+  already inside the quote), the pay-off for that strictness — a
+  non-contributing foreign-currency cost still converted into the base
+  currency so the breakdown stays comparable, `alreadyIncludedInQuote` and
+  `includeInComparison` each keeping an amount out of the total while
+  remaining traceable in the breakdown with `signedEffect` of zero, the
+  documented precedence when both apply, fixed and percentage discounts and
+  surcharges kept as separate totals, a discount exceeding the merchandise
+  total rejected, two individually-legal 60% discounts rejected together, an
+  excluded discount not counting toward the ceiling, all three percentage
+  bases, an already-in-quote freight and an excluded insurance staying out of
+  the CIF-like base, a freight-categorised *surcharge* staying out of it, an
+  insurance percentage chaining into the base a duty percentage then uses,
+  a no-premature-rounding test carried through to `1089.005445`, per-cost
+  allocation methods, discount allocation as negative per-line amounts,
+  excluded entries not allocated, a flat discount split that would push a
+  small line negative rejected (and the same discount accepted
+  proportionally), and Phase 2 / Phase 3 integration.
+- `src/calculation/CostCalculation.test.ts`, multiple-discount set — that
+  discounts are **parallel, not sequential**, and that input order is
+  irrelevant: 10% + 10% pinned to an effective 20% with an explicit
+  `not.toBe('81')` against the sequential result; all six orderings of a
+  mixed percentage/fixed/percentage set producing identical totals; the same
+  order-independence held at sub-minor-unit precision (`44.405222` /
+  `955.599778`); two 50% discounts consuming the total exactly (sequential
+  stacking would have left 25); three 50% discounts rejected even though
+  sequential stacking would have fitted at 87.5; and an over-large set
+  rejected in every one of its orderings. The last two double as proof of
+  which stacking model the engine implements — the rejection itself is the
+  evidence.
+- `src/calculation/CostGoldenScenario.test.ts` — the two Phase 4 golden
+  scenarios:
+  - **Integrated landed total.** TRY base, USD quote at 40, two 1,000 USD
+    lines → 80,000 TRY merchandise; 5% discount → 76,000; freight 10,000;
+    insurance 2,000; duty 10% of 88,000 → 8,800; brokerage 1,500;
+    **98,300 TRY**. Every component of the breakdown is pinned individually,
+    the total is rebuilt from the breakdown, every shared amount is allocated
+    across the two lines summing back to the original, and the whole run is
+    repeated to prove determinism.
+  - **Allocation rounding.** Three equal lines, one shared cost of 100.00
+    TRY: **33.34 / 33.33 / 33.33**, summing to exactly 100.00 — the same
+    result whichever equal-weight method is used, byte-identical across ten
+    runs.
+
+Both golden scenarios run through the same generic
+`calculateSupplierCosts` / `allocateSupplierCosts` used everywhere else;
+nothing is special-cased to reach the expected figures.
+
 ## Future priority
 
-Once additional-cost logic and supplier comparison exist (Phase 4 onward,
-see [Implementation Plan](IMPLEMENTATION_PLAN.md)), the highest testing
-priority remains financial calculation correctness and business-risk
-scenarios — since errors there directly affect the numbers users rely on to
-make purchasing decisions.
+Once supplier comparison exists (Phase 5 onward, see
+[Implementation Plan](IMPLEMENTATION_PLAN.md)), the highest testing priority
+remains financial calculation correctness and business-risk scenarios — since
+errors there directly affect the numbers users rely on to make purchasing
+decisions.

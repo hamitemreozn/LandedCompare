@@ -31,11 +31,30 @@ are not started until the current phase is accepted.
   business being a persisted field. Order multiple was scoped out as a
   `LATER` item (see Calculation Rules). No additional costs, allocation, or
   supplier ranking implemented — those remain scoped to later phases below.
-- **Phase 4 — Additional Cost Engine**: fixed and percentage-based costs,
-  freight, insurance, duty/customs, brokerage, fees, local transport, tax,
-  discounts, surcharges, shared cost allocation.
+- **Phase 4 — Additional Cost Engine** (done): supplier-level fixed and
+  percentage costs across the nine preset categories (freight, insurance,
+  duty/customs, brokerage, bank fee, local transport, packaging, tax, other),
+  semantically distinct discounts and surcharges, three approved percentage
+  bases evaluated in fixed acyclic stages, `alreadyIncludedInQuote` /
+  `includeInComparison` handling, a traceable landed-total breakdown, and
+  deterministic shared-cost allocation with largest-remainder minor-unit
+  settlement (`Percentage`, `CurrencyMinorUnit`, `AdditionalCost`,
+  `Allocation`, `CostCalculation` under `src/calculation/`). Fixed-cost FX
+  reuses Phase 2's exchange-rate engine unchanged; `Money` gained sign and
+  explicit minor-unit settlement operations (see
+  [Calculation Rules](CALCULATION_RULES.md)). Item-level costs, weight/volume
+  allocation, automatic Incoterm inference and any tax-law logic were
+  deliberately scoped out (see [Architecture](ARCHITECTURE.md)). No supplier
+  ranking, completeness, comparison or insights implemented — those remain
+  scoped to later phases below.
 - **Phase 5 — Comparison Engine**: ranking and deterministic comparison
-  explanations across quotations.
+  explanations across quotations. **Open item carried in from Phase 4:**
+  `calculatedLandedTotal` is an exact decimal with no minor-unit rounding, so
+  two suppliers can differ by less than one minor unit while displaying the
+  same figure. Before ranking is implemented, Phase 5 must decide and document
+  the comparison precision and the tie definition, so a sub-minor-unit
+  difference cannot produce a false winner — see
+  [Calculation Rules](CALCULATION_RULES.md), "Open item for Phase 5".
 - **Phase 6 — i18n**: Turkish and English UI support.
 - **Phase 7 — Local Persistence**: IndexedDB, autosave.
 - **Phase 8 — Projects & Requirements UI**.
@@ -47,4 +66,4 @@ are not started until the current phase is accepted.
   controlled CSV/XLSX support.
 - **Phase 14 — Public MVP Hardening**.
 
-Phases after Phase 0 are not implemented yet.
+Phases 0–4 are implemented. Phase 5 onward is not started.

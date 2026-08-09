@@ -149,16 +149,94 @@ the resolved quantity on demand from `QuoteItem.moq` /
 `QuoteItem.unitsPerQuotedUnit` (which remain as genuine supplier-provided
 inputs) every time it is needed, instead of caching it on the entity.
 
+## Phase 4 state — additional cost engine & allocation
+
+`src/calculation/` gains the cost engine: fixed and percentage costs,
+discounts and surcharges, and deterministic shared-cost allocation. Same
+constraints as the rest of the layer (no React/DOM/storage/i18n), pure
+functions and immutable values, built on Phase 1's `Money`/`Quantity` and
+reusing Phase 2's exchange-rate engine unchanged.
+
+```text
+src/
+  calculation/
+    Percentage.ts         # exact-decimal percentage; "5" means 5%
+    CurrencyMinorUnit.ts  # minimal, explicit minor-unit resolution
+    AdditionalCost.ts     # cost/discount/surcharge model + construction-time validation
+    Allocation.ts         # sign-safe largest-remainder allocator
+    CostCalculation.ts    # staged evaluation -> landed total; cost allocation
+```
+
+The pipeline this completes:
+
+```text
+resolved quantity (Phase 3)
+  -> merchandise calculation (Phase 2)
+  -> discounts -> fixed costs -> percentage costs -> surcharges
+  -> shared-cost allocation
+  -> supplier cost breakdown + calculated landed total
+```
+
+Supplier ranking, completeness and comparison insights are **not** here and
+are not derivable from this API — that is Phase 5.
+
+### Staged evaluation instead of a dependency graph
+
+Costs are evaluated in fixed stages (discounts → freight/insurance → other
+costs → surcharges), and each stage may only reference percentage bases that
+earlier stages finalised. This is deliberately *not* a configurable
+dependency graph: a closed set of three bases plus a static stage table makes
+a circular base (`Duty = 5% of Merchandise + Freight + Duty`) impossible to
+express, and is validated at construction rather than discovered at
+calculation time. See [Calculation Rules](CALCULATION_RULES.md) for the
+stage/base table.
+
+### One settlement boundary
+
+Everything up to and including the landed total stays at full exact-decimal
+precision, continuing the Phase 1/2 rule. Minor-unit rounding happens at
+exactly one place — splitting a shared amount across lines — because a
+per-line share of 33.3333… is not a payable figure. The allocator uses
+largest-remainder distribution on the amount's *magnitude* and re-applies the
+sign afterwards, so a discount and a freight cost travel the same code path,
+and `sum(allocations) === settledAmount` holds exactly for both signs.
+
+### Domain model change
+
+`Money` (Phase 1) gained the operations this required: sign inspection
+(`isZero`/`isNegative`/`isPositive`), `abs`/`negate`, and the two explicit
+settlement operations `roundToMinorUnit`/`truncateToMinorUnit`. The rounding
+*modes* live in `domain/monetary/decimal.ts` alongside the rest of the
+decimal configuration, so the application's settlement behaviour is decided
+in one place rather than per call site. Phase 1's rule that `add`/`subtract`/
+`multiply` never round is unchanged — settlement is opt-in and named.
+
+No entity gained a calculated field. Landed totals, allocated amounts and
+percentage bases are all derived output, computed on demand.
+
+### Item-level costs — deliberately out of scope
+
+Phase 4 implements **supplier-level shared costs only**. An item-level cost
+model would need its own currency conversion, its own inclusion flags, and —
+the real problem — its own answers to questions this phase has no approved
+rule for: does an item-level packaging cost enter the CIF-like duty base, and
+does it participate in allocation at all? Rather than guess, the phase stops
+at the foundation an item-level model would build on: allocation already
+produces per-line amounts, and an item-level cost is structurally a shared
+cost allocated entirely to one line.
+
 ## Forward-looking principles (not yet implemented)
 
 These are constraints for future phases, recorded here so early architectural
 decisions don't accidentally violate them:
 
-- Phase 3 implements only SKU-level MOQ and user-defined pack/quoted-unit
-  resolution. Additional costs and allocation (Phase 4) and supplier
-  ranking/completeness (Phase 5) are not implemented and are not derivable
-  from Phase 3's API. Order multiple (a Phase 3 "should have") was also
-  deferred — see [Calculation Rules](CALCULATION_RULES.md).
+- Phase 4 produces one supplier's landed total and per-line allocated
+  amounts. Supplier ranking, cheapest selection, completeness detection, tie
+  handling and comparison insights (Phase 5) are not implemented and are not
+  derivable from Phase 4's API. The effective landed *unit* cost metric is
+  also left to the results phase. Order multiple (a Phase 3 "should have")
+  and weight/volume allocation remain deferred — see
+  [Calculation Rules](CALCULATION_RULES.md).
 - Persistence (planned: IndexedDB, Phase 7) will be kept behind an interface
   separate from domain logic, using each type's `toJSON()`/`fromJSON()`
   contract, so the domain layer does not depend on browser storage APIs.
