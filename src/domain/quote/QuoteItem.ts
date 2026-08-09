@@ -10,6 +10,16 @@ import { Quantity } from '../quantity/Quantity'
  * that value is always calculated on demand, never stored here, so there is
  * no risk of a stale persisted quantity drifting from what MOQ/pack
  * resolution would actually produce.
+ *
+ * `quotedUnitPrice` must be **`>= 0`**. A negative price is rejected here, at
+ * construction — the earliest possible domain boundary — so it can never
+ * reach Phase 2's merchandise engine or any later calculation. `0` is
+ * explicitly **allowed**: a free/sample/included item is a real quotation
+ * scenario the MVP does not forbid. This mirrors `Quantity`'s "negative
+ * rejected, zero allowed" stance; `Money` itself stays general-purpose and
+ * sign-unrestricted (Phase 4 discounts and signed cost effects rely on a
+ * negative `Money`), so this is a `QuoteItem`-specific rule, not a global
+ * `Money` constraint.
  */
 export interface QuoteItem {
   readonly id: string
@@ -45,6 +55,11 @@ export function createQuoteItem(input: CreateQuoteItemInput): QuoteItem {
   }
   if (input.quotedUnit.trim() === '') {
     throw new InvalidQuoteItemError('QuoteItem quotedUnit must not be empty')
+  }
+  if (input.quotedUnitPrice.isNegative()) {
+    throw new InvalidQuoteItemError(
+      `QuoteItem "${input.id}" quotedUnitPrice must not be negative (got ${input.quotedUnitPrice.toDecimalString()} ${input.quotedUnitPrice.currency}); zero is allowed for a free/sample/included item`,
+    )
   }
   return {
     id: input.id,

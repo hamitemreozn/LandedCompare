@@ -47,14 +47,35 @@ are not started until the current phase is accepted.
   deliberately scoped out (see [Architecture](ARCHITECTURE.md)). No supplier
   ranking, completeness, comparison or insights implemented — those remain
   scoped to later phases below.
-- **Phase 5 — Comparison Engine**: ranking and deterministic comparison
-  explanations across quotations. **Open item carried in from Phase 4:**
-  `calculatedLandedTotal` is an exact decimal with no minor-unit rounding, so
-  two suppliers can differ by less than one minor unit while displaying the
-  same figure. Before ranking is implemented, Phase 5 must decide and document
-  the comparison precision and the tie definition, so a sub-minor-unit
-  difference cannot produce a false winner — see
-  [Calculation Rules](CALCULATION_RULES.md), "Open item for Phase 5".
+- **Phase 5 — Comparison Engine** (done): supplier completeness detection
+  (`COMPLETE` / `INCOMPLETE` / `INVALID`), a closed-allow-list error-capture
+  boundary that maps expected Phase 1–4 domain errors to `INVALID` while
+  letting internal engine bugs (`AllocationInvariantError`, anything
+  unexpected) propagate, the ranking-boundary decision carried in from
+  Phase 4 (`rankingAmount` — Phase 4's exact `calculatedLandedTotal` rounded
+  to the base currency's minor unit, half-up, reusing
+  `Money.roundToMinorUnit`/`resolveMinorUnit` unchanged), dense ranking with
+  stable input-order tie-breaking, amount/percentage difference from the
+  lowest `rankingAmount` with a safe zero-denominator case (never
+  `Infinity`/`NaN`), and deterministic semantic insight codes (no
+  natural-language text, no AI) including the
+  `LOWEST_MERCHANDISE_NOT_LOWEST_LANDED_COST` flip insight
+  (`Percentage`, `CurrencyMinorUnit`, `Allocation`, `CostCalculation`,
+  `MerchandiseCalculation`, `QuantityResolution` reused unchanged under
+  `src/comparison/`). The product never selects a "best supplier" — only the
+  lowest calculated landed cost among comparable suppliers. The effective
+  landed *unit* cost metric remains explicitly deferred (see
+  [Calculation Rules](CALCULATION_RULES.md)) — implementing it correctly
+  needs a business decision this phase was not authorized to make. No UI,
+  i18n, or persistence implemented — those remain scoped to later phases
+  below.
+
+  **ENGINE COMPLETE — CHECKPOINT 1.** Phases 0–5 form one reviewable unit:
+  domain/monetary foundation, merchandise calculation, quantity/MOQ/pack
+  resolution, additional costs and allocation, and supplier comparison —
+  the full calculation and comparison engine, independent of any UI. This is
+  the natural point for an end-to-end engine review before UI work (Phase 6+)
+  begins.
 - **Phase 6 — i18n**: Turkish and English UI support.
 - **Phase 7 — Local Persistence**: IndexedDB, autosave.
 - **Phase 8 — Projects & Requirements UI**.
@@ -66,4 +87,5 @@ are not started until the current phase is accepted.
   controlled CSV/XLSX support.
 - **Phase 14 — Public MVP Hardening**.
 
-Phases 0–4 are implemented. Phase 5 onward is not started.
+Phases 0–5 are implemented — **Checkpoint 1: engine complete.** Phase 6
+onward (UI, i18n, persistence) is not started.

@@ -112,9 +112,12 @@ same value. This shape is what IndexedDB persistence (Phase 7) will store.
 readonly TypeScript interfaces (data shapes), each with a small `createX()`
 factory that enforces primitive structural invariants (non-empty id/name,
 valid currency code, non-negative decimal quantity, a quote item's price
-currency matching its quote's currency). They carry no calculated fields —
-landed totals, rankings, and effective unit costs are derived output from a
-calculation engine that does not exist yet, not persisted domain state.
+currency matching its quote's currency, **a quote item's `quotedUnitPrice`
+not negative — zero is allowed, added during Phase 5 hardening, see
+[Calculation Rules](CALCULATION_RULES.md)**). They carry no calculated
+fields — landed totals, rankings, and effective unit costs are derived
+output from a calculation engine that does not exist yet, not persisted
+domain state.
 
 ## Phase 3 state — quantity, MOQ & pack resolution
 
@@ -225,19 +228,91 @@ at the foundation an item-level model would build on: allocation already
 produces per-line amounts, and an item-level cost is structurally a shared
 cost allocated entirely to one line.
 
+## Phase 5 state — supplier comparison engine
+
+`src/comparison/` now exists alongside `src/domain/` and `src/calculation/`.
+It composes the Phase 2–4 engines per supplier rather than reimplementing any
+arithmetic, and adds exactly one new derived value (`rankingAmount`, a
+minor-unit-settled view of Phase 4's exact `calculatedLandedTotal`) plus
+ranking, tie and insight logic on top. Same constraints as the rest of the
+calculation layer: no React/DOM/storage/i18n, pure functions and immutable
+values, no natural-language text produced anywhere in it.
+
+```text
+src/
+  comparison/
+    ComparisonStructuralValidation.ts  # project-wide structural preconditions (throws, blocks the whole comparison)
+    SupplierEvaluation.ts              # per-supplier completeness + Phase 2-4 pipeline -> COMPLETE/INCOMPLETE/INVALID
+    Ranking.ts                         # dense ranking, ties, amount/percentage difference, on rankingAmount only
+    ComparisonInsights.ts              # deterministic semantic insight codes + structured parameters
+    SupplierComparison.ts              # orchestrator: compareSuppliers(project, exchangeRateTable, ...)
+```
+
+The pipeline this completes:
+
+```text
+Requirements + Supplier + Quote
+  -> comparison-level structural validation
+  -> per-supplier completeness check
+  -> Phase 3 quantity resolution -> Phase 2 merchandise -> Phase 4 cost/allocation
+  -> supplier status (COMPLETE / INCOMPLETE / INVALID)
+  -> ranking (COMPLETE suppliers only, on rankingAmount)
+  -> deterministic insights
+  -> SupplierComparisonResult
+```
+
+See [Calculation Rules](CALCULATION_RULES.md) for the full status model,
+ranking-boundary rationale, tie/dense-ranking rules, and the insight code
+table. Two decisions are worth calling out architecturally:
+
+- **No new rounding system.** `rankingAmount` reuses Phase 4's
+  `Money.roundToMinorUnit` and `CurrencyMinorUnit.resolveMinorUnit`
+  unchanged. The exact `calculatedLandedTotal` is preserved alongside it on
+  every `COMPLETE` supplier result, so nothing about Phase 4's "no premature
+  rounding" principle is walked back — a second, explicitly-named settlement
+  point was added for comparison specifically, matching the pattern
+  Phase 4 already established for allocation.
+- **Error mapping is a closed allow-list, not a catch-all.** Expected
+  Phase 1–4 domain errors are mapped to an `INVALID` supplier result by an
+  explicit list of error classes in `SupplierEvaluation.ts`; anything not on
+  that list (in particular Phase 4's `AllocationInvariantError`) propagates
+  unchanged. This is a deliberate architectural boundary: a per-supplier
+  result must never be able to hide an engine-correctness bug behind a
+  plausible business explanation.
+
+### Domain model — unchanged
+
+No domain entity (`Project`, `RequirementItem`, `Supplier`, `Quote`,
+`QuoteItem`) gained a field. A `SupplierComparisonResult` (and everything
+inside it — status, issues, `rankingAmount`, ranks, insights) is entirely
+derived output, computed on demand from existing domain objects plus the
+exchange-rate table and per-supplier cost lists already defined by Phase 2–4,
+exactly like every calculated value before it in this codebase.
+
+### Effective landed unit cost — still not implemented
+
+Phase 4 left this metric to the results phase. Phase 5 does not implement it
+either: doing so correctly would require either reversing Phase 2's
+once-per-quote currency conversion or inventing a new proration rule to
+spread a converted total back across lines — both are business decisions
+outside this phase's approved scope. See
+[Calculation Rules](CALCULATION_RULES.md) for the full reasoning. It remains
+a deferred, open item, not something a future UI layer should compute
+silently on its own.
+
 ## Forward-looking principles (not yet implemented)
 
 These are constraints for future phases, recorded here so early architectural
 decisions don't accidentally violate them:
 
-- Phase 4 produces one supplier's landed total and per-line allocated
-  amounts. Supplier ranking, cheapest selection, completeness detection, tie
-  handling and comparison insights (Phase 5) are not implemented and are not
-  derivable from Phase 4's API. The effective landed *unit* cost metric is
-  also left to the results phase. Order multiple (a Phase 3 "should have")
-  and weight/volume allocation remain deferred — see
+- Order multiple (a Phase 3 "should have"), weight/volume allocation, and
+  item-level costs remain deferred — see
   [Calculation Rules](CALCULATION_RULES.md).
 - Persistence (planned: IndexedDB, Phase 7) will be kept behind an interface
   separate from domain logic, using each type's `toJSON()`/`fromJSON()`
   contract, so the domain layer does not depend on browser storage APIs.
 - The MVP has no backend. All computation and storage happens client-side.
+- Phase 5 produces a machine-readable comparison result only. Rendering it
+  (Results UI), turning insight codes into text (i18n), and any
+  supplier-quality/lead-time/warranty scoring — which this product does not
+  and will not compute — remain out of scope for the engine layer entirely.

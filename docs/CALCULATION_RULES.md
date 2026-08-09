@@ -523,42 +523,277 @@ The application is not a tax advisor. A tax cost is an ordinary cost entry
 with a `TAX` category; `includeInComparison` is the only lever. There is no
 recoverable-VAT engine, no tax-law logic, and no automatic duty lookup.
 
-## Phase 5+ (not yet defined)
+## Phase 5 — supplier comparison engine
 
-No calculation rules are defined or implemented yet for supplier comparison:
-ranking, cheapest-supplier selection, quote completeness, tie handling,
-percentage differences between suppliers, deterministic textual insights, or
-scenario simulation. Also still deferred: order multiple (see the Phase 3
-section), weight/volume/CBM allocation, item-level costs, and sequential /
-chained discounts (see the Phase 4 discount section).
+These rules are approved and implemented (see `src/comparison/`:
+`ComparisonStructuralValidation.ts`, `SupplierEvaluation.ts`, `Ranking.ts`,
+`ComparisonInsights.ts`, `SupplierComparison.ts`). They govern *whether a
+supplier's landed total can be trusted at all*, and, for the ones that can,
+*how they are ranked, tied, and explained* — never a landed-cost formula
+itself, which stays exactly what Phase 2–4 defined.
 
-### Open item for Phase 5 — the ranking comparison boundary
+**The product never selects a "best supplier".** It shows the lowest
+calculated landed cost among comparable suppliers, and says why. Lead time,
+warranty, payment terms and other metadata may be carried alongside the
+comparison, but Phase 5 does not turn them into a score, and nothing in this
+engine ever produces a quality/supplier score.
 
-Phase 4 deliberately leaves `calculatedLandedTotal` as an **exact decimal**
-with no minor-unit rounding: allocation is the only settlement boundary in
-that phase. That is the right answer for a single supplier, but it hands
-Phase 5 a decision it must make explicitly rather than inherit.
+### Supplier status model
 
-Two landed totals can differ by less than one minor unit — 98,300.0001 TRY
-versus 98,300.0000 TRY — typically because a percentage rate produced digits
-far below the currency's precision. Compared as raw exact decimals, one of
-them "wins". Presented to the user, both read as ₺98,300.00, and the ranking
-would look arbitrary or, worse, quietly authoritative.
+Every supplier resolves to exactly one status:
 
-Phase 5 must therefore decide and document, before implementing ranking:
+- **`COMPLETE`** — a quote exists, every required item is quoted, quantity
+  resolution and cost calculation succeed, and a `calculatedLandedTotal` is
+  produced. Only `COMPLETE` suppliers are ranked.
+- **`INCOMPLETE`** — the supplier's data is not structurally broken, but is
+  insufficient for comparison: no quote at all, an empty quote (a quote with
+  zero items, distinct from a quote whose merchandise total is zero), or a
+  quote missing one or more required items. `missingRequirementIds` lists
+  exactly which requirements are uncovered, in the project's requirement
+  order. **No partial/apparent total is ever computed or exposed as if it
+  were comparable** — an incomplete supplier cannot be cheapest and never
+  receives a rank.
+- **`INVALID`** — the supplier's data is present but cannot be trusted:
+  duplicate quote items for the same requirement, a quote item referencing a
+  requirement not in the project, or an expected calculation error (see
+  "Error capture boundary" below). Also excluded from ranking.
 
-- at what precision landed totals are **compared** (comparing at the
-  currency's minor unit is the obvious candidate, but it is a decision, not a
-  default);
-- what counts as a **tie** once that precision is fixed, and how ties are
-  presented — a tie must not be resolved by an invisible sub-kuruş
-  difference;
-- whether the **displayed** total and the **compared** total are the same
-  number, and if not, how the difference is disclosed.
+A missing quote is `INCOMPLETE`, not `INVALID` — the data is absent, not
+wrong. A duplicate or unknown-requirement quote item is `INVALID` even if
+every required item also happens to be present — malformed data is not made
+trustworthy by being complete.
 
-None of this is implemented in Phase 4, and Phase 4's exact total must not be
-read as an implicit answer to any of it.
+### Comparison-level structural validation
 
-Nothing beyond the Phase 1–4 sections above should be treated as an
+Some problems make the *comparison itself* meaningless rather than
+implicating one supplier: an empty requirements list, a duplicate
+requirement id, a duplicate supplier id, a requirement with zero required
+quantity (Phase 1's `Quantity` allows zero technically; comparison readiness
+requires `requiredQuantity > 0`), a quote referencing a supplier id that does
+not exist, more than one quote for the same supplier (ambiguous — the engine
+does not guess which one is authoritative), or a mismatch between the
+project's base currency and the exchange rate table's base currency. These
+throw `InvalidComparisonInputError` and block the whole comparison before any
+supplier is evaluated; they are never downgraded to a per-supplier issue. A
+quote item referencing an unknown *requirement*, by contrast, is
+supplier-level (`INVALID`) — it says the supplier's data is broken, not that
+the comparison's own structure is.
+
+### QuoteItem unit price — must not be negative
+
+**`QuoteItem.quotedUnitPrice` must be `>= 0`.** This is validated in
+`createQuoteItem` (Phase 1's domain layer) — the earliest possible
+construction boundary, added during the Phase 5 Checkpoint 1 hardening
+review after the error-capture-boundary audit below surfaced that nothing
+enforced it. `< 0` is rejected (`InvalidQuoteItemError`); **`0` is
+explicitly allowed** — a free/sample/included item is a real quotation
+scenario the MVP does not forbid, the same "negative rejected, zero
+accepted" stance `Quantity` already takes. `Money` itself stays
+general-purpose and sign-unrestricted (Phase 4's discounts and signed cost
+effects rely on a negative `Money`), so this is a `QuoteItem`-specific rule,
+not a change to `Money`. Because there is no other construction path for
+`QuoteItem` (no `fromJSON`/import exists yet — see Phase 7), rejecting here
+means a negative price can never reach Phase 2's merchandise engine or
+anything built on it.
+
+### Error capture boundary
+
+Expected user/domain errors from the existing Phase 1–4 engines are mapped
+explicitly to an `INVALID` supplier result, via a closed allow-list (not a
+catch-all) in `SupplierEvaluation.ts`. The list was audited call site by call
+site against Phase 2–4's actual throw sites (Checkpoint 1 hardening review),
+not assembled by including every domain error class that exists:
+
+- **Live-reachable with valid, well-typed data**: `InvalidMoqError`,
+  `InvalidPackSizeError` (a bad MOQ/pack on one quote item),
+  `MissingExchangeRateError` (a quote/cost currency with no configured
+  rate), `InvalidDiscountError` (discounts exceeding the merchandise total,
+  or a per-line allocated discount exceeding that line's value),
+  `InvalidCostDefinitionError` (a duplicate cost id within one supplier's
+  cost list), `InvalidAllocationBaseError` (a zero allocation weight,
+  reachable via an all-zero-priced set of lines with a shared cost to
+  allocate), and `IncompatibleAllocationUnitsError` (`BY_QUANTITY`
+  allocation across requirements with different comparison units).
+- **Structurally guarded, kept as defense in depth**: `InvalidQuantityError`
+  and `CurrencyMismatchError` correspond to real call sites this pipeline
+  executes (quantity-resolution's excess-quantity subtraction; merchandise/
+  allocation currency-consistency checks), but are currently unreachable
+  given upstream invariants (`resolveOrderQuantity` only ever grows the
+  resolved quantity; a `Quote`'s items are guaranteed to share its currency
+  at construction). `InvalidPercentageBaseError` joins this category as of
+  the unit-price hardening above: its negative-merchandise-total throw site
+  *was* live-reachable (a negative `quotedUnitPrice` could drive the
+  merchandise total negative) until `createQuoteItem` started rejecting
+  negative prices at construction — a line subtotal (non-negative price ×
+  non-negative `Quantity`) can no longer be negative, so the sum can't be
+  either; its other throw site (a percentage base unresolved at its stage)
+  was already guarded by `AdditionalCost`'s own construction-time
+  validation. All three stay in the list because, unlike an internal
+  assertion, their *meaning* is "the data doesn't add up" — the safer
+  classification if an upstream invariant were ever weakened later.
+
+**Deliberately excluded**, because neither has any call site at all inside
+this pipeline: `InvalidPercentageError` (`Percentage.fromString` is never
+called here — a `Percentage` only ever arrives pre-built inside an
+`AdditionalCost`) and `InvalidCostAmountError` (`createAdditionalCost` is
+never called here — costs arrive pre-built via `costsBySupplierId`).
+Including either would misrepresent the list as covering code that doesn't
+run.
+
+**Also deliberately excluded: `InvalidMinorUnitError`.** An unresolvable
+base-currency minor unit is a comparison-wide configuration problem — every
+supplier shares one project base currency — not a single supplier's fault.
+`compareSuppliers` resolves it once, before any supplier is evaluated, and
+lets it propagate out of the whole comparison rather than becoming a
+per-supplier `INVALID` result; mapping it into the supplier-level allow-list
+would let one supplier's data ambiguously mask a comparison-wide
+configuration gap.
+
+Anything not on the allow-list — most importantly `AllocationInvariantError`
+(Phase 4's internal assertion that the allocator itself stayed correct), or
+any other unexpected exception — is left to **propagate**. An internal
+engine-correctness bug must never be relabelled as "this supplier's data is
+invalid": doing so would hide a broken calculation behind a plausible-looking
+business explanation instead of surfacing it loudly.
+
+### Ranking boundary — exact total vs. ranking amount
+
+Ranking never runs on the raw exact `calculatedLandedTotal`. Two suppliers
+can differ by less than one minor unit (e.g. 98,300.0001 TRY vs.
+98,300.0000 TRY) purely from digits a percentage rate produced below the
+currency's display precision; compared as exact decimals one of them
+"wins", but both display as ₺98,300.00 — an invisible, quietly authoritative
+difference.
+
+Phase 5 therefore introduces a second, derived value:
+
+```text
+rankingAmount = calculatedLandedTotal rounded to the project's
+                base-currency minor unit (half-up)
+```
+
+reusing Phase 4's `Money.roundToMinorUnit` and `resolveMinorUnit` exactly as
+they are — no new rounding system was written. `exactCalculatedLandedTotal`
+is preserved unchanged alongside `rankingAmount` on every `COMPLETE`
+supplier result, for audit/traceability. **Ranking, tie detection, the
+displayed total, and the displayed difference are all based on
+`rankingAmount`**, so what the user sees is never a different number from
+what decided the order.
+
+### Tie semantics
+
+Two `COMPLETE` suppliers tie when `rankingAmount` is exactly equal —
+`supplierA.rankingAmount.equals(supplierB.rankingAmount)`. Raw exact totals
+never participate in the tie decision. A tie is not resolved by any hidden
+criterion (name, id, insertion order as a "winner" pick) — it is reported as
+a tie.
+
+### Dense ranking and stable tie order
+
+Ranked suppliers use **dense ranking**: `100.00 / 100.00 / 110.00` produces
+ranks `1, 1, 2`, never `1, 1, 3`. Suppliers are sorted ascending by
+`rankingAmount`; when two suppliers tie, the **original project supplier
+order** (input order) decides their relative position — never an alphabetic
+sort on supplier name or any other hidden key. This mirrors Phase 4's
+allocation tie-break philosophy: determinism here is a financial guarantee,
+made explicit rather than left to incidental array-sort stability.
+
+### Winner semantics
+
+- **Two or more `COMPLETE` suppliers, one unique lowest `rankingAmount`** —
+  `LOWEST_CALCULATED_LANDED_COST` insight for that supplier.
+- **Two or more `COMPLETE` suppliers, several sharing the lowest
+  `rankingAmount`** — `TIED_LOWEST_CALCULATED_LANDED_COST` insight for the
+  whole tied group.
+- **Exactly one `COMPLETE` supplier** — it is technically rank 1, but it is
+  **not** presented as a comparative winner: `ONLY_COMPARABLE_SUPPLIER`
+  instead. There is nothing to compare it against.
+- **No `COMPLETE` supplier** — no ranking, no winner:
+  `NO_COMPARABLE_SUPPLIERS`.
+
+### Percentage difference and the zero-denominator case
+
+For every `COMPLETE` supplier:
+
+```text
+differenceAmount   = supplierRankingAmount − lowestRankingAmount
+differencePercent  = differenceAmount / lowestRankingAmount × 100
+```
+
+computed on the exact-decimal foundation (never native `number`), against
+`rankingAmount` — the same precision boundary as the displayed total, so
+ranking, display and difference never disagree.
+
+When `lowestRankingAmount` is zero:
+
+- suppliers tied at zero get `differenceAmount = 0`, `differencePercent = 0`;
+- a supplier with a positive `rankingAmount` gets a real, computed
+  `differenceAmount`, but `differencePercent` is **`undefined`** — the ratio
+  is mathematically undefined at a zero denominator. The engine never
+  produces `Infinity`, `NaN`, or an invented percentage.
+
+### Deterministic insights
+
+The engine emits **semantic codes with structured parameters only** — no
+natural-language text, no AI/LLM. A later i18n phase renders these into
+TR/EN copy. Implemented codes:
+
+| Code | When | Parameters |
+| --- | --- | --- |
+| `ONLY_COMPARABLE_SUPPLIER` | exactly one `COMPLETE` supplier | `supplierId`, `rankingAmount` |
+| `NO_COMPARABLE_SUPPLIERS` | zero `COMPLETE` suppliers | — |
+| `LOWEST_CALCULATED_LANDED_COST` | a unique lowest `rankingAmount` | `supplierId`, `rankingAmount` |
+| `TIED_LOWEST_CALCULATED_LANDED_COST` | several suppliers share the lowest `rankingAmount` | `supplierIds`, `rankingAmount` |
+| `INCOMPLETE_QUOTE` | one per `INCOMPLETE` supplier | `supplierId`, `missingRequirementIds` |
+| `INVALID_QUOTE` | one per `INVALID` supplier | `supplierId`, `issueCodes` |
+| `LOWEST_MERCHANDISE_NOT_LOWEST_LANDED_COST` | see below | `lowestMerchandiseSupplierIds`, `lowestLandedSupplierIds`, `lowestMerchandiseAmount`, `lowestLandedRankingAmount` |
+
+Ordering is fixed and explicit: the single comparability/winner insight
+first (exactly one of the first four codes above always applies), then the
+merchandise-vs-landed flip if any, then `INCOMPLETE_QUOTE` insights and
+`INVALID_QUOTE` insights, each group walked in the project's supplier order —
+never `Object.keys` iteration order or any other incidental ordering.
+
+#### Merchandise-vs-landed insight
+
+`LOWEST_MERCHANDISE_NOT_LOWEST_LANDED_COST` fires when a `COMPLETE`
+supplier has the **unique** lowest merchandise total (compared at the same
+minor-unit precision as ranking, via a `merchandiseRankingAmount` computed
+the same way as `rankingAmount`) but is **not** among the lowest-landed-cost
+suppliers. If merchandise totals themselves tie for lowest, no "merchandise
+leader" is claimed and the insight does not fire — a tie must never be
+reported as a false single leader.
+
+### "Best supplier" — explicitly not a concept here
+
+The engine never selects, computes, or exposes a "best supplier". It
+answers exactly one question: *which comparable supplier's calculated
+landed total is lowest, and why is that comparison valid?* Lead time,
+warranty and payment terms may travel alongside the result as reference
+metadata; nothing in Phase 5 turns them into a score, weight, or ranking
+input.
+
+### Effective landed unit cost — deferred
+
+An effective landed **unit** cost (cost per comparison-unit quantity) was
+scoped as an MVP-desirable metric, but Phase 2 deliberately converts a
+quote's merchandise total to the base currency **once, for the whole quote**
+— not line by line (see the Phase 2 section above) — and Phase 4's
+allocation only produces a *settled*, minor-unit-rounded per-line cost share
+next to an *exact* per-line merchandise value that is still in the quote's
+own currency, not the base currency. Deriving a correct per-line effective
+unit cost from those pieces requires a genuinely new decision Phase 5 has no
+approved answer for: either introduce per-line base-currency conversion
+(reversing the Phase 2 default) or invent a proration rule to spread the
+single converted total back across lines (a new weighting decision, exactly
+the kind of thing Allocation.ts already treats as requiring an explicit,
+approved method). Guessing either would be inventing a business rule, which
+this phase's instructions explicitly forbid.
+
+**This metric is not implemented.** It is a deferred, open item — not
+computed anywhere, including silently inside a future UI layer — until a
+calculation phase explicitly designs and approves it here.
+
+Nothing beyond the Phase 1–5 sections above should be treated as an
 implemented or approved rule until a calculation phase explicitly adds it
 here.

@@ -216,10 +216,92 @@ Both golden scenarios run through the same generic
 `calculateSupplierCosts` / `allocateSupplierCosts` used everywhere else;
 nothing is special-cased to reach the expected figures.
 
+## Phase 5 — supplier comparison engine coverage
+
+Tests are colocated with the code they cover (`src/comparison/`), same
+convention as Phase 1–4, plus a shared `testSupport.ts` (not a test file
+itself) with minimal object builders for `Project`/`RequirementItem`/
+`Supplier`/`Quote`/`QuoteItem`, since comparison scenarios need more setup
+than a single calculation call. Coverage is business-risk-driven: every
+scenario below would either let an incomparable supplier win, produce a
+false tie/non-tie at the minor-unit boundary, or hide an internal engine bug
+behind a plausible-looking "invalid supplier" result.
+
+- `ComparisonStructuralValidation.test.ts` — every project-wide structural
+  block: empty requirements, duplicate requirement id, zero required
+  quantity, duplicate supplier id, an orphaned quote (unknown supplierId), a
+  duplicate quote for one supplier, a base-currency/rate-table mismatch; and
+  the explicit negative case proving an *unknown-requirement* quote item is
+  **not** flagged here (it is supplier-level `INVALID`, tested separately).
+- `SupplierEvaluation.test.ts` — the full completeness matrix: fully
+  complete, one missing item, several missing items (with the exact missing
+  id list), an empty quote (not a zero-cost `COMPLETE` result), a missing
+  quote, optional metadata (`quoteDate`/`incoterm`/etc.) absent but still
+  `COMPLETE`, a duplicate quote item, an unknown-requirement quote item, a
+  missing exchange rate, an invalid MOQ (zero), and discounts exceeding the
+  merchandise total — each mapped to the right status and issue code.
+- `SupplierEvaluation.errorPropagation.test.ts` — isolated in its own file
+  because it mocks the allocation step (an internal
+  `AllocationInvariantError` cannot be triggered through the public API with
+  valid data — that is the point of it being an assertion) to prove
+  `evaluateSupplier` really does let an unmapped internal error propagate
+  rather than silently becoming `INVALID`, without that mock leaking into the
+  real-calculation assertions in the main file.
+- `Ranking.test.ts` — basic ascending ranking, dense ranking across a tie
+  (`1, 1, 2`), a single complete supplier still ranked 1, stable input-order
+  tie-breaking (deliberately using ids that would sort differently
+  alphabetically), empty input, the sub-minor-unit tie
+  (`100.004`/`100.001` → both `100.00`) and the half-up boundary that
+  separates `100.005` from `100.004`, amount/percentage difference from the
+  lowest, a tie's `0%` difference, and the zero-best-total cases (tied zero
+  → `0%`; zero vs. positive → `percentageDifference` is `undefined`, never
+  `Infinity`/`NaN`).
+- `ComparisonInsights.test.ts` — every insight code in isolation
+  (`NO_COMPARABLE_SUPPLIERS`, `ONLY_COMPARABLE_SUPPLIER` never doubling as a
+  landed-cost winner, `LOWEST_CALCULATED_LANDED_COST`,
+  `TIED_LOWEST_CALCULATED_LANDED_COST`), the merchandise-vs-landed flip
+  firing only when the merchandise leader is unique and not the landed
+  winner, the false-positive case suppressed when merchandise itself ties,
+  per-supplier `INCOMPLETE_QUOTE`/`INVALID_QUOTE` insights in project input
+  order, and repeated-run determinism.
+- `SupplierComparison.test.ts` — orchestration: the comparison-level
+  structural error surfaces before any supplier is evaluated, a supplier
+  with no cost entry defaults to `[]` rather than inheriting some other
+  supplier's costs, a supplier-specific cost applies only to that supplier,
+  an unknown base currency blocks ranking unless a minor-unit override is
+  supplied, and `INCOMPLETE`/`INVALID` suppliers are excluded from
+  `rankedCompleteSuppliers` and `lowestSupplierIds`.
+- `ComparisonGoldenScenario.test.ts` — the required golden scenarios, run
+  through the real generic engines end to end, nothing special-cased:
+  - **Golden Scenario 1 — incomplete supplier trap.** A complete supplier at
+    2,000 TRY ranked 1; a supplier missing one required item never ranks,
+    regardless of how low its partial apparent total looks.
+  - **Golden Scenario 2 — sub-minor-unit tie and half-up boundary.**
+    `100.004`/`100.001` TRY tie at rank 1 once settled; `100.005`/`100.004`
+    separate into ranks 1/2 at the same boundary.
+  - **Golden Scenario 3 — merchandise leader flip.** A 1,000/100 merchandise/
+    freight supplier beats a 950/200 one on landed cost despite the second
+    having lower merchandise, with `LOWEST_MERCHANDISE_NOT_LOWEST_LANDED_COST`
+    asserted on the full structured payload.
+  - **Three-supplier comparison golden scenario.** Two complete suppliers
+    (higher merchandise/lower cost vs. lower merchandise/higher cost) and one
+    incomplete supplier with a deceptively low single-item apparent total;
+    asserts the incomplete supplier is excluded, the correct complete winner,
+    the merchandise/landed flip insight, and the amount/percentage
+    difference (100 TRY / 6.25%) together.
+  - **Integration scenarios** proving Phase 3/4 outputs survive the full
+    comparison pipeline unchanged: the Phase 3 MOQ-trap supplier still beats
+    the lower-unit-price/MOQ-bound one after ranking; a pack-resolved,
+    cost-allocated supplier (105 pcs → 11 boxes → 770 USD + 30 USD freight)
+    ranks correctly against a plain one; and a multi-currency comparison
+    (USD + EUR quotes into a TRY base) ranks on the converted base-currency
+    totals.
+
 ## Future priority
 
-Once supplier comparison exists (Phase 5 onward, see
-[Implementation Plan](IMPLEMENTATION_PLAN.md)), the highest testing priority
-remains financial calculation correctness and business-risk scenarios — since
-errors there directly affect the numbers users rely on to make purchasing
-decisions.
+Phases 0–5 form Checkpoint 1 — the calculation and comparison engine is
+functionally complete and UI-independent. The next priority is an end-to-end
+engine review of Phases 0–5 together before Phase 6+ (UI) work begins. Beyond
+that, the highest testing priority remains financial calculation correctness
+and business-risk scenarios — since errors there directly affect the numbers
+users rely on to make purchasing decisions.
