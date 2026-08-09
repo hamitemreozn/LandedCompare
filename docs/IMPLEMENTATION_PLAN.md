@@ -3,10 +3,15 @@
 Planned development order. Each phase builds on the previous one; later phases
 are not started until the current phase is accepted.
 
-- **Phase 0 — Foundation** (this phase): React + TypeScript + Vite project,
+- **Phase 0 — Foundation** (done): React + TypeScript + Vite project,
   test/lint/typecheck/build tooling, placeholder UI, base documentation.
-- **Phase 1 — Domain & Monetary Foundation**: money/currency value types, core
-  domain entities.
+- **Phase 1 — Domain & Monetary Foundation** (done): exact-decimal `Money`/
+  `Quantity` value types backed by decimal.js (see
+  [Calculation Rules](CALCULATION_RULES.md)), branded `CurrencyCode`, and core
+  domain entities (`Project`, `RequirementItem`, `Supplier`, `Quote`,
+  `QuoteItem`) under `src/domain/`, independent of React/UI/persistence/i18n.
+  No landed-cost formula, exchange-rate conversion, MOQ logic, or persistence
+  implemented — those remain scoped to later phases below.
 - **Phase 2 — Core Calculation Engine**: landed cost calculation logic.
 - **Phase 3 — MOQ / Quantity / Pack**: MOQ, order quantity, and pack/unit
   normalization rules.

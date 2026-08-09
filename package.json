@@ -12,6 +12,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "decimal.js": "^10.6.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
   },
