@@ -17,6 +17,7 @@ function complete(
     supplierId,
     status: 'COMPLETE',
     issues: [],
+    warnings: [],
     exactCalculatedLandedTotal: ry(rankingAmount),
     rankingAmount: ry(rankingAmount),
     merchandiseTotal: ry(merchandiseRankingAmount),
@@ -29,6 +30,7 @@ function incomplete(supplierId: string, missingRequirementIds: readonly string[]
     supplierId,
     status: 'INCOMPLETE',
     issues: [{ code: 'MISSING_REQUIRED_ITEMS', message: 'missing' }],
+    warnings: [],
     missingRequirementIds,
   }
 }
@@ -38,6 +40,7 @@ function invalid(supplierId: string): SupplierEvaluationResult {
     supplierId,
     status: 'INVALID',
     issues: [{ code: 'DUPLICATE_QUOTE_ITEM', message: 'duplicate' }],
+    warnings: [],
   }
 }
 

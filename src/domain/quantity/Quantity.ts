@@ -1,4 +1,10 @@
-import { parseExactDecimal, type Decimal } from '../monetary/decimal'
+import {
+  divideCeil,
+  multiplyExact,
+  parseExactDecimal,
+  subtractExact,
+  type Decimal,
+} from '../monetary/decimal'
 
 /** Deterministic, JSON-safe representation of a Quantity value. */
 export interface QuantitySnapshot {
@@ -60,9 +66,15 @@ export class Quantity {
     return this.compareTo(other) >= 0 ? this : other
   }
 
-  /** Exact-decimal multiplication (e.g. a whole quoted-unit count by its pack size). */
+  /**
+   * Exact-decimal multiplication (e.g. a whole quoted-unit count by its pack
+   * size). Evaluated at a precision derived from the operands, so a large
+   * quantity does not lose its last digits to the default significant-digit
+   * budget — `resolvedQuantity = quotedUnitQuantity × unitsPerQuotedUnit`
+   * has to be exact for the excess-quantity invariant to hold.
+   */
   multiply(other: Quantity): Quantity {
-    return new Quantity(this.value.times(other.value))
+    return new Quantity(multiplyExact(this.value, other.value))
   }
 
   /**
@@ -70,7 +82,7 @@ export class Quantity {
    * would be negative — Quantity has no negative representation.
    */
   subtract(other: Quantity): Quantity {
-    const result = this.value.minus(other.value)
+    const result = subtractExact(this.value, other.value)
     if (result.isNegative()) {
       throw new InvalidQuantityError(result.toFixed())
     }
@@ -81,13 +93,20 @@ export class Quantity {
    * Divides by `divisor` and rounds up to the nearest whole quantity — the
    * smallest whole `n` such that `n * divisor >= this`. Used to convert a
    * comparison-unit quantity into a whole quoted-unit (pack) count, since a
-   * fractional pack cannot be ordered. Uses decimal.js's `.ceil()`, which
-   * always rounds toward +Infinity regardless of the library's configured
-   * rounding mode — never native `Math.ceil()` — so whole-pack rounding
-   * stays on the exact-decimal foundation.
+   * fractional pack cannot be ordered.
+   *
+   * The division is evaluated at a precision derived from the operands
+   * (`divideCeil`), because rounding the *quotient* to the default
+   * significant-digit budget first and only then taking the ceiling can move
+   * the answer a whole pack in either direction. The ceiling itself is
+   * decimal.js's `.ceil()` — always toward +Infinity, regardless of the
+   * configured rounding mode, and never native `Math.ceil()`.
    */
   ceilDivide(divisor: Quantity): Quantity {
-    return new Quantity(this.value.dividedBy(divisor.value).ceil())
+    if (divisor.isZero()) {
+      throw new InvalidQuantityError('0 (cannot divide a quantity by zero)')
+    }
+    return new Quantity(divideCeil(this.value, divisor.value))
   }
 
   toDecimalString(): string {

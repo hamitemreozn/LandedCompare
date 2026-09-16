@@ -1,6 +1,6 @@
-import type { Money } from '../domain/monetary/Money'
-import { DEFAULT_ALLOCATION_METHOD, type AllocationMethod } from './Allocation'
-import type { Percentage } from './Percentage'
+import { Money } from '../domain/monetary/Money'
+import { ALLOCATION_METHODS, DEFAULT_ALLOCATION_METHOD, type AllocationMethod } from './Allocation'
+import { Percentage } from './Percentage'
 
 /**
  * Whether an entry adds to, or subtracts from, the landed total. Discount and
@@ -8,8 +8,14 @@ import type { Percentage } from './Percentage'
  * enters `Discount = 500`, never `Freight = -500`, and the engine decides the
  * sign. That separation is what makes "how much discount did I get?" an
  * answerable question instead of something buried in a negative freight line.
+ *
+ * The runtime tuple is the source of truth: the type is derived from it, so
+ * the engine can check a value that arrived without passing through
+ * TypeScript against exactly the same closed set.
  */
-export type CostKind = 'COST' | 'DISCOUNT' | 'SURCHARGE'
+export const COST_KINDS = ['COST', 'DISCOUNT', 'SURCHARGE'] as const
+
+export type CostKind = (typeof COST_KINDS)[number]
 
 /**
  * Controlled semantic identifiers for the preset categories the MVP supports.
@@ -18,26 +24,32 @@ export type CostKind = 'COST' | 'DISCOUNT' | 'SURCHARGE'
  * percentage base); every other value is a label the engine treats
  * identically. `label` on the cost itself carries any custom display name.
  */
-export type CostCategory =
-  | 'FREIGHT'
-  | 'INSURANCE'
-  | 'DUTY'
-  | 'BROKERAGE'
-  | 'BANK_FEE'
-  | 'LOCAL_TRANSPORT'
-  | 'PACKAGING'
-  | 'TAX'
-  | 'OTHER'
+export const COST_CATEGORIES = [
+  'FREIGHT',
+  'INSURANCE',
+  'DUTY',
+  'BROKERAGE',
+  'BANK_FEE',
+  'LOCAL_TRANSPORT',
+  'PACKAGING',
+  'TAX',
+  'OTHER',
+] as const
+
+export type CostCategory = (typeof COST_CATEGORIES)[number]
 
 /**
  * The approved bases a percentage may be taken on. Closed and acyclic by
  * construction — there is no dependency-graph engine and no way to express a
  * base that includes the cost being calculated.
  */
-export type PercentageBase =
-  | 'MERCHANDISE'
-  | 'MERCHANDISE_AFTER_DISCOUNT'
-  | 'MERCHANDISE_PLUS_FREIGHT_INSURANCE'
+export const PERCENTAGE_BASES = [
+  'MERCHANDISE',
+  'MERCHANDISE_AFTER_DISCOUNT',
+  'MERCHANDISE_PLUS_FREIGHT_INSURANCE',
+] as const
+
+export type PercentageBase = (typeof PERCENTAGE_BASES)[number]
 
 /**
  * The fixed stage an entry is evaluated in. This is the mechanism that makes
@@ -168,32 +180,8 @@ export function isFreightOrInsurance(category: CostCategory): boolean {
 }
 
 export function createAdditionalCost(input: CreateAdditionalCostInput): AdditionalCost {
-  const id = input.id.trim()
-  if (id === '') {
-    throw new InvalidCostDefinitionError('Cost id must not be empty')
-  }
-  if (input.label !== undefined && input.label.trim() === '') {
-    throw new InvalidCostDefinitionError(`Cost "${id}" has an empty label; omit it instead`)
-  }
-
-  const hasFixed = input.fixedAmount !== undefined
-  const hasPercentage = input.percentage !== undefined
-  if (hasFixed === hasPercentage) {
-    throw new InvalidCostDefinitionError(
-      `Cost "${id}" must define exactly one of a fixed amount or a percentage (got ${hasFixed ? 'both' : 'neither'})`,
-    )
-  }
-
-  if (input.fixedAmount !== undefined && input.fixedAmount.isNegative()) {
-    throw new InvalidCostAmountError(id, input.fixedAmount.toDecimalString())
-  }
-
-  if (input.percentage !== undefined) {
-    assertPercentageIsUsable(id, input.kind, input.category, input.percentage)
-  }
-
-  return {
-    id,
+  const cost: AdditionalCost = {
+    id: typeof input.id === 'string' ? input.id.trim() : input.id,
     kind: input.kind,
     category: input.category,
     label: input.label,
@@ -203,6 +191,137 @@ export function createAdditionalCost(input: CreateAdditionalCostInput): Addition
     alreadyIncludedInQuote: input.alreadyIncludedInQuote ?? false,
     allocationMethod: input.allocationMethod ?? DEFAULT_ALLOCATION_METHOD,
   }
+  assertValidAdditionalCost(cost)
+  return cost
+}
+
+/**
+ * Every invariant an `AdditionalCost` must satisfy, checked at runtime.
+ *
+ * This exists as a separate function because `createAdditionalCost` is not a
+ * boundary the calculation engine can rely on: `AdditionalCost` is a plain
+ * readonly interface, so an object literal (or a JSON payload, or a mutated
+ * copy) that never went through the factory is structurally acceptable to
+ * TypeScript and reaches `calculateSupplierCosts` unchecked. A negative
+ * "cost" arriving that way used to drive the landed total below zero and
+ * then crash ranking from inside a percentage calculation.
+ *
+ * The factory and the engine boundary therefore call **this** — the rules are
+ * not duplicated in two places that could drift apart. Checks that inspect a
+ * value's runtime type (rather than just its business meaning) are here for
+ * the same reason: at this boundary the `AdditionalCost` type is a claim, not
+ * a guarantee.
+ */
+export function assertValidAdditionalCost(cost: AdditionalCost): void {
+  const value: unknown = cost
+  if (value === null || typeof value !== 'object') {
+    throw new InvalidCostDefinitionError(`A cost entry must be an object (got ${describeValue(value)})`)
+  }
+  const raw = value as Record<string, unknown>
+
+  const rawId = raw['id']
+  if (typeof rawId !== 'string' || rawId.trim() === '') {
+    throw new InvalidCostDefinitionError('Cost id must not be empty')
+  }
+  const id = rawId
+
+  const label = raw['label']
+  if (label !== undefined && (typeof label !== 'string' || label.trim() === '')) {
+    throw new InvalidCostDefinitionError(`Cost "${id}" has an empty label; omit it instead`)
+  }
+
+  const kind = raw['kind']
+  if (!isOneOf(kind, COST_KINDS)) {
+    throw new InvalidCostDefinitionError(
+      `Cost "${id}" has an unknown kind ${describeValue(kind)}; expected one of ${COST_KINDS.join(', ')}`,
+    )
+  }
+
+  const category = raw['category']
+  if (!isOneOf(category, COST_CATEGORIES)) {
+    throw new InvalidCostDefinitionError(
+      `Cost "${id}" has an unknown category ${describeValue(category)}; expected one of ${COST_CATEGORIES.join(', ')}`,
+    )
+  }
+
+  const fixedAmount = raw['fixedAmount']
+  const percentage = raw['percentage']
+  const hasFixed = fixedAmount !== undefined
+  const hasPercentage = percentage !== undefined
+  if (hasFixed === hasPercentage) {
+    throw new InvalidCostDefinitionError(
+      `Cost "${id}" must define exactly one of a fixed amount or a percentage (got ${hasFixed ? 'both' : 'neither'})`,
+    )
+  }
+
+  if (hasFixed) {
+    if (!(fixedAmount instanceof Money)) {
+      throw new InvalidCostDefinitionError(
+        `Cost "${id}" has a fixed amount that is not a Money value (got ${describeValue(fixedAmount)})`,
+      )
+    }
+    if (fixedAmount.isNegative()) {
+      throw new InvalidCostAmountError(id, fixedAmount.toDecimalString())
+    }
+  }
+
+  if (!isBoolean(raw['includeInComparison'])) {
+    throw new InvalidCostDefinitionError(
+      `Cost "${id}" must state includeInComparison as a boolean (got ${describeValue(raw['includeInComparison'])})`,
+    )
+  }
+  if (!isBoolean(raw['alreadyIncludedInQuote'])) {
+    throw new InvalidCostDefinitionError(
+      `Cost "${id}" must state alreadyIncludedInQuote as a boolean (got ${describeValue(raw['alreadyIncludedInQuote'])})`,
+    )
+  }
+
+  const allocationMethod = raw['allocationMethod']
+  if (!isOneOf(allocationMethod, ALLOCATION_METHODS)) {
+    throw new InvalidCostDefinitionError(
+      `Cost "${id}" has an unknown allocation method ${describeValue(allocationMethod)}; expected one of ${ALLOCATION_METHODS.join(', ')}`,
+    )
+  }
+
+  if (hasPercentage) {
+    const basis: unknown = percentage
+    const rate = isRecord(basis) ? basis['rate'] : undefined
+    if (!(rate instanceof Percentage)) {
+      throw new InvalidCostDefinitionError(
+        `Cost "${id}" has a percentage without a valid rate (got ${describeValue(percentage)})`,
+      )
+    }
+    const base = (basis as Record<string, unknown>)['base']
+    if (!isOneOf(base, PERCENTAGE_BASES)) {
+      throw new InvalidPercentageBaseError(
+        `Cost "${id}" has an unknown percentage base ${describeValue(base)}; expected one of ${PERCENTAGE_BASES.join(', ')}`,
+      )
+    }
+    assertPercentageIsUsable(id, kind, category, { rate, base })
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object'
+}
+
+function isOneOf<T extends string>(value: unknown, allowed: readonly T[]): value is T {
+  return typeof value === 'string' && (allowed as readonly string[]).includes(value)
+}
+
+function isBoolean(value: unknown): value is boolean {
+  return typeof value === 'boolean'
+}
+
+function describeValue(value: unknown): string {
+  if (typeof value === 'string') {
+    return `"${value}"`
+  }
+  if (!isRecord(value)) {
+    return String(value)
+  }
+  const constructor: unknown = value.constructor
+  return typeof constructor === 'function' ? constructor.name : 'object'
 }
 
 function assertPercentageIsUsable(

@@ -297,11 +297,280 @@ behind a plausible-looking "invalid supplier" result.
     (USD + EUR quotes into a TRY base) ranks on the converted base-currency
     totals.
 
+  - **Golden Scenario 6 — settlement with a real remainder.** Deliberately
+    built so both settlement boundaries leave something to distribute, because
+    a suite of cleanly-dividing scenarios is exactly how a settlement bug
+    hides. Three USD lines at 40.55 TRY, a percentage discount, an
+    equal-per-line freight and a CIF-base duty; the merchandise settlement
+    distributes two spare kuruş and the freight distributes one. The
+    authoritative total is the exact 881.1357005 rounded once, 881.14; summing
+    separately rounded parts would have published 881.13, a kuruş short. Every
+    figure is hand-computed in the test's header comment, including which
+    entry the reconciliation residual lands on, and the per-line landed values
+    are asserted to reproduce the header exactly.
+
+## Checkpoint 1 remediation coverage
+
+Added after the independent adversarial audit. Each of these started as a
+reproduction of a defect that was live in the engine, not as a hypothetical:
+
+- `comparison/AllocationUnavailable.test.ts` — **the winner regression.** A
+  supplier landing at 6,800 TRY versus one at 10,200 TRY, where the cheaper
+  one's freight cannot be split across pcs and kg lines: it stays `COMPLETE`,
+  keeps rank 1, and carries an `ALLOCATION_UNAVAILABLE` warning instead of
+  being dropped. Plus the free-sample case (zero merchandise, real freight),
+  a zero-amount cost over an unusable base, proof that no `INVALID_QUOTE`
+  insight is emitted for a warned supplier, and proof the catch is narrow —
+  a discount that genuinely does not fit a line still invalidates.
+- `comparison/SettlementReconciliation.test.ts` — header equals breakdown, on
+  four scenarios including a percentage tail and a multi-currency mix, each
+  asserting every reconciliation identity at once. Plus the two cases that
+  pin the ranking boundary: two suppliers whose exact totals settle to the
+  same figure genuinely tie, and two straddling the half-up boundary separate
+  by one kuruş.
+- `comparison/ComparisonInputHardening.test.ts` — the five prototype-chain
+  supplier ids (`constructor`, `__proto__`, `toString`, `valueOf`,
+  `hasOwnProperty`), each proven both to not crash *and* to still read that
+  supplier's real costs; malformed cost-list containers blocked at comparison
+  level; eleven shapes of factory-bypassing `AdditionalCost` each marking one
+  supplier `INVALID` while the rest are still ranked; and ranking's own
+  negative-amount guard.
+- `comparison/SupplierLineTrace.test.ts` — MOQ, pack, MOQ-then-pack and
+  unconstrained quantities all surviving into the comparison result, both
+  currencies of a line value with its allocated share, the trace surviving
+  even when allocation is unavailable, and an explicit assertion that no
+  effective landed unit cost is produced.
+- `calculation/PrecisionBoundary.test.ts` — the whole-pack ceiling at the
+  34-digit boundary (including the case that used to resolve *below* what was
+  required and surface as a negative excess), large and high-minor-unit
+  allocations that now reconcile, and out-of-range amounts rejected as
+  `PrecisionEnvelopeExceededError` — including an assertion on the message
+  itself, that it names a precision limit and not a maximum amount.
+- `calculation/AdditionalCost.test.ts` — the shared validator applied to
+  objects that bypassed the factory entirely: negative amounts, both/neither
+  calculation basis, wrong runtime types, unknown enum values, non-boolean
+  flags, and the discount/percentage-base rules.
+- `calculation/CostCalculation.test.ts` — the exact-vs-settled discount check
+  (a discount exactly equal to its line is legal; one that genuinely exceeds a
+  line is not), exact shares published alongside settled ones, and the
+  inclusion-flag semantics in all four combinations.
+- `comparison/Ranking.test.ts` — percentage difference published at two
+  decimals half-up, with the exact ratio kept for audit and the monetary
+  values untouched by the rounding.
+
+## Round 2, Checkpoint 1 — authoritative total coverage
+
+`comparison/AuthoritativeTotal.test.ts` covers the rule that the commercial
+total is the exact total rounded once, and the invariance that depends on it.
+Every case below failed before the fix:
+
+- **Decomposition invariance.** `20.008` versus `10.004 + 10.004` as a cost,
+  as a surcharge, and as a discount; and `20%` versus `10% + 10%` as a cost
+  and as a discount, the latter also asserting the parallel (never sequential
+  19%) reading. Each pair must tie, not merely land close.
+- **Winner inversion.** Sixteen costs of `1.004` (exact 1,016.064) against one
+  cost of `16.02` (exact 1,016.02). The genuinely cheaper supplier wins;
+  before the fix the more expensive one did, because sixteen sub-kuruş tails
+  each rounded away.
+- **Order invariance.** The same five mixed entries — discount, two fixed
+  costs, a percentage duty, a surcharge — in forward and reverse order. Same
+  total, same rank, same winner, and the stronger claim that *every individual
+  component* settles to the same figure, because remainders break on `cost.id`
+  rather than array position.
+- **The identities, on every scenario.** `rankingAmount == settledLandedTotal
+  == roundHalfUp(exactCalculatedLandedTotal, minorUnit)`, the supplier-level
+  breakdown, the per-line breakdown across a three-line allocated supplier,
+  and sign safety: no entry crosses zero and a non-contributing entry settles
+  to exactly zero.
+- **Minor units of 0, 2 and 3 digits.** A 0-decimal currency where `0.5 + 0.5`
+  used to cost two whole units instead of one, half-up on the total at 0
+  digits, and a 3-decimal currency splitting `20.0008`.
+
+## Round 2, Checkpoint 2 — discount validation vs explanatory allocation
+
+`comparison/DiscountLineValidation.test.ts` covers the split between the
+mandatory per-line discount check and the optional per-line explanation. The
+first two groups failed before the fix — the supplier came out `COMPLETE` with
+a warning in both:
+
+- **An unrelated failure cannot mask a bad discount.** 900 TRY on a `pcs`
+  line and 100 TRY on a `kg` line, a 600 TRY `EQUAL_PER_LINE` discount (300
+  onto a 100 TRY line) and a `BY_QUANTITY` freight that cannot be weighted
+  across those units. `INVALID`, with no warning and no rank — whichever cost
+  is listed first, and whether the discount is fixed or a percentage.
+- **A discount whose own weighting cannot be established.** A non-zero
+  discount set to `BY_QUANTITY` across mixed units: `INVALID` with a
+  `DiscountAllocationValidationError`, explicitly *not* an
+  `ALLOCATION_UNAVAILABLE` warning. Its share of each line is unknowable, so
+  the per-line rule cannot be proven.
+- **A zero-value discount is not a financial problem.** `0` TRY and `0%`
+  discounts with the same unusable method: still `COMPLETE`, still ranked,
+  warning only — and a real discount on the same quote is still fully checked.
+- **A discount excluded from the compared total is still checked.** The same
+  600 TRY overdrawing discount with `includeInComparison: false`
+  (`alreadyIncludedInQuote: false`) reaches byte-for-byte the same `INVALID`
+  verdict as the included variant — it still lowers `merchandiseAfterDiscount`,
+  so it is real money at line level too. A discount with
+  `alreadyIncludedInQuote: true` is still skipped (it is already in the line
+  prices), and an excluded discount that fits every line stays `COMPLETE` with
+  its ranking amount untouched.
+- **A discount that fits stays valid.** Discount plus freight plus duty, fully
+  allocated, per-line values reconciling to the header; a discount exactly
+  equal to the line it sits on still legal; a discount that overdraws a line
+  with nothing else going wrong still `INVALID`.
+- **Order invariance of the verdict.** All six orderings of
+  discount/freight/duty, for both a bad discount (always `INVALID`) and a good
+  one (always the same ranking amount and rank). A bad discount cannot become
+  valid by moving a row.
+- **Explanatory allocation still fails softly.** The winner regression from
+  Checkpoint 1 re-asserted with the new pass in place — `COMPLETE`, rank 1,
+  `costAllocation` undefined, `ALLOCATION_UNAVAILABLE` — including the variant
+  where a well-formed discount is present, and the free-sample case.
+
+Supporting unit coverage: `calculation/Allocation.test.ts` for
+`exactAllocationShares` (unsettled shares, agreement with the exact shares
+`allocateAmount` publishes, sign propagation, identical unusable-weighting
+errors), and `calculation/CostCalculation.test.ts` for
+`validateDiscountLineAllocations` called directly — including that it ignores
+ordinary costs and non-contributing discounts, and reaches the same verdict in
+every cost ordering.
+
+## Round 2, Checkpoint 3 — monetary precision hardening
+
+`calculation/MonetaryPrecision.test.ts` covers the rule that an input the
+engine *accepts* settles to the mathematically correct minor unit. Eleven of
+its eighteen cases failed before the fix, each as a silently wrong cent rather
+than as an error.
+
+Every expectation is checked against `domain/monetary/exactReference.testSupport.ts`,
+a `BigInt` implementation that shares no code with the engine. That is the
+point of the file: verifying decimal.js arithmetic with decimal.js arithmetic
+would have reproduced the same premature rounding on both sides of the
+assertion and passed while the money was wrong.
+
+- **The auditor reproduction.** `12345678901234567890123456789012.34` at
+  `10.005%`. Exact duty `1235185174068518517406851851740.684617`, settling to
+  `...740.68`; the engine used to compute `...740.685` (the product rounded to
+  34 significant digits) and settle it to `...740.69`. Asserted on the
+  percentage alone, and carried through `calculateSupplierCosts` where the
+  landed total used to come out `...753.03` instead of `...753.02`.
+- **Large merchandise x percentage**, with the merchandise total itself built
+  from `unitPrice x quantity` rather than typed in.
+- **FX conversion.** A 32-significant-digit amount times a 17-digit rate — a
+  48-digit product, kept in full and settled correctly.
+- **FX and percentage together.** Quote currency converted to base, then
+  charged a duty; exact and settled figures both pinned.
+- **Addition and subtraction at the edge.** A cent-scale amount added to and
+  subtracted from a 34-digit one (both used to return the large amount
+  unchanged), and a five-term sum spanning 33 orders of magnitude.
+- **Minor units of 0, 2 and 3 digits**, including a 0-decimal currency whose
+  settled total must carry no decimal point at all.
+- **The envelope, pinned on both sides.** `integerDigits + minorUnit == 34`
+  accepted *and correct*; `== 35` rejected as `PrecisionEnvelopeExceededError`;
+  and the same amount accepted at 2 minor-unit digits but rejected at 3, to
+  show the boundary is about digits rather than about how much money it is.
+- **`exactCalculatedLandedTotal` really is exact.** Compared digit for digit
+  against the independent reference through the public `compareSuppliers` API,
+  together with the identity `rankingAmount == roundHalfUp(exact, minorUnit)`.
+
+## Round 2, Checkpoint 4 — non-negative per-line settlement
+
+`comparison/NonNegativeLineSettlement.test.ts` covers the rule that a line
+whose exact landed value is non-negative is never *displayed* negative. Six of
+its thirteen cases failed before the fix — as a `-0.01` on a valid product
+line, while the supplier total reconciled perfectly:
+
+- **The two reproductions.** `0.005 / 0.005 / 100` with a `0.015` discount,
+  and the stronger `0.004 / 10 / 10` with a `0.012` discount, both
+  `EQUAL_PER_LINE`. In the second the discount is valid at exact precision
+  (`0.004` per line, exactly the tiny line's worth) and the leftover kuruş
+  used to land on the line with no settled capacity. Per-line values are
+  pinned, not just the sign.
+- **Every allocation method.** `BY_QUANTITY` and `BY_MERCHANDISE_VALUE` over a
+  tiny line, and several valid discounts on one supplier — two fixed plus a
+  percentage — settling together.
+- **Positive effects create capacity.** Freight and a surcharge settled onto a
+  line before a discount is placed on it, so the line can absorb a kuruş it
+  could not have absorbed on merchandise alone.
+- **Minor units of 0, 2 and 3 digits**, including a 0-decimal currency where
+  the leftover yen skips the line that settled to zero (`0 / 99 / 100`).
+- **Order invariance.** Four mixed entries — two discounts, a cost, a
+  surcharge — forward, reversed and shuffled: same total, same *per-line*
+  values, because settlement breaks on `cost.id` rather than array position.
+  Plus two suppliers with identical costs entered in opposite orders, which
+  must tie at rank 1. And the complement: the breakdown still reads in the
+  order the costs were supplied, even though discounts are settled last.
+- **A 200-scenario seeded sweep.** Two to five lines drawn from a price pool
+  that includes sub-kuruş values, up to two positive effects and up to three
+  discounts across all three methods. Every completed settlement must satisfy
+  *both* invariants at once — no negative line, and lines summing to
+  `settledLandedTotal` — with the authoritative-total identity re-checked on
+  each. A generated discount may genuinely overdraw a line; that is Checkpoint
+  2's refusal, so those are skipped, and a floor on the number of completed
+  scenarios keeps the sweep from quietly becoming vacuous.
+
+## Round 2, Checkpoint 5 — integration coverage
+
+Checkpoints 1–4 each prove one rule against a deliberately minimal quote,
+which is the right shape for a regression test and the wrong shape for
+confidence that the four hold *together*. A supplier a user actually enters
+carries a MOQ and a pack and a foreign currency and a fixed freight and a
+percentage duty and a discount at once.
+
+`comparison/IntegratedScenarios.test.ts` exercises exactly that overlap, and
+only that — where a scenario would restate what a focused suite already pins,
+it asserts the combined behaviour instead. Expected totals are checked against
+`domain/monetary/exactReference.testSupport.ts`, the `BigInt` reference that
+shares no code with `decimal.ts`, so an integrated expectation cannot be
+satisfied by the implementation agreeing with itself.
+
+- **A — every feature at once, on two competing suppliers.** MOQ (105 → 200),
+  pack (30 → 32 in whole packs of 4), a USD quote against an EUR one, a fixed
+  freight, a percentage duty on the CIF-like base, a percentage discount,
+  per-line allocation and a ranking. The twice-constrained supplier still
+  wins. All four invariants — authoritative total, breakdown reconciliation,
+  per-line reconciliation, non-negative lines — are asserted on both suppliers
+  in one helper.
+- **B — a seven-decimal rate under a discount and a per-line split.** Line A
+  is worth `0.2838760533` TRY, and the `0.8516` discount's equal shares each
+  truncate to `0.28` with an identical remainder, so the leftover kuruş is
+  offered to line A first. Two variants pin both outcomes of the capacity
+  rule: with a duty settled onto the line first, the line *can* take it
+  (`0.28 + 0.03 − 0.29 = 0.02`); with the duty removed, it cannot and the
+  kuruş moves on. The exact total is matched digit for digit against the
+  reference.
+- **C — the two input orderings nothing else covered.** The cost-row ordering
+  is already pinned by `AuthoritativeTotal.test.ts` and
+  `NonNegativeLineSettlement.test.ts`. Quote-item order is proven to change
+  literally nothing (items match requirements by id). Requirement order is
+  proven to leave the exact total, the ranking amount, every settled cost
+  effect and the winner identical, while only the placement of a leftover
+  minor unit may move — and that movement is bounded at one minor unit per
+  line, asserted rather than described.
+- **D and E — the same quote, one field apart.** An unusable `BY_QUANTITY`
+  weighting is present in both, so the only thing deciding `COMPLETE` from
+  `INVALID` is whether the discount is legal — now with a foreign currency, a
+  MOQ and a percentage duty layered on, and a rival supplier whose rank moves
+  with the verdict. D: warned, ranked first, per-line shares absent and
+  nothing pretending otherwise. E: `INVALID`, unranked, `warnings` empty, in
+  all three cost orderings.
+
+`comparison/SettlementAssertionPropagation.test.ts` covers the fourth error
+category for Checkpoint 4's guards. By design no ordinary input can reach
+`assertNoLineSettlesNegative` — that is what makes it an assertion — so the
+allocation step is mocked to return a breakdown that still reconciles to the
+authoritative total but puts one line below zero. The subject is the
+*classification*: it must throw `SettlementReconciliationError` out of the
+pipeline, not return an `INVALID` supplier, because a broken engine must never
+look like a broken quote. The mock is isolated in its own file, like
+`SupplierEvaluation.errorPropagation.test.ts`.
+
 ## Future priority
 
 Phases 0–5 form Checkpoint 1 — the calculation and comparison engine is
-functionally complete and UI-independent. The next priority is an end-to-end
-engine review of Phases 0–5 together before Phase 6+ (UI) work begins. Beyond
-that, the highest testing priority remains financial calculation correctness
-and business-risk scenarios — since errors there directly affect the numbers
-users rely on to make purchasing decisions.
+functionally complete and UI-independent. Phases 0–5 have been through one
+independent adversarial audit and this remediation; the next step is a
+re-audit before Phase 6+ (UI) work begins. Beyond that, the highest testing
+priority remains financial calculation correctness and business-risk
+scenarios — since errors there directly affect the numbers users rely on to
+make purchasing decisions.

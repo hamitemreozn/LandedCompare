@@ -76,6 +76,83 @@ are not started until the current phase is accepted.
   the full calculation and comparison engine, independent of any UI. This is
   the natural point for an end-to-end engine review before UI work (Phase 6+)
   begins.
+- **Checkpoint 1 remediation** (done): hardening in response to an independent
+  adversarial audit of Phases 0–5. No phase was redesigned and no new feature
+  was added; the engine was corrected where it could have chosen the wrong
+  supplier or shown a user two monetary figures that disagreed. In summary:
+  allocation became an explanation layer that can be unavailable without
+  invalidating a supplier (previously a genuinely cheaper supplier was dropped
+  from the ranking); a single authoritative settled commercial total replaced
+  two competing settlement models, so the header, the ranking and the
+  breakdown are the same number; supplier-id lookups stopped resolving through
+  the prototype chain; additional costs are validated at the engine boundary
+  rather than trusted to have met the factory; `includeInComparison` and
+  `alreadyIncludedInQuote` were separated into the two different questions
+  they actually answer; the per-line MOQ/pack/excess trace now survives into
+  the comparison result; the per-line discount check compares like precision
+  with like; percentage differences are published at two decimals; and the two
+  precision cliffs (whole-pack ceiling, allocation shares) were fixed with
+  derived-precision arithmetic, with out-of-range amounts rejected by name
+  instead of surfacing as an internal assertion. Documentation was corrected
+  where it claimed guarantees the code did not provide. See
+  [Calculation Rules](CALCULATION_RULES.md) and [Testing](TESTING.md).
+- **Round 2, Checkpoint 1 — authoritative commercial total** (done): the
+  remediation above made the header and the breakdown agree, but it did so by
+  making the *sum of separately rounded components* authoritative. That was
+  the wrong direction: it let the way a user split the same money across rows
+  decide the answer — `20.008` ranked differently from `10.004 + 10.004`, and
+  a supplier that was genuinely more expensive could win. The rule is now
+  `settledLandedTotal = roundHalfUp(calculatedLandedTotal, minorUnit)`: the
+  exact total is rounded once and the displayed components are reconciled to
+  it, per sign so no entry crosses zero, with remainders broken on `cost.id`
+  so input ordering is irrelevant. Header, ranking and breakdown still agree.
+  Golden Scenario 6 now publishes 881.14, not 881.13. See
+  [Calculation Rules](CALCULATION_RULES.md), "Authoritative commercial total".
+- **Round 2, Checkpoint 2 — discount validation vs explanatory allocation**
+  (done): allocation was doing two unrelated jobs in one pass — proving a
+  discount does not overdraw a line (a financial rule) and producing a
+  per-line breakdown (an explanation). Because the financial check sat at the
+  *end* of that pass, an unrelated cost with an unusable weighting threw
+  first, the caller correctly read it as "no breakdown available", and the
+  discount was never checked: the supplier came out `COMPLETE` with a warning.
+  `validateDiscountLineAllocations` now runs first, on its own, outside the
+  warning-producing `try`, and a discount whose own weighting cannot be
+  established is a `DiscountAllocationValidationError` rather than a warning —
+  an unprovable financial check is not a passed one. See
+  [Calculation Rules](CALCULATION_RULES.md), "Discount validation vs
+  explanatory allocation".
+- **Round 2, Checkpoint 3 — monetary precision hardening** (done): the
+  settlement envelope promised that an accepted amount settles to the correct
+  minor unit, and it did not. decimal.js rounds every operation — `plus`
+  included — to the configured digit budget, so an accepted input could settle
+  to the wrong cent (`12345678901234567890123456789012.34` at `10.005%`
+  settled `.69` where the mathematics says `.68`), and a small amount added to
+  a large one could vanish. Every monetary operation now runs at a precision
+  derived from its own operands (`addExact`, `multiplyExact`,
+  `proportionalShare`, …). The envelope boundary is unchanged; what changed is
+  that it is now truthful inside it. See
+  [Calculation Rules](CALCULATION_RULES.md), "Precision envelope".
+- **Round 2, Checkpoint 4 — non-negative per-line settlement** (done): a line
+  whose exact landed value was non-negative could still be *displayed*
+  negative. Merchandise cents and discount cents were distributed
+  independently, so a line worth `0.004` settled its merchandise to `0.00`,
+  received the discount's leftover `0.01`, and showed `-0.01` while the
+  supplier total reconciled perfectly. Cents are now distributed in capacity
+  order — merchandise, then positive effects, then discounts — and a minor
+  unit a line cannot absorb moves to the next line that can. Nothing is
+  clamped. See [Calculation Rules](CALCULATION_RULES.md), "Non-negative
+  per-line settlement".
+- **Round 2, Checkpoint 5 — integration, documentation, full validation**
+  (done): no new product behaviour. Checkpoints 1–4 were re-verified
+  independently and then exercised *together*, because each had been proven
+  only against a deliberately minimal quote
+  (`comparison/IntegratedScenarios.test.ts`). Two coverage gaps were closed:
+  the input orderings a user controls other than the cost rows (requirement
+  order, quote-item order), and the classification of the per-line settlement
+  assertions as engine failures rather than supplier verdicts
+  (`comparison/SettlementAssertionPropagation.test.ts`). Documentation was
+  corrected where it had fallen behind the code. Effective landed unit cost
+  remains **not implemented**.
 - **Phase 6 — i18n**: Turkish and English UI support.
 - **Phase 7 — Local Persistence**: IndexedDB, autosave.
 - **Phase 8 — Projects & Requirements UI**.

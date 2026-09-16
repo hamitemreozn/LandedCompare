@@ -323,7 +323,7 @@ describe('evaluateSupplier — calculation validity', () => {
     expect(result.issues[0]?.message).toContain('InvalidCostDefinitionError')
   })
 
-  it('is INVALID for a zero-weight allocation base (all lines zero-priced, a shared cost to allocate)', () => {
+  it('stays COMPLETE with a warning when the allocation base is zero (all lines zero-priced)', () => {
     const requirements = [
       requirement('r1', { requiredQuantity: '1' }),
       requirement('r2', { requiredQuantity: '1' }),
@@ -354,12 +354,18 @@ describe('evaluateSupplier — calculation validity', () => {
       exchangeRateTable: baseRateTable('TRY'),
       minorUnit,
     })
-    expect(result.status).toBe('INVALID')
-    expect(result.issues[0]?.code).toBe('CALCULATION_ERROR')
-    expect(result.issues[0]?.message).toContain('InvalidAllocationBaseError')
+    // The landed total is 100 TRY of freight on zero-value goods. That total
+    // is correct; only the per-line explanation is impossible.
+    expect(result.status).toBe('COMPLETE')
+    expect(result.issues).toEqual([])
+    expect(result.rankingAmount?.toDecimalString()).toBe('100')
+    expect(result.costAllocation).toBeUndefined()
+    expect(result.warnings).toHaveLength(1)
+    expect(result.warnings[0]?.code).toBe('ALLOCATION_UNAVAILABLE')
+    expect(result.warnings[0]?.reason).toBe('INVALID_ALLOCATION_BASE')
   })
 
-  it('is INVALID for BY_QUANTITY allocation across requirements with mixed comparison units', () => {
+  it('stays COMPLETE with a warning for BY_QUANTITY across mixed comparison units', () => {
     const requirements = [
       requirement('r1', { requiredQuantity: '1', comparisonUnit: 'pcs' }),
       requirement('r2', { requiredQuantity: '1', comparisonUnit: 'kg' }),
@@ -390,8 +396,11 @@ describe('evaluateSupplier — calculation validity', () => {
       exchangeRateTable: baseRateTable('TRY'),
       minorUnit,
     })
-    expect(result.status).toBe('INVALID')
-    expect(result.issues[0]?.code).toBe('CALCULATION_ERROR')
-    expect(result.issues[0]?.message).toContain('IncompatibleAllocationUnitsError')
+    expect(result.status).toBe('COMPLETE')
+    expect(result.issues).toEqual([])
+    expect(result.rankingAmount?.toDecimalString()).toBe('70')
+    expect(result.costAllocation).toBeUndefined()
+    expect(result.warnings[0]?.code).toBe('ALLOCATION_UNAVAILABLE')
+    expect(result.warnings[0]?.reason).toBe('INCOMPATIBLE_ALLOCATION_UNITS')
   })
 })

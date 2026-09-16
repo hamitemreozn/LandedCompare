@@ -1,9 +1,46 @@
 import { parseCurrencyCode } from '../domain/monetary/CurrencyCode'
+import { DECIMAL_PRECISION } from '../domain/monetary/decimal'
+import type { Money } from '../domain/monetary/Money'
 
 export class InvalidMinorUnitError extends Error {
   constructor(message: string) {
     super(message)
     this.name = 'InvalidMinorUnitError'
+  }
+}
+
+/**
+ * The amount is too large to be settled exactly at this currency's minor
+ * unit: representing it would need more significant digits than the decimal
+ * configuration provides (`DECIMAL_PRECISION`), so every sum built from the
+ * settled value — an allocation reconciling to its total, a settled landed
+ * total reconciling to its breakdown — would be silently short.
+ *
+ * This is a **precision** boundary derived from the engine's own
+ * configuration, exactly like `MAX_MINOR_UNIT_DIGITS` below. It is **not** a
+ * commercial maximum amount; this engine invents no such limit. It is also
+ * not an internal-correctness failure: the arithmetic did not go wrong, the
+ * input is simply outside the range this engine can settle exactly, which is
+ * why it is a named, explainable error rather than an invariant assertion.
+ */
+export class PrecisionEnvelopeExceededError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'PrecisionEnvelopeExceededError'
+  }
+}
+
+/**
+ * Rejects an amount that cannot be settled exactly at `minorUnit`. Called at
+ * every settlement boundary (commercial total, allocation) *before* any
+ * rounding or summation, so the failure names the input rather than
+ * surfacing later as an allocation that will not add up.
+ */
+export function assertSettleableAtMinorUnit(amount: Money, minorUnit: number, subject: string): void {
+  if (amount.exceedsSettlementPrecision(minorUnit)) {
+    throw new PrecisionEnvelopeExceededError(
+      `${subject} ${amount.toDecimalString()} ${amount.currency} cannot be settled exactly at ${String(minorUnit)} minor-unit digit(s): it needs more than the ${String(DECIMAL_PRECISION)} significant digits this engine calculates with. This is a precision limit derived from the decimal configuration, not a maximum amount.`,
+    )
   }
 }
 

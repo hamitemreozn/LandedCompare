@@ -1,4 +1,5 @@
 import type { Project } from '../domain/project/Project'
+import type { AdditionalCost } from '../calculation/AdditionalCost'
 import type { ExchangeRateTable } from '../calculation/ExchangeRateTable'
 
 /**
@@ -15,6 +16,7 @@ export type ComparisonStructuralIssueCode =
   | 'ORPHAN_QUOTE'
   | 'DUPLICATE_QUOTE_FOR_SUPPLIER'
   | 'BASE_CURRENCY_MISMATCH'
+  | 'INVALID_SUPPLIER_COST_LIST'
 
 export class InvalidComparisonInputError extends Error {
   readonly code: ComparisonStructuralIssueCode
@@ -36,6 +38,7 @@ export class InvalidComparisonInputError extends Error {
 export function validateComparisonStructure(
   project: Project,
   exchangeRateTable: ExchangeRateTable,
+  costsBySupplierId?: Readonly<Record<string, readonly AdditionalCost[]>>,
 ): void {
   if (project.baseCurrency !== exchangeRateTable.baseCurrency) {
     throw new InvalidComparisonInputError(
@@ -97,6 +100,51 @@ export function validateComparisonStructure(
       `More than one quote references the same supplier, which is ambiguous: ${suppliersWithMultipleQuotes.join(', ')}`,
     )
   }
+
+  assertSupplierCostListsAreArrays(project, costsBySupplierId)
+}
+
+/**
+ * A supplier's cost list must be an array if it is present at all. A supplier
+ * with no entry is `[]` — that is normal and stays valid.
+ *
+ * This is a **comparison-level** failure rather than a per-supplier `INVALID`
+ * result: `costsBySupplierId` is an argument to `compareSuppliers`, exactly
+ * like `project`, so a malformed value in it says the caller's input
+ * container is broken, not that one supplier's commercial data is untrusted.
+ * Ranking the remaining suppliers as if nothing happened would present a
+ * comparison built on an input the engine could not read.
+ */
+function assertSupplierCostListsAreArrays(
+  project: Project,
+  costsBySupplierId?: Readonly<Record<string, readonly AdditionalCost[]>>,
+): void {
+  if (costsBySupplierId === undefined) {
+    return
+  }
+  for (const supplier of project.suppliers) {
+    if (!Object.hasOwn(costsBySupplierId, supplier.id)) {
+      continue
+    }
+    const costs: unknown = costsBySupplierId[supplier.id]
+    if (!Array.isArray(costs)) {
+      throw new InvalidComparisonInputError(
+        'INVALID_SUPPLIER_COST_LIST',
+        `Additional costs for supplier "${supplier.id}" must be an array (got ${describeCostList(costs)})`,
+      )
+    }
+  }
+}
+
+function describeCostList(value: unknown): string {
+  if (value === null || value === undefined) {
+    return String(value)
+  }
+  if (typeof value !== 'object') {
+    return typeof value
+  }
+  const constructor: unknown = (value as { constructor?: unknown }).constructor
+  return typeof constructor === 'function' ? constructor.name : 'object'
 }
 
 function assertUniqueIds(

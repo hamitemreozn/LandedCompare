@@ -14,7 +14,13 @@ import { evaluateSupplier, type SupplierEvaluationResult } from './SupplierEvalu
 export interface SupplierComparisonInput {
   readonly project: Project
   readonly exchangeRateTable: ExchangeRateTable
-  /** Additional costs for a supplier's quote. A supplier with no entry is treated as `[]` — not copied from any project-level default. */
+  /**
+   * Additional costs for a supplier's quote. A supplier with no entry is
+   * treated as `[]` — not copied from any project-level default, and never
+   * read off the prototype chain (see `costsForSupplier`). A present entry
+   * that is not an array is a malformed input container and blocks the
+   * comparison.
+   */
   readonly costsBySupplierId?: Readonly<Record<string, readonly AdditionalCost[]>>
   readonly minorUnitOverrides?: MinorUnitOverrides
 }
@@ -23,7 +29,10 @@ export interface SupplierComparisonInput {
 export interface SupplierComparisonEntry extends SupplierEvaluationResult {
   readonly rank?: number
   readonly differenceFromLowest?: Money
+  /** Two decimal places, half-up — the figure to show. */
   readonly percentageDifferenceFromLowest?: Percentage
+  /** The same ratio unrounded, for audit only. */
+  readonly exactPercentageDifferenceFromLowest?: Percentage
 }
 
 export interface SupplierComparisonResult {
@@ -47,15 +56,17 @@ export interface SupplierComparisonResult {
  *
  * Throws `InvalidComparisonInputError` for project-wide structural problems
  * (empty requirements, duplicate ids, zero required quantity, an orphaned or
- * duplicated quote, a base-currency mismatch) that make the comparison
- * itself meaningless. Anything else unexpected (in particular
- * `AllocationInvariantError`) also propagates — see
- * docs/CALCULATION_RULES.md, "Error capture boundary".
+ * duplicated quote, a base-currency mismatch, a malformed per-supplier cost
+ * list) that make the comparison itself meaningless. Internal assertions
+ * (`AllocationInvariantError`, `SettlementReconciliationError`,
+ * `RankingInvariantError`, `QuantityResolutionInvariantError`) and anything
+ * else unexpected also propagate — see docs/CALCULATION_RULES.md, "Error
+ * capture boundary".
  */
 export function compareSuppliers(input: SupplierComparisonInput): SupplierComparisonResult {
   const { project, exchangeRateTable, costsBySupplierId, minorUnitOverrides } = input
 
-  validateComparisonStructure(project, exchangeRateTable)
+  validateComparisonStructure(project, exchangeRateTable, costsBySupplierId)
   const minorUnit = resolveMinorUnit(project.baseCurrency, minorUnitOverrides)
 
   const quotesBySupplierId = groupQuotesBySupplierId(project.quotes)
@@ -65,10 +76,9 @@ export function compareSuppliers(input: SupplierComparisonInput): SupplierCompar
       supplier,
       quotesForSupplier: quotesBySupplierId.get(supplier.id) ?? [],
       requirements: project.requirements,
-      costs: costsBySupplierId?.[supplier.id] ?? [],
+      costs: costsForSupplier(costsBySupplierId, supplier.id),
       exchangeRateTable,
       minorUnit,
-      minorUnitOverrides,
     }),
   )
   const evaluations = new Map(evaluationList.map((evaluation) => [evaluation.supplierId, evaluation]))
@@ -87,6 +97,7 @@ export function compareSuppliers(input: SupplierComparisonInput): SupplierCompar
       rank: rankInfo?.rank,
       differenceFromLowest: rankInfo?.differenceAmount,
       percentageDifferenceFromLowest: rankInfo?.percentageDifference,
+      exactPercentageDifferenceFromLowest: rankInfo?.exactPercentageDifference,
     }
   })
 
@@ -104,6 +115,29 @@ export function compareSuppliers(input: SupplierComparisonInput): SupplierCompar
     lowestSupplierIds: ranking.lowestSupplierIds,
     insights,
   }
+}
+
+/**
+ * A supplier's own cost list, looked up **without** touching the prototype
+ * chain. `costsBySupplierId[supplier.id]` reads inherited members for an id
+ * like `constructor`, `toString` or `__proto__`, and what comes back is a
+ * function or `Object.prototype` — not `undefined`, so `?? []` does not save
+ * it, and the whole comparison then died on "costs is not iterable". Supplier
+ * ids are user-controlled text, so a user-controlled identifier must never
+ * resolve data through inheritance.
+ *
+ * A missing key is still an ordinary, valid "no costs for this supplier". A
+ * present-but-malformed value has already been rejected by
+ * `validateComparisonStructure`.
+ */
+function costsForSupplier(
+  costsBySupplierId: Readonly<Record<string, readonly AdditionalCost[]>> | undefined,
+  supplierId: string,
+): readonly AdditionalCost[] {
+  if (costsBySupplierId === undefined || !Object.hasOwn(costsBySupplierId, supplierId)) {
+    return []
+  }
+  return costsBySupplierId[supplierId] ?? []
 }
 
 function isRankableComplete(

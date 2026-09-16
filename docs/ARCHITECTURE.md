@@ -96,6 +96,21 @@ that error. Both types are immutable and currency-unsafe operations
 (combining `Money` in two different currencies) throw
 `CurrencyMismatchError` rather than silently producing a wrong number.
 
+**Configured once is not the whole story.** decimal.js rounds *every*
+operation — including `plus` — to the configured significant-digit budget, so
+a single global precision is a ceiling on intermediate arithmetic, not a
+guarantee about it: a cent added to a thirty-digit total used to disappear.
+`domain/monetary/decimal.ts` therefore exposes a small derived-precision layer
+(`addExact`, `subtractExact`, `multiplyExact`, `divideByPowerOfTenExact`,
+`divideCeil`, `proportionalShare`), each evaluated on a constructor whose
+precision is computed from its own operands, and `Money`/`Quantity` route
+their arithmetic through it rather than calling decimal.js operators directly.
+The global `DECIMAL_PRECISION` keeps a different job: it defines the
+**settlement envelope**, the range of amounts this engine promises to settle
+exactly at a currency's minor unit (`exceedsSettlementPrecision`). Derived
+precision makes the arithmetic inside that envelope truthful; it does not
+widen it. See [Calculation Rules](CALCULATION_RULES.md), "Precision envelope".
+
 ### Serialization
 
 `Money` and `Quantity` are never persisted or passed around as decimal.js
@@ -167,7 +182,7 @@ src/
     CurrencyMinorUnit.ts  # minimal, explicit minor-unit resolution
     AdditionalCost.ts     # cost/discount/surcharge model + construction-time validation
     Allocation.ts         # sign-safe largest-remainder allocator
-    CostCalculation.ts    # staged evaluation -> landed total; cost allocation
+    CostCalculation.ts    # staged evaluation -> landed total; discount validation; cost allocation
 ```
 
 The pipeline this completes:
@@ -176,7 +191,8 @@ The pipeline this completes:
 resolved quantity (Phase 3)
   -> merchandise calculation (Phase 2)
   -> discounts -> fixed costs -> percentage costs -> surcharges
-  -> shared-cost allocation
+  -> discount line validation (mandatory)
+  -> shared-cost allocation (explanatory)
   -> supplier cost breakdown + calculated landed total
 ```
 
@@ -194,15 +210,36 @@ express, and is validated at construction rather than discovered at
 calculation time. See [Calculation Rules](CALCULATION_RULES.md) for the
 stage/base table.
 
-### One settlement boundary
+### One settlement stage
 
-Everything up to and including the landed total stays at full exact-decimal
-precision, continuing the Phase 1/2 rule. Minor-unit rounding happens at
-exactly one place — splitting a shared amount across lines — because a
-per-line share of 33.3333… is not a payable figure. The allocator uses
-largest-remainder distribution on the amount's *magnitude* and re-applies the
-sign afterwards, so a discount and a freight cost travel the same code path,
-and `sum(allocations) === settledAmount` holds exactly for both signs.
+Every intermediate value — bases, percentage results, the exact landed total —
+stays at full exact-decimal precision, continuing the Phase 1/2 rule.
+
+Settlement then happens at exactly **one stage**, once every cost effect is
+known, and produces the whole set of commercial figures from a single
+`minorUnit` decision: the settled landed total, the settled merchandise total,
+each entry's settled effect, and the per-line allocations. Allocation reads
+that scale from the cost result rather than resolving its own — two
+independently resolved scales are how a header and a breakdown drift apart.
+
+`settledLandedTotal = roundHalfUp(calculatedLandedTotal, minorUnit)` is the
+authoritative commercial total: **anchor the total, reconcile the parts.** The
+components are then distributed to add back up to it, rather than the total
+being assembled from separately rounded components. That direction matters
+because `round(a) + round(b)` is not `round(a + b)`, so summing rounded parts
+made the answer depend on how a user split the same money across rows —
+`20.008` ranked differently from `10.004 + 10.004`, and a supplier that was
+genuinely more expensive could win. Reconciliation runs per sign (costs on one
+side, discounts on the other) so no entry can be pushed across zero, and
+remainders break on the semantic `cost.id` so input ordering changes nothing.
+See [Calculation Rules](CALCULATION_RULES.md), "Authoritative commercial
+total".
+
+The allocator uses largest-remainder distribution on the amount's *magnitude*
+and re-applies the sign afterwards, so a discount and a freight cost travel
+the same code path, and `sum(allocations) === settledAmount` holds exactly for
+both signs — for amounts inside the settlement precision envelope, which is
+checked explicitly rather than assumed.
 
 ### Domain model change
 
@@ -263,22 +300,59 @@ Requirements + Supplier + Quote
 
 See [Calculation Rules](CALCULATION_RULES.md) for the full status model,
 ranking-boundary rationale, tie/dense-ranking rules, and the insight code
-table. Two decisions are worth calling out architecturally:
+table. Four decisions are worth calling out architecturally:
 
-- **No new rounding system.** `rankingAmount` reuses Phase 4's
-  `Money.roundToMinorUnit` and `CurrencyMinorUnit.resolveMinorUnit`
-  unchanged. The exact `calculatedLandedTotal` is preserved alongside it on
-  every `COMPLETE` supplier result, so nothing about Phase 4's "no premature
-  rounding" principle is walked back — a second, explicitly-named settlement
-  point was added for comparison specifically, matching the pattern
-  Phase 4 already established for allocation.
+- **No new rounding system.** `rankingAmount` *is* Phase 4's
+  `settledLandedTotal`, built from `Money.roundToMinorUnit` and
+  `CurrencyMinorUnit.resolveMinorUnit` unchanged. The exact
+  `calculatedLandedTotal` is preserved alongside it on every `COMPLETE`
+  supplier result, so nothing about the "no premature rounding" principle is
+  walked back — settlement is one named stage, not rounding sprinkled through
+  the arithmetic.
 - **Error mapping is a closed allow-list, not a catch-all.** Expected
   Phase 1–4 domain errors are mapped to an `INVALID` supplier result by an
   explicit list of error classes in `SupplierEvaluation.ts`; anything not on
-  that list (in particular Phase 4's `AllocationInvariantError`) propagates
+  that list — in particular the internal assertions
+  (`AllocationInvariantError`, `SettlementReconciliationError`,
+  `RankingInvariantError`, `QuantityResolutionInvariantError`) — propagates
   unchanged. This is a deliberate architectural boundary: a per-supplier
   result must never be able to hide an engine-correctness bug behind a
   plausible business explanation.
+- **Allocation failure is not supplier failure.** Per-line allocation
+  explains a landed total; it does not produce one. An unusable weighting
+  leaves the supplier `COMPLETE` with its total and rank intact and publishes
+  a non-blocking `ALLOCATION_UNAVAILABLE` warning, on a list kept separate
+  from `issues` so a consumer cannot mistake one for the other. The previous
+  coupling dropped a genuinely cheaper supplier out of the ranking because its
+  freight could not be split across lines measured in different units.
+- **…but one use of allocation is validation, and it runs on its own.**
+  Whether a discount takes more off a line than that line is worth is a
+  financial rule, not a presentation detail. `validateDiscountLineAllocations`
+  therefore runs *before* the explanatory pass and outside its warning-
+  producing `try`, reusing the allocator's own weighting via
+  `exactAllocationShares` rather than duplicating it. When both jobs shared
+  one pass, an unrelated cost's unusable weighting threw first and the
+  discount rule was silently skipped — so which cost failed first decided
+  whether a financial rule was enforced. See "Discount validation vs
+  explanatory allocation" in docs/CALCULATION_RULES.md.
+- **Settlement order is not display order.** The per-line split has one
+  constraint the supplier-level split does not: a line the user can see must
+  not be shown below zero. Cents are therefore distributed in *capacity order*
+  — settled merchandise, then positive effects, then discounts — with each
+  line carrying a running capacity that a discount may not exceed, and a
+  minor unit a line cannot take moving to the next line in the same
+  largest-remainder order. Nothing is clamped, so the allocations still sum to
+  the settled effect the authoritative total counted. `byEntry` and `byLine`
+  still come back in the order the costs and lines were supplied: the
+  calculation order is internal. Two assertions in `SupplierEvaluation.ts`
+  guard the result rather than assume it — the lines reconcile to the total,
+  and none of them is negative. See "Non-negative per-line settlement" in
+  docs/CALCULATION_RULES.md.
+- **Inputs to `compareSuppliers` are validated, not trusted.** Supplier ids
+  are user-typed text used as object keys, so lookups never resolve through
+  the prototype chain; `AdditionalCost` is a plain interface that anything
+  structurally similar satisfies, so the engine runs the same validation the
+  factory does. Both gaps were whole-comparison crashes, not edge cases.
 
 ### Domain model — unchanged
 
@@ -291,14 +365,17 @@ exactly like every calculated value before it in this codebase.
 
 ### Effective landed unit cost — still not implemented
 
-Phase 4 left this metric to the results phase. Phase 5 does not implement it
-either: doing so correctly would require either reversing Phase 2's
-once-per-quote currency conversion or inventing a new proration rule to
-spread a converted total back across lines — both are business decisions
-outside this phase's approved scope. See
-[Calculation Rules](CALCULATION_RULES.md) for the full reasoning. It remains
-a deferred, open item, not something a future UI layer should compute
-silently on its own.
+Phase 4 left this metric to the results phase, and it is still **not**
+implemented. What changed is that the obstacle is no longer structural: the
+per-line trace now carries both quantities, the settled per-line merchandise
+value in the base currency, and the allocated cost share, so the inputs exist.
+
+What remains open is the part that was never a plumbing problem — whether the
+denominator is the quantity the buyer *needed* or the quantity a MOQ forced
+them to *buy*. Those are different business questions with different answers.
+See [Calculation Rules](CALCULATION_RULES.md). It is a deferred, open product
+decision, and not something a future UI layer should compute silently on its
+own.
 
 ## Forward-looking principles (not yet implemented)
 

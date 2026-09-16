@@ -137,5 +137,78 @@ describe('rankCompleteSuppliers', () => {
     expect(zero.percentageDifference?.toDecimalString()).toBe('0')
     expect(positive.differenceAmount.toDecimalString()).toBe('50')
     expect(positive.percentageDifference).toBeUndefined()
+    expect(positive.exactPercentageDifference).toBeUndefined()
+  })
+})
+
+/**
+ * A percentage difference is a figure a buyer reads and repeats, not an
+ * intermediate value. The audit found 3 -> 4 publishing
+ * "33.33333333333333333333333333333333%", which is a calculation artefact
+ * escaping as a commercial statement.
+ */
+describe('percentage difference is published at two decimals, half-up', () => {
+  it('shortens a repeating ratio', () => {
+    const result = rankCompleteSuppliers([
+      { supplierId: 'a', rankingAmount: ry('3') },
+      { supplierId: 'b', rankingAmount: ry('4') },
+    ])
+    const b = result.ranked.find((entry) => entry.supplierId === 'b')!
+    expect(b.percentageDifference?.toDecimalString()).toBe('33.33')
+  })
+
+  it('keeps the exact ratio available for audit', () => {
+    const result = rankCompleteSuppliers([
+      { supplierId: 'a', rankingAmount: ry('3') },
+      { supplierId: 'b', rankingAmount: ry('4') },
+    ])
+    const b = result.ranked.find((entry) => entry.supplierId === 'b')!
+    expect(b.exactPercentageDifference?.toDecimalString()).toMatch(/^33\.3333333333/)
+  })
+
+  it('rounds half-up at the third decimal', () => {
+    // 6.255% of the lowest amount: 1000 -> 1062.55 is 6.255%, published 6.26.
+    const result = rankCompleteSuppliers([
+      { supplierId: 'a', rankingAmount: ry('1000') },
+      { supplierId: 'b', rankingAmount: ry('1062.55') },
+    ])
+    const b = result.ranked.find((entry) => entry.supplierId === 'b')!
+    expect(b.exactPercentageDifference?.toDecimalString()).toBe('6.255')
+    expect(b.percentageDifference?.toDecimalString()).toBe('6.26')
+  })
+
+  it('never publishes more than two decimals, for any pair', () => {
+    const result = rankCompleteSuppliers([
+      { supplierId: 'a', rankingAmount: ry('7') },
+      { supplierId: 'b', rankingAmount: ry('11') },
+      { supplierId: 'c', rankingAmount: ry('13.37') },
+      { supplierId: 'd', rankingAmount: ry('999.99') },
+    ])
+    for (const entry of result.ranked) {
+      const published = entry.percentageDifference?.toDecimalString() ?? '0'
+      const decimals = published.split('.')[1] ?? ''
+      expect(decimals.length).toBeLessThanOrEqual(2)
+      expect(published).not.toMatch(/Infinity|NaN/)
+    }
+  })
+
+  it('does not let rounding touch the monetary difference', () => {
+    const result = rankCompleteSuppliers([
+      { supplierId: 'a', rankingAmount: ry('3') },
+      { supplierId: 'b', rankingAmount: ry('4') },
+    ])
+    const b = result.ranked.find((entry) => entry.supplierId === 'b')!
+    expect(b.differenceAmount.toDecimalString()).toBe('1')
+    expect(b.rankingAmount.toDecimalString()).toBe('4')
+  })
+
+  it('reports a zero-versus-zero tie as 0%', () => {
+    const result = rankCompleteSuppliers([
+      { supplierId: 'a', rankingAmount: ry('0') },
+      { supplierId: 'b', rankingAmount: ry('0') },
+    ])
+    for (const entry of result.ranked) {
+      expect(entry.percentageDifference?.toDecimalString()).toBe('0')
+    }
   })
 })

@@ -82,6 +82,7 @@ describe('Phase 4 golden scenario — integrated landed total', () => {
       merchandiseTotal: merchandise.baseCurrencyMerchandiseTotal,
       costs,
       exchangeRateTable: rateTable,
+      minorUnit: 2,
     })
     return { merchandise, costResult }
   }
@@ -210,6 +211,7 @@ describe('Phase 4 golden scenario — allocation rounding', () => {
         }),
       ],
       exchangeRateTable: rateTable,
+      minorUnit: 2,
     })
     return allocateSupplierCosts({ costResult, targets, exchangeRateTable: rateTable })
   }

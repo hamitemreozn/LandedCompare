@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { compareSuppliers } from './SupplierComparison'
 import { createAdditionalCost } from '../calculation/AdditionalCost'
+import { Percentage } from '../calculation/Percentage'
 import { ExchangeRate } from '../calculation/ExchangeRate'
 import { ExchangeRateTable } from '../calculation/ExchangeRateTable'
 import { Money } from '../domain/monetary/Money'
@@ -402,5 +403,170 @@ describe('Integration — multi-currency complete supplier comparison', () => {
     expect(eurSupplier.rank).toBe(1)
     expect(usdSupplier.rank).toBe(2)
     expect(result.baseCurrency).toBe('TRY')
+  })
+})
+
+/**
+ * Golden Scenario 6 — the remainder scenario.
+ *
+ * Every other golden scenario in this suite divides cleanly, which is exactly
+ * how a settlement bug hides. This one is built so that *both* settlement
+ * boundaries leave a remainder to distribute, and so that rounding the exact
+ * total gives a different answer from summing separately rounded parts. Every
+ * figure below is hand-computed.
+ *
+ * Base TRY, quote USD at 1 USD = 40.55 TRY, three lines of 3 pcs:
+ *
+ *   A: 3 x 1.011 =  3.033 USD -> 122.98815 TRY
+ *   B: 3 x 2.022 =  6.066 USD -> 245.97630 TRY
+ *   C: 3 x 3.033 =  9.099 USD -> 368.96445 TRY
+ *   merchandise   18.198 USD -> 737.92890 TRY   settled 737.93
+ *   discount 5% of merchandise      -  36.896445
+ *   freight (fixed, equal per line) + 100
+ *   duty 10% of 701.032455 + 100    +  80.1032455
+ *   exact landed total                881.1357005  settled 881.14
+ *
+ * The total is rounded once, so the answer is 881.14. The components are then
+ * reconciled to it: the two sides of the ledger settle to 180.11 (costs) and
+ * 36.90 (discounts), a difference of 143.21, which is exactly 881.14 - 737.93.
+ * Within the cost side, largest remainder gives the spare kuruş to duty —
+ * 80.1032455 has the larger truncated-away fraction, and the fixed 100 TRY
+ * freight the user typed stays 100.00.
+ *
+ * Summing separately rounded parts instead would publish 881.13, one kuruş
+ * below the true total, and would make this quote's ranking depend on how the
+ * same money was split across rows. See docs/CALCULATION_RULES.md,
+ * "Authoritative commercial total".
+ */
+describe('Golden Scenario 6 — settlement with a real remainder', () => {
+  const rateTable = ExchangeRateTable.create('TRY', [ExchangeRate.fromString('USD', 'TRY', '40.55')])
+
+  function run() {
+    const requirements = [
+      requirement('A', { requiredQuantity: '3' }),
+      requirement('B', { requiredQuantity: '3' }),
+      requirement('C', { requiredQuantity: '3' }),
+    ]
+    const p = project({
+      baseCurrency: 'TRY',
+      requirements,
+      suppliers: [supplier('s1')],
+      quotes: [
+        quote({
+          id: 'q1',
+          supplierId: 's1',
+          currency: 'USD',
+          items: [
+            quoteItem({ id: 'a', requirementId: 'A', price: '1.011', currency: 'USD' }),
+            quoteItem({ id: 'b', requirementId: 'B', price: '2.022', currency: 'USD' }),
+            quoteItem({ id: 'c', requirementId: 'C', price: '3.033', currency: 'USD' }),
+          ],
+        }),
+      ],
+    })
+    return compareSuppliers({
+      project: p,
+      exchangeRateTable: rateTable,
+      costsBySupplierId: {
+        s1: [
+          createAdditionalCost({
+            id: 'discount',
+            kind: 'DISCOUNT',
+            category: 'OTHER',
+            percentage: { rate: Percentage.fromString('5'), base: 'MERCHANDISE' },
+          }),
+          createAdditionalCost({
+            id: 'freight',
+            kind: 'COST',
+            category: 'FREIGHT',
+            fixedAmount: Money.fromString('100', 'TRY'),
+            allocationMethod: 'EQUAL_PER_LINE',
+          }),
+          createAdditionalCost({
+            id: 'duty',
+            kind: 'COST',
+            category: 'DUTY',
+            percentage: {
+              rate: Percentage.fromString('10'),
+              base: 'MERCHANDISE_PLUS_FREIGHT_INSURANCE',
+            },
+          }),
+        ],
+      },
+    })
+  }
+
+  it('publishes the exact total rounded once, and ranks on it', () => {
+    const entry = run().supplierResults[0]!
+    expect(entry.exactCalculatedLandedTotal?.toDecimalString()).toBe('881.1357005')
+    expect(entry.rankingAmount?.toDecimalString()).toBe('881.14')
+    expect(entry.rankingAmount?.toDecimalString()).toBe(
+      entry.exactCalculatedLandedTotal?.roundToMinorUnit(2).toDecimalString(),
+    )
+    expect(entry.costResult?.settledLandedTotal.toDecimalString()).toBe('881.14')
+  })
+
+  it('settles the merchandise lines to the merchandise total with a leftover of two kuruş', () => {
+    const entry = run().supplierResults[0]!
+    expect(entry.merchandiseTotal?.toDecimalString()).toBe('737.9289')
+    expect(entry.merchandiseRankingAmount?.toDecimalString()).toBe('737.93')
+    expect(entry.lines?.map((line) => line.exactBaseCurrencyMerchandiseValue.toDecimalString())).toEqual([
+      '122.98815',
+      '245.9763',
+      '368.96445',
+    ])
+    // Truncated shares are 122.98 / 245.97 / 368.96 = 737.91; the two spare
+    // kuruş go to the two largest truncated-away fractions.
+    expect(entry.lines?.map((line) => line.settledMerchandiseValue.toDecimalString())).toEqual([
+      '122.99',
+      '245.98',
+      '368.96',
+    ])
+  })
+
+  it('distributes the equal-per-line freight with a one-kuruş leftover', () => {
+    const entry = run().supplierResults[0]!
+    const freight = entry.costAllocation?.byEntry.find((e) => e.entryId === 'freight')!
+    expect(freight.allocations.map((a) => a.amount.toDecimalString())).toEqual([
+      '33.34',
+      '33.33',
+      '33.33',
+    ])
+  })
+
+  it('reconciles each cost entry to the amount the authoritative total counted', () => {
+    const entry = run().supplierResults[0]!
+    const settled = Object.fromEntries(
+      entry.costResult!.entries.map((e) => [e.id, e.settledEffect.toDecimalString()]),
+    )
+    // Costs 100.00 + 80.11 = 180.11, discounts 36.90; 737.93 + 180.11 - 36.90 = 881.14.
+    expect(settled).toEqual({ discount: '-36.9', freight: '100', duty: '80.11' })
+
+    const fromComponents = entry.costResult!.entries.reduce(
+      (sum, e) => sum.add(e.settledEffect),
+      entry.costResult!.settledMerchandiseTotal,
+    )
+    expect(fromComponents.toDecimalString()).toBe('881.14')
+  })
+
+  it('adds up: per-line landed values reproduce the header exactly', () => {
+    const entry = run().supplierResults[0]!
+    // Line C carries duty's spare kuruş: 40.06 rather than 40.05.
+    expect(entry.lines?.map((line) => line.allocatedCostTotal?.toDecimalString())).toEqual([
+      '40.54',
+      '47.73',
+      '54.94',
+    ])
+    expect(entry.lines?.map((line) => line.settledLandedValue?.toDecimalString())).toEqual([
+      '163.53',
+      '293.71',
+      '423.9',
+    ])
+    const total = entry.lines!.reduce(
+      (sum, line) => sum.add(line.settledLandedValue!),
+      Money.zero('TRY'),
+    )
+    expect(total.toDecimalString()).toBe('881.14')
+    expect(total.toDecimalString()).toBe(entry.rankingAmount?.toDecimalString())
   })
 })

@@ -1,4 +1,8 @@
-import { parseExactDecimal, type Decimal } from '../domain/monetary/decimal'
+import {
+  divideByPowerOfTenExact,
+  parseExactDecimal,
+  type Decimal,
+} from '../domain/monetary/decimal'
 import type { Money } from '../domain/monetary/Money'
 
 export class InvalidPercentageError extends Error {
@@ -9,6 +13,9 @@ export class InvalidPercentageError extends Error {
 }
 
 const ONE_HUNDRED = parseExactDecimal('100')
+
+/** 100 = 10^2; a percentage factor is the rate shifted two places right. */
+const PERCENT_EXPONENT = 2
 
 /**
  * An exact-decimal percentage in the single, fixed convention used everywhere
@@ -66,11 +73,15 @@ export class Percentage {
 
   /**
    * The multiplication factor, e.g. "0.05" for 5%. Dividing by 100 is a pure
-   * exponent shift in base 10, so this conversion is exact for any decimal
-   * rate — no precision is lost before the multiplication.
+   * exponent shift in base 10 — the factor has exactly the same significant
+   * digits as the rate — so `divideByPowerOfTenExact` performs it at the
+   * rate's own precision and the conversion costs nothing, for a rate of any
+   * length. A plain `dividedBy(100)` would have been evaluated at the default
+   * significant-digit budget and could round a long rate before it was ever
+   * applied to an amount.
    */
   toFactorString(): string {
-    return this.rate.dividedBy(ONE_HUNDRED).toFixed()
+    return divideByPowerOfTenExact(this.rate, PERCENT_EXPONENT).toFixed()
   }
 
   /**

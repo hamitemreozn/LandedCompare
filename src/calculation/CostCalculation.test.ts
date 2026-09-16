@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import {
   allocateSupplierCosts,
   calculateSupplierCosts,
+  DiscountAllocationValidationError,
+  validateDiscountLineAllocations,
   type AppliedCostEntry,
   type SupplierCostCalculationResult,
 } from './CostCalculation'
@@ -135,6 +137,7 @@ describe('calculateSupplierCosts — fixed costs', () => {
       merchandiseTotal: Money.fromString('10000', BASE),
       costs: [fixed('freight', 'FREIGHT', '1000')],
       exchangeRateTable: baseOnly(),
+      minorUnit: 2,
     })
     expect(result.calculatedLandedTotal.toDecimalString()).toBe('11000')
     expectTotalReconstructibleFromBreakdown(result)
@@ -145,6 +148,7 @@ describe('calculateSupplierCosts — fixed costs', () => {
       merchandiseTotal: Money.fromString('10000', BASE),
       costs: [fixed('freight', 'FREIGHT', '1000', { currency: 'USD' })],
       exchangeRateTable: ratesWithUsd(),
+      minorUnit: 2,
     })
 
     const freight = entryById(result, 'freight')
@@ -160,6 +164,7 @@ describe('calculateSupplierCosts — fixed costs', () => {
         merchandiseTotal: Money.fromString('10000', BASE),
         costs: [fixed('freight', 'FREIGHT', '1000', { currency: 'EUR' })],
         exchangeRateTable: ratesWithUsd(),
+        minorUnit: 2,
       }),
     ).toThrow(MissingExchangeRateError)
   })
@@ -172,6 +177,7 @@ describe('calculateSupplierCosts — fixed costs', () => {
         merchandiseTotal: Money.fromString('10000', BASE),
         costs: [fixed('freight', 'FREIGHT', '1000', { currency: 'EUR', includeInComparison: false })],
         exchangeRateTable: ratesWithUsd(),
+        minorUnit: 2,
       }),
     ).toThrow(MissingExchangeRateError)
   })
@@ -184,6 +190,7 @@ describe('calculateSupplierCosts — fixed costs', () => {
           fixed('freight', 'FREIGHT', '1000', { currency: 'EUR', alreadyIncludedInQuote: true }),
         ],
         exchangeRateTable: ratesWithUsd(),
+        minorUnit: 2,
       }),
     ).toThrow(MissingExchangeRateError)
   })
@@ -198,6 +205,7 @@ describe('calculateSupplierCosts — fixed costs', () => {
         fixed('tax', 'TAX', '200', { currency: 'USD', includeInComparison: false }),
       ],
       exchangeRateTable: ratesWithUsd(),
+      minorUnit: 2,
     })
 
     const freight = entryById(result, 'freight')
@@ -226,6 +234,7 @@ describe('calculateSupplierCosts — multiple discounts', () => {
         percentage('d2', 'OTHER', '10', 'MERCHANDISE', { kind: 'DISCOUNT' }),
       ],
       exchangeRateTable: baseOnly(),
+      minorUnit: 2,
     })
 
     expect(entryById(result, 'd1').percentageBaseAmount?.toDecimalString()).toBe('100')
@@ -249,6 +258,7 @@ describe('calculateSupplierCosts — multiple discounts', () => {
         merchandiseTotal: Money.fromString('1000', BASE),
         costs,
         exchangeRateTable: baseOnly(),
+        minorUnit: 2,
       }),
     )
 
@@ -272,6 +282,7 @@ describe('calculateSupplierCosts — multiple discounts', () => {
         merchandiseTotal: Money.fromString('1000.005', BASE),
         costs,
         exchangeRateTable: baseOnly(),
+        minorUnit: 2,
       })
       expect(entryById(result, 'pct-333').baseCurrencyAmount.toDecimalString()).toBe('33.3001665')
       expect(entryById(result, 'pct-111').baseCurrencyAmount.toDecimalString()).toBe('11.1000555')
@@ -290,6 +301,7 @@ describe('calculateSupplierCosts — multiple discounts', () => {
         percentage('d2', 'OTHER', '50', 'MERCHANDISE', { kind: 'DISCOUNT' }),
       ],
       exchangeRateTable: baseOnly(),
+      minorUnit: 2,
     })
     expect(result.totalDiscounts.toDecimalString()).toBe('100')
     expect(result.percentageBases.merchandiseAfterDiscount.toDecimalString()).toBe('0')
@@ -307,6 +319,7 @@ describe('calculateSupplierCosts — multiple discounts', () => {
           percentage('d3', 'OTHER', '50', 'MERCHANDISE', { kind: 'DISCOUNT' }),
         ],
         exchangeRateTable: baseOnly(),
+        minorUnit: 2,
       }),
     ).toThrow(InvalidDiscountError)
   })
@@ -324,6 +337,7 @@ describe('calculateSupplierCosts — multiple discounts', () => {
           merchandiseTotal: Money.fromString('100', BASE),
           costs,
           exchangeRateTable: baseOnly(),
+          minorUnit: 2,
         }),
       ).toThrow(InvalidDiscountError)
     }
@@ -336,6 +350,7 @@ describe('calculateSupplierCosts — inclusion behaviour', () => {
       merchandiseTotal: Money.fromString('10000', BASE),
       costs: [fixed('freight', 'FREIGHT', '1000', { alreadyIncludedInQuote: true })],
       exchangeRateTable: baseOnly(),
+      minorUnit: 2,
     })
 
     const freight = entryById(result, 'freight')
@@ -354,6 +369,7 @@ describe('calculateSupplierCosts — inclusion behaviour', () => {
       merchandiseTotal: Money.fromString('10000', BASE),
       costs: [fixed('tax', 'TAX', '1800', { includeInComparison: false })],
       exchangeRateTable: baseOnly(),
+      minorUnit: 2,
     })
 
     const tax = entryById(result, 'tax')
@@ -373,6 +389,7 @@ describe('calculateSupplierCosts — inclusion behaviour', () => {
         }),
       ],
       exchangeRateTable: baseOnly(),
+      minorUnit: 2,
     })
     expect(entryById(result, 'freight').exclusionReason).toBe('ALREADY_INCLUDED_IN_QUOTE')
     expect(result.excludedEntries).toHaveLength(0)
@@ -386,6 +403,7 @@ describe('calculateSupplierCosts — discounts and surcharges', () => {
       merchandiseTotal: Money.fromString('10000', BASE),
       costs: [fixed('discount', 'OTHER', '500', { kind: 'DISCOUNT' })],
       exchangeRateTable: baseOnly(),
+      minorUnit: 2,
     })
     expect(entryById(result, 'discount').baseCurrencyAmount.toDecimalString()).toBe('500')
     expect(entryById(result, 'discount').signedEffect.toDecimalString()).toBe('-500')
@@ -399,6 +417,7 @@ describe('calculateSupplierCosts — discounts and surcharges', () => {
       merchandiseTotal: Money.fromString('10000', BASE),
       costs: [percentage('discount', 'OTHER', '5', 'MERCHANDISE', { kind: 'DISCOUNT' })],
       exchangeRateTable: baseOnly(),
+      minorUnit: 2,
     })
     expect(result.percentageBases.merchandiseAfterDiscount.toDecimalString()).toBe('9500')
     expect(result.calculatedLandedTotal.toDecimalString()).toBe('9500')
@@ -409,6 +428,7 @@ describe('calculateSupplierCosts — discounts and surcharges', () => {
       merchandiseTotal: Money.fromString('10000', BASE),
       costs: [fixed('rush', 'OTHER', '300', { kind: 'SURCHARGE' })],
       exchangeRateTable: baseOnly(),
+      minorUnit: 2,
     })
     expect(entryById(result, 'rush').signedEffect.toDecimalString()).toBe('300')
     expect(result.totalSurcharges.toDecimalString()).toBe('300')
@@ -421,6 +441,7 @@ describe('calculateSupplierCosts — discounts and surcharges', () => {
       merchandiseTotal: Money.fromString('10000', BASE),
       costs: [percentage('rush', 'OTHER', '3', 'MERCHANDISE', { kind: 'SURCHARGE' })],
       exchangeRateTable: baseOnly(),
+      minorUnit: 2,
     })
     expect(result.calculatedLandedTotal.toDecimalString()).toBe('10300')
   })
@@ -434,6 +455,7 @@ describe('calculateSupplierCosts — discounts and surcharges', () => {
         fixed('freight', 'FREIGHT', '200'),
       ],
       exchangeRateTable: baseOnly(),
+      minorUnit: 2,
     })
     expect(result.totalDiscounts.toDecimalString()).toBe('500')
     expect(result.totalSurcharges.toDecimalString()).toBe('300')
@@ -448,6 +470,7 @@ describe('calculateSupplierCosts — discounts and surcharges', () => {
         merchandiseTotal: Money.fromString('10000', BASE),
         costs: [fixed('discount', 'OTHER', '20000', { kind: 'DISCOUNT' })],
         exchangeRateTable: baseOnly(),
+        minorUnit: 2,
       }),
     ).toThrow(InvalidDiscountError)
   })
@@ -463,6 +486,7 @@ describe('calculateSupplierCosts — discounts and surcharges', () => {
           percentage('d2', 'OTHER', '60', 'MERCHANDISE', { kind: 'DISCOUNT' }),
         ],
         exchangeRateTable: baseOnly(),
+        minorUnit: 2,
       }),
     ).toThrow(InvalidDiscountError)
   })
@@ -472,6 +496,7 @@ describe('calculateSupplierCosts — discounts and surcharges', () => {
       merchandiseTotal: Money.fromString('10000', BASE),
       costs: [fixed('discount', 'OTHER', '10000', { kind: 'DISCOUNT' })],
       exchangeRateTable: baseOnly(),
+      minorUnit: 2,
     })
     expect(result.percentageBases.merchandiseAfterDiscount.toDecimalString()).toBe('0')
     expect(result.calculatedLandedTotal.toDecimalString()).toBe('0')
@@ -485,6 +510,7 @@ describe('calculateSupplierCosts — discounts and surcharges', () => {
         fixed('in-quote', 'OTHER', '9000', { kind: 'DISCOUNT', alreadyIncludedInQuote: true }),
       ],
       exchangeRateTable: baseOnly(),
+      minorUnit: 2,
     })
     expect(result.totalDiscounts.toDecimalString()).toBe('6000')
     expect(result.calculatedLandedTotal.toDecimalString()).toBe('4000')
@@ -496,6 +522,7 @@ describe('calculateSupplierCosts — discounts and surcharges', () => {
         merchandiseTotal: Money.fromString('-1', BASE),
         costs: [],
         exchangeRateTable: baseOnly(),
+        minorUnit: 2,
       }),
     ).toThrow(InvalidPercentageBaseError)
   })
@@ -510,6 +537,7 @@ describe('calculateSupplierCosts — percentage bases', () => {
         percentage('duty', 'DUTY', '5', 'MERCHANDISE'),
       ],
       exchangeRateTable: baseOnly(),
+      minorUnit: 2,
     })
     const duty = entryById(result, 'duty')
     expect(duty.percentageBaseAmount?.toDecimalString()).toBe('10000')
@@ -524,6 +552,7 @@ describe('calculateSupplierCosts — percentage bases', () => {
         percentage('duty', 'DUTY', '5', 'MERCHANDISE_AFTER_DISCOUNT'),
       ],
       exchangeRateTable: baseOnly(),
+      minorUnit: 2,
     })
     const duty = entryById(result, 'duty')
     expect(duty.percentageBaseAmount?.toDecimalString()).toBe('9000')
@@ -541,6 +570,7 @@ describe('calculateSupplierCosts — percentage bases', () => {
         percentage('duty', 'DUTY', '5', 'MERCHANDISE_PLUS_FREIGHT_INSURANCE'),
       ],
       exchangeRateTable: baseOnly(),
+      minorUnit: 2,
     })
     expect(result.percentageBases.merchandisePlusFreightInsurance.toDecimalString()).toBe('10500')
     expect(entryById(result, 'duty').baseCurrencyAmount.toDecimalString()).toBe('525')
@@ -559,13 +589,18 @@ describe('calculateSupplierCosts — percentage bases', () => {
         percentage('duty', 'DUTY', '10', 'MERCHANDISE_PLUS_FREIGHT_INSURANCE'),
       ],
       exchangeRateTable: baseOnly(),
+      minorUnit: 2,
     })
     expect(result.percentageBases.merchandisePlusFreightInsurance.toDecimalString()).toBe('10500')
     expect(entryById(result, 'duty').baseCurrencyAmount.toDecimalString()).toBe('1050')
     expect(result.calculatedLandedTotal.toDecimalString()).toBe('11550')
   })
 
-  it('leaves an excluded insurance cost out of the CIF-like base', () => {
+  it('keeps an insurance cost excluded from the comparison inside the CIF-like base', () => {
+    // `includeInComparison: false` is a statement about what to compare, not
+    // about whether the money exists. The insurance was still paid, so duty is
+    // still charged on it — only the insurance's own amount stays out of the
+    // comparison total.
     const result = calculateSupplierCosts({
       merchandiseTotal: Money.fromString('10000', BASE),
       costs: [
@@ -573,9 +608,80 @@ describe('calculateSupplierCosts — percentage bases', () => {
         percentage('duty', 'DUTY', '10', 'MERCHANDISE_PLUS_FREIGHT_INSURANCE'),
       ],
       exchangeRateTable: baseOnly(),
+      minorUnit: 2,
     })
-    expect(result.percentageBases.merchandisePlusFreightInsurance.toDecimalString()).toBe('10000')
-    expect(entryById(result, 'duty').baseCurrencyAmount.toDecimalString()).toBe('1000')
+    expect(result.percentageBases.merchandisePlusFreightInsurance.toDecimalString()).toBe('10500')
+    expect(entryById(result, 'duty').baseCurrencyAmount.toDecimalString()).toBe('1050')
+    expect(entryById(result, 'insurance').affectsPercentageBases).toBe(true)
+    expect(entryById(result, 'insurance').contributes).toBe(false)
+    // 10,000 + 1,050 duty. The excluded 500 never reaches the total.
+    expect(result.calculatedLandedTotal.toDecimalString()).toBe('11050')
+  })
+
+  it('is the decided freight example: excluded freight still builds the duty base', () => {
+    const result = calculateSupplierCosts({
+      merchandiseTotal: Money.fromString('1000', BASE),
+      costs: [
+        fixed('freight', 'FREIGHT', '200', { includeInComparison: false }),
+        percentage('duty', 'DUTY', '10', 'MERCHANDISE_PLUS_FREIGHT_INSURANCE'),
+      ],
+      exchangeRateTable: baseOnly(),
+      minorUnit: 2,
+    })
+    expect(result.percentageBases.merchandisePlusFreightInsurance.toDecimalString()).toBe('1200')
+    expect(entryById(result, 'duty').baseCurrencyAmount.toDecimalString()).toBe('120')
+    expect(result.calculatedLandedTotal.toDecimalString()).toBe('1120')
+  })
+
+  it('keeps a discount excluded from the comparison inside the after-discount base', () => {
+    // The mirror of the freight rule: the price reduction is real, so a duty
+    // taken on "merchandise after discount" sees it — but the comparison total
+    // the user asked not to reduce is not reduced.
+    const result = calculateSupplierCosts({
+      merchandiseTotal: Money.fromString('1000', BASE),
+      costs: [
+        fixed('promo', 'OTHER', '100', { kind: 'DISCOUNT', includeInComparison: false }),
+        percentage('duty', 'DUTY', '10', 'MERCHANDISE_AFTER_DISCOUNT'),
+      ],
+      exchangeRateTable: baseOnly(),
+      minorUnit: 2,
+    })
+    expect(result.percentageBases.merchandiseAfterDiscount.toDecimalString()).toBe('900')
+    expect(entryById(result, 'duty').baseCurrencyAmount.toDecimalString()).toBe('90')
+    expect(result.totalDiscounts.toDecimalString()).toBe('0')
+    expect(result.baseAffectingDiscounts.toDecimalString()).toBe('100')
+    expect(result.calculatedLandedTotal.toDecimalString()).toBe('1090')
+  })
+
+  it('leaves a discount already inside the quote out of the after-discount base', () => {
+    // The opposite statement: the quoted price already reflects it, so
+    // subtracting it again would double the reduction.
+    const result = calculateSupplierCosts({
+      merchandiseTotal: Money.fromString('1000', BASE),
+      costs: [
+        fixed('settled', 'OTHER', '100', { kind: 'DISCOUNT', alreadyIncludedInQuote: true }),
+        percentage('duty', 'DUTY', '10', 'MERCHANDISE_AFTER_DISCOUNT'),
+      ],
+      exchangeRateTable: baseOnly(),
+      minorUnit: 2,
+    })
+    expect(result.percentageBases.merchandiseAfterDiscount.toDecimalString()).toBe('1000')
+    expect(result.baseAffectingDiscounts.toDecimalString()).toBe('0')
+    expect(result.calculatedLandedTotal.toDecimalString()).toBe('1100')
+  })
+
+  it('rejects base-affecting discounts that exceed the merchandise total even when none of them contribute', () => {
+    expect(() =>
+      calculateSupplierCosts({
+        merchandiseTotal: Money.fromString('1000', BASE),
+        costs: [
+          fixed('a', 'OTHER', '700', { kind: 'DISCOUNT', includeInComparison: false }),
+          fixed('b', 'OTHER', '600', { kind: 'DISCOUNT', includeInComparison: false }),
+        ],
+        exchangeRateTable: baseOnly(),
+        minorUnit: 2,
+      }),
+    ).toThrow(InvalidDiscountError)
   })
 
   it('does not let a freight-categorised surcharge enter the CIF-like base', () => {
@@ -588,6 +694,7 @@ describe('calculateSupplierCosts — percentage bases', () => {
         percentage('duty', 'DUTY', '10', 'MERCHANDISE_PLUS_FREIGHT_INSURANCE'),
       ],
       exchangeRateTable: baseOnly(),
+      minorUnit: 2,
     })
     expect(result.percentageBases.merchandisePlusFreightInsurance.toDecimalString()).toBe('10000')
     expect(result.calculatedLandedTotal.toDecimalString()).toBe('11400')
@@ -602,6 +709,7 @@ describe('calculateSupplierCosts — percentage bases', () => {
         percentage('duty', 'DUTY', '10', 'MERCHANDISE_PLUS_FREIGHT_INSURANCE'),
       ],
       exchangeRateTable: baseOnly(),
+      minorUnit: 2,
     })
     expect(result.percentageBases.merchandisePlusFreightInsurance.toDecimalString()).toBe('10100')
     expect(entryById(result, 'duty').baseCurrencyAmount.toDecimalString()).toBe('1010')
@@ -616,6 +724,7 @@ describe('calculateSupplierCosts — percentage bases', () => {
         percentage('duty', 'DUTY', '10', 'MERCHANDISE_AFTER_DISCOUNT'),
       ],
       exchangeRateTable: baseOnly(),
+      minorUnit: 2,
     })
     expect(entryById(result, 'discount').baseCurrencyAmount.toDecimalString()).toBe('10.00005')
     expect(result.percentageBases.merchandiseAfterDiscount.toDecimalString()).toBe('990.00495')
@@ -629,10 +738,114 @@ describe('calculateSupplierCosts — percentage bases', () => {
       merchandiseTotal: Money.fromString('1000', 'USD'),
       costs: [percentage('duty', 'DUTY', '10', 'MERCHANDISE')],
       exchangeRateTable: ratesWithUsd('40'),
+      minorUnit: 2,
     })
     expect(result.merchandiseTotal.toDecimalString()).toBe('40000')
     expect(entryById(result, 'duty').baseCurrencyAmount.toDecimalString()).toBe('4000')
     expect(entryById(result, 'duty').baseCurrencyAmount.currency).toBe(BASE)
+  })
+})
+
+/**
+ * The validation-critical half of allocation, split out from the explanatory
+ * half so that an unrelated cost's unusable weighting can no longer stop the
+ * per-line discount rule from being evaluated. See
+ * docs/CALCULATION_RULES.md, "Discount validation vs explanatory allocation".
+ */
+describe('validateDiscountLineAllocations', () => {
+  const mixedUnitLines = [line('a', '900', '1', 'pcs'), line('b', '100', '1', 'kg')]
+
+  function costs(entries: readonly AdditionalCost[]): SupplierCostCalculationResult {
+    return calculateSupplierCosts({
+      merchandiseTotal: Money.fromString('1000', BASE),
+      costs: entries,
+      exchangeRateTable: baseOnly(),
+      minorUnit: 2,
+    })
+  }
+
+  function validate(entries: readonly AdditionalCost[]): void {
+    validateDiscountLineAllocations({
+      costResult: costs(entries),
+      targets: mixedUnitLines,
+      exchangeRateTable: baseOnly(),
+    })
+  }
+
+  it('accepts a discount that fits every line', () => {
+    expect(() =>
+      validate([fixed('discount', 'OTHER', '60', { kind: 'DISCOUNT', allocationMethod: 'EQUAL_PER_LINE' })]),
+    ).not.toThrow()
+  })
+
+  it('rejects an overdrawing discount even though a freight cost cannot be allocated at all', () => {
+    // The freight's BY_QUANTITY weighting is unusable across pcs and kg. That
+    // used to throw first and take the discount check down with it.
+    expect(() =>
+      validate([
+        fixed('discount', 'OTHER', '600', { kind: 'DISCOUNT', allocationMethod: 'EQUAL_PER_LINE' }),
+        fixed('freight', 'FREIGHT', '50', { allocationMethod: 'BY_QUANTITY' }),
+      ]),
+    ).toThrow(InvalidDiscountError)
+  })
+
+  it('rejects a non-zero discount whose own weighting cannot be established', () => {
+    expect(() =>
+      validate([fixed('discount', 'OTHER', '200', { kind: 'DISCOUNT', allocationMethod: 'BY_QUANTITY' })]),
+    ).toThrow(DiscountAllocationValidationError)
+  })
+
+  it('ignores a zero-value discount with the same unusable weighting', () => {
+    // No money moves, so no line can be overdrawn and there is nothing to
+    // prove. The explanatory pass still reports the missing breakdown.
+    expect(() =>
+      validate([fixed('discount', 'OTHER', '0', { kind: 'DISCOUNT', allocationMethod: 'BY_QUANTITY' })]),
+    ).not.toThrow()
+  })
+
+  it('checks a discount kept out of the compared total — the money still exists', () => {
+    // `includeInComparison: false` has a signedEffect of zero, but it still
+    // lowers merchandiseAfterDiscount and everything taken on that base, and
+    // the supplier-level ceiling already bounds it. The per-line rule has to
+    // agree, or the same 600 TRY is real at supplier level and absent here.
+    expect(() =>
+      validate([
+        fixed('excluded', 'OTHER', '600', {
+          kind: 'DISCOUNT',
+          allocationMethod: 'EQUAL_PER_LINE',
+          includeInComparison: false,
+        }),
+      ]),
+    ).toThrow(InvalidDiscountError)
+  })
+
+  it('ignores a discount already inside the quoted price', () => {
+    // The opposite statement: the money is in the line prices already, so it
+    // affects no base and checking it against a line would count it twice.
+    expect(() =>
+      validate([
+        fixed('inQuote', 'OTHER', '600', {
+          kind: 'DISCOUNT',
+          allocationMethod: 'EQUAL_PER_LINE',
+          alreadyIncludedInQuote: true,
+        }),
+      ]),
+    ).not.toThrow()
+  })
+
+  it('says nothing about an ordinary cost that cannot be allocated', () => {
+    expect(() => validate([fixed('freight', 'FREIGHT', '50', { allocationMethod: 'BY_QUANTITY' })])).not.toThrow()
+  })
+
+  it('reaches the same verdict in every cost ordering', () => {
+    const entries = [
+      fixed('discount', 'OTHER', '600', { kind: 'DISCOUNT', allocationMethod: 'EQUAL_PER_LINE' }),
+      fixed('freight', 'FREIGHT', '50', { allocationMethod: 'BY_QUANTITY' }),
+      fixed('duty', 'DUTY', '30'),
+    ]
+    for (const ordering of permutations(entries)) {
+      expect(() => validate(ordering)).toThrow(InvalidDiscountError)
+    }
   })
 })
 
@@ -644,6 +857,7 @@ describe('allocateSupplierCosts', () => {
       merchandiseTotal: Money.fromString('1000', BASE),
       costs: [fixed('freight', 'FREIGHT', '100')],
       exchangeRateTable: baseOnly(),
+      minorUnit: 2,
     })
     const allocation = allocateSupplierCosts({
       costResult,
@@ -669,6 +883,7 @@ describe('allocateSupplierCosts', () => {
         fixed('transport', 'LOCAL_TRANSPORT', '100', { allocationMethod: 'BY_QUANTITY' }),
       ],
       exchangeRateTable: baseOnly(),
+      minorUnit: 2,
     })
     const allocation = allocateSupplierCosts({
       costResult,
@@ -692,6 +907,7 @@ describe('allocateSupplierCosts', () => {
         fixed('discount', 'OTHER', '50', { kind: 'DISCOUNT' }),
       ],
       exchangeRateTable: baseOnly(),
+      minorUnit: 2,
     })
     const allocation = allocateSupplierCosts({
       costResult,
@@ -715,6 +931,7 @@ describe('allocateSupplierCosts', () => {
         fixed('brokerage', 'BROKERAGE', '50'),
       ],
       exchangeRateTable: baseOnly(),
+      minorUnit: 2,
     })
     const allocation = allocateSupplierCosts({
       costResult,
@@ -736,6 +953,7 @@ describe('allocateSupplierCosts', () => {
         fixed('discount', 'OTHER', '300', { kind: 'DISCOUNT', allocationMethod: 'EQUAL_PER_LINE' }),
       ],
       exchangeRateTable: baseOnly(),
+      minorUnit: 2,
     })
     expect(() =>
       allocateSupplierCosts({
@@ -746,11 +964,83 @@ describe('allocateSupplierCosts', () => {
     ).toThrow(InvalidDiscountError)
   })
 
+  it('does not reject a discount that exactly equals the line, on a settlement artefact', () => {
+    // Line values 10.004 and 989.996 sum to the full 1,000 discount. Settled,
+    // the larger line's share rounds up to 990.00 and looks 0.004 too big —
+    // but the exact share is exactly the line's value, so the configuration is
+    // legal. Settlement is a presentation boundary; it must not decide
+    // legality.
+    const costResult = calculateSupplierCosts({
+      merchandiseTotal: Money.fromString('1000', BASE),
+      costs: [
+        percentage('discount', 'OTHER', '100', 'MERCHANDISE', { kind: 'DISCOUNT' }),
+      ],
+      exchangeRateTable: baseOnly(),
+      minorUnit: 2,
+    })
+    const allocation = allocateSupplierCosts({
+      costResult,
+      targets: [line('a', '10.004', '1'), line('b', '989.996', '1')],
+      exchangeRateTable: baseOnly(),
+    })
+
+    expect(allocation.byEntry[0]?.allocations.map((a) => a.amount.toDecimalString())).toEqual([
+      '-10',
+      '-990',
+    ])
+    expect(allocation.byEntry[0]?.allocations.map((a) => a.exactAmount.toDecimalString())).toEqual([
+      '-10.004',
+      '-989.996',
+    ])
+  })
+
+  it('still rejects a discount that genuinely exceeds a line, before settlement', () => {
+    const costResult = calculateSupplierCosts({
+      merchandiseTotal: Money.fromString('1000', BASE),
+      costs: [
+        fixed('discount', 'OTHER', '500', { kind: 'DISCOUNT', allocationMethod: 'EQUAL_PER_LINE' }),
+      ],
+      exchangeRateTable: baseOnly(),
+      minorUnit: 2,
+    })
+    expect(() =>
+      allocateSupplierCosts({
+        costResult,
+        targets: [line('a', '900', '1'), line('b', '100', '1')],
+        exchangeRateTable: baseOnly(),
+      }),
+    ).toThrow(InvalidDiscountError)
+  })
+
+  it('publishes an exact share alongside every settled allocation', () => {
+    const costResult = calculateSupplierCosts({
+      merchandiseTotal: Money.fromString('1000', BASE),
+      costs: [fixed('freight', 'FREIGHT', '100', { allocationMethod: 'EQUAL_PER_LINE' })],
+      exchangeRateTable: baseOnly(),
+      minorUnit: 2,
+    })
+    const allocation = allocateSupplierCosts({
+      costResult,
+      targets: [line('a', '1', '1'), line('b', '1', '1'), line('c', '1', '1')],
+      exchangeRateTable: baseOnly(),
+    })
+    // Settled: 33.34 / 33.33 / 33.33. Exact: 33.333… each.
+    expect(allocation.byEntry[0]?.allocations.map((a) => a.amount.toDecimalString())).toEqual([
+      '33.34',
+      '33.33',
+      '33.33',
+    ])
+    for (const share of allocation.byEntry[0]!.allocations) {
+      expect(share.exactAmount.toDecimalString()).toMatch(/^33\.3333/)
+    }
+  })
+
   it('accepts the same discount when it is split proportionally', () => {
     const costResult = calculateSupplierCosts({
       merchandiseTotal: Money.fromString('1000', BASE),
       costs: [fixed('discount', 'OTHER', '300', { kind: 'DISCOUNT' })],
       exchangeRateTable: baseOnly(),
+      minorUnit: 2,
     })
     const allocation = allocateSupplierCosts({
       costResult,
@@ -774,6 +1064,7 @@ describe('allocateSupplierCosts', () => {
         fixed('discount', 'OTHER', '13.31', { kind: 'DISCOUNT' }),
       ],
       exchangeRateTable: baseOnly(),
+      minorUnit: 2,
     })
     const allocation = allocateSupplierCosts({
       costResult,
@@ -805,6 +1096,7 @@ describe('Phase 2 / Phase 3 integration', () => {
       merchandiseTotal: merchandise.baseCurrencyMerchandiseTotal,
       costs: [fixed('freight', 'FREIGHT', '2000'), percentage('duty', 'DUTY', '5', 'MERCHANDISE')],
       exchangeRateTable: rateTable,
+      minorUnit: 2,
     })
 
     expect(entryById(result, 'duty').baseCurrencyAmount.toDecimalString()).toBe('3045')
@@ -844,6 +1136,7 @@ describe('Phase 2 / Phase 3 integration', () => {
       merchandiseTotal: merchandise.baseCurrencyMerchandiseTotal,
       costs: [fixed('freight', 'FREIGHT', '1000'), percentage('duty', 'DUTY', '5', 'MERCHANDISE')],
       exchangeRateTable: rateTable,
+      minorUnit: 2,
     })
     expect(costResult.calculatedLandedTotal.toDecimalString()).toBe('50140')
 

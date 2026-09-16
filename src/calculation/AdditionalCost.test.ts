@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import {
+  assertValidAdditionalCost,
   createAdditionalCost,
   evaluationStageOf,
   InvalidCostAmountError,
   InvalidCostDefinitionError,
   InvalidDiscountError,
   InvalidPercentageBaseError,
+  type AdditionalCost,
   type CostCategory,
   type CostKind,
   type PercentageBase,
@@ -240,5 +242,115 @@ describe('createAdditionalCost — percentage base availability', () => {
         }).percentage?.base,
       ).toBe(base)
     }
+  })
+})
+
+/**
+ * `AdditionalCost` is a plain readonly interface, so an object literal that
+ * never met `createAdditionalCost` is structurally acceptable to TypeScript
+ * and reaches the engine unchecked. The audit walked a negative "cost" in
+ * that way and drove a landed total below zero. The factory and the engine
+ * boundary therefore share one validator — these are its rules, applied to
+ * objects that bypassed the factory entirely.
+ */
+describe('assertValidAdditionalCost — the shared rule set', () => {
+  const valid = {
+    id: 'x',
+    kind: 'COST' as const,
+    category: 'OTHER' as const,
+    fixedAmount: Money.fromString('10', 'TRY'),
+    includeInComparison: true,
+    alreadyIncludedInQuote: false,
+    allocationMethod: 'BY_MERCHANDISE_VALUE' as const,
+  }
+
+  function check(overrides: Record<string, unknown>) {
+    return () => assertValidAdditionalCost({ ...valid, ...overrides } as unknown as AdditionalCost)
+  }
+
+  it('accepts a well-formed cost that never went through the factory', () => {
+    expect(check({})).not.toThrow()
+  })
+
+  it('accepts what the factory produces, unchanged', () => {
+    expect(() =>
+      assertValidAdditionalCost(
+        createAdditionalCost({ id: 'f', kind: 'COST', category: 'FREIGHT', fixedAmount: Money.fromString('1', 'TRY') }),
+      ),
+    ).not.toThrow()
+  })
+
+  it('rejects a negative fixed amount', () => {
+    expect(check({ fixedAmount: Money.fromString('-5000', 'TRY') })).toThrow(InvalidCostAmountError)
+  })
+
+  it('rejects both a fixed amount and a percentage', () => {
+    expect(check({ percentage: percentageOf('50', 'MERCHANDISE') })).toThrow(InvalidCostDefinitionError)
+  })
+
+  it('rejects neither a fixed amount nor a percentage', () => {
+    expect(check({ fixedAmount: undefined })).toThrow(InvalidCostDefinitionError)
+  })
+
+  it('rejects a fixed amount that is not Money', () => {
+    expect(check({ fixedAmount: 10 })).toThrow(InvalidCostDefinitionError)
+    expect(check({ fixedAmount: '10' })).toThrow(InvalidCostDefinitionError)
+  })
+
+  it('rejects a percentage whose rate is not a Percentage', () => {
+    expect(check({ fixedAmount: undefined, percentage: { rate: '5', base: 'MERCHANDISE' } })).toThrow(
+      InvalidCostDefinitionError,
+    )
+  })
+
+  it('rejects unknown enum values', () => {
+    expect(check({ kind: 'REFUND' })).toThrow(InvalidCostDefinitionError)
+    expect(check({ category: 'MYSTERY' })).toThrow(InvalidCostDefinitionError)
+    expect(check({ allocationMethod: 'BY_WEIGHT' })).toThrow(InvalidCostDefinitionError)
+    expect(
+      check({ fixedAmount: undefined, percentage: { rate: Percentage.fromString('5'), base: 'EVERYTHING' } }),
+    ).toThrow(InvalidPercentageBaseError)
+  })
+
+  it('rejects non-boolean inclusion flags', () => {
+    expect(check({ includeInComparison: 'yes' })).toThrow(InvalidCostDefinitionError)
+    expect(check({ alreadyIncludedInQuote: 1 })).toThrow(InvalidCostDefinitionError)
+    expect(check({ includeInComparison: undefined })).toThrow(InvalidCostDefinitionError)
+  })
+
+  it('rejects an empty or non-string id', () => {
+    expect(check({ id: '   ' })).toThrow(InvalidCostDefinitionError)
+    expect(check({ id: 7 })).toThrow(InvalidCostDefinitionError)
+  })
+
+  it('rejects an empty label rather than silently dropping it', () => {
+    expect(check({ label: '  ' })).toThrow(InvalidCostDefinitionError)
+  })
+
+  it('applies the discount and percentage-base rules to bypassed objects too', () => {
+    expect(
+      check({
+        kind: 'DISCOUNT',
+        fixedAmount: undefined,
+        percentage: percentageOf('120', 'MERCHANDISE'),
+      }),
+    ).toThrow(InvalidDiscountError)
+
+    expect(
+      check({
+        kind: 'DISCOUNT',
+        fixedAmount: undefined,
+        percentage: percentageOf('10', 'MERCHANDISE_AFTER_DISCOUNT'),
+      }),
+    ).toThrow(InvalidPercentageBaseError)
+  })
+
+  it('rejects a value that is not an object at all', () => {
+    expect(() => assertValidAdditionalCost(null as unknown as AdditionalCost)).toThrow(
+      InvalidCostDefinitionError,
+    )
+    expect(() => assertValidAdditionalCost('freight' as unknown as AdditionalCost)).toThrow(
+      InvalidCostDefinitionError,
+    )
   })
 })

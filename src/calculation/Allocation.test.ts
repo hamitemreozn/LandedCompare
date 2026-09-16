@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   allocateAmount,
   AllocationInvariantError,
+  exactAllocationShares,
   IncompatibleAllocationUnitsError,
   InvalidAllocationBaseError,
   sumAllocations,
@@ -369,6 +370,77 @@ describe('allocateAmount — sign safety', () => {
       2,
     )
     expect(amountsOf(result)).toEqual(['-0.01', '0'])
+  })
+})
+
+/**
+ * The narrow exact-share view `validateDiscountLineAllocations` checks a
+ * discount against. It stops before settlement on purpose: a share rounded to
+ * the minor unit could exceed a line by half a unit it does not actually take,
+ * and a validation rule must not be decided by a presentation boundary.
+ */
+describe('exactAllocationShares', () => {
+  it('returns unsettled shares — no rounding, no remainder distribution', () => {
+    const shares = exactAllocationShares(
+      Money.fromString('100', BASE),
+      [line('a', '1', '1'), line('b', '1', '1'), line('c', '1', '1')],
+      'EQUAL_PER_LINE',
+      2,
+    )
+    // allocateAmount would settle these to 33.34 / 33.33 / 33.33.
+    expect(shares.map((share) => share.exactAmount.toDecimalString())).toEqual([
+      '33.33333333333333333333333333333333',
+      '33.33333333333333333333333333333333',
+      '33.33333333333333333333333333333333',
+    ])
+    expect(shares.map((share) => share.targetId)).toEqual(['a', 'b', 'c'])
+  })
+
+  it('agrees with the exact shares allocateAmount publishes', () => {
+    const targets = [line('a', '900', '3'), line('b', '100', '7')]
+    for (const method of ['BY_MERCHANDISE_VALUE', 'EQUAL_PER_LINE', 'BY_QUANTITY'] as const) {
+      const amount = Money.fromString('-137.77', BASE)
+      const fromAllocator = allocateAmount(amount, targets, method, 2)
+      expect(
+        exactAllocationShares(amount, targets, method, 2).map((share) =>
+          share.exactAmount.toDecimalString(),
+        ),
+      ).toEqual(fromAllocator.allocations.map((allocation) => allocation.exactAmount.toDecimalString()))
+    }
+  })
+
+  it("carries the amount's sign onto every share", () => {
+    const shares = exactAllocationShares(
+      Money.fromString('-50', BASE),
+      [line('a', '600', '1'), line('b', '400', '1')],
+      'BY_MERCHANDISE_VALUE',
+      2,
+    )
+    expect(shares.map((share) => share.exactAmount.toDecimalString())).toEqual(['-30', '-20'])
+  })
+
+  it('raises the same unusable-weighting errors as allocateAmount', () => {
+    expect(() =>
+      exactAllocationShares(
+        Money.fromString('50', BASE),
+        [line('a', '1', '1', 'pcs'), line('b', '1', '1', 'kg')],
+        'BY_QUANTITY',
+        2,
+      ),
+    ).toThrow(IncompatibleAllocationUnitsError)
+
+    expect(() =>
+      exactAllocationShares(
+        Money.fromString('50', BASE),
+        [line('a', '0', '1'), line('b', '0', '1')],
+        'BY_MERCHANDISE_VALUE',
+        2,
+      ),
+    ).toThrow(InvalidAllocationBaseError)
+
+    expect(() =>
+      exactAllocationShares(Money.fromString('50', BASE), [], 'EQUAL_PER_LINE', 2),
+    ).toThrow(InvalidAllocationBaseError)
   })
 })
 

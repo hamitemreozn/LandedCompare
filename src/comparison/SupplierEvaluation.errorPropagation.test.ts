@@ -3,14 +3,23 @@ import { AllocationInvariantError } from '../calculation/Allocation'
 import { baseRateTable, quote, quoteItem, requirement, supplier } from './testSupport'
 
 /**
- * `AllocationInvariantError` is an internal engine-correctness assertion
- * (see Allocation.ts) that cannot be triggered through the public API with
- * valid supplier data — that is the point of it existing. To prove
- * `evaluateSupplier` really does let it (and, by the same closed-list logic,
- * any other unmapped exception) propagate instead of silently becoming an
- * `INVALID` supplier, this file mocks the allocation step to simulate an
- * internal engine bug, isolated in its own file so the mock never leaks into
+ * `AllocationInvariantError` is an internal engine-correctness assertion (see
+ * Allocation.ts). No test can produce it from ordinary input on purpose —
+ * that is what makes it an assertion rather than a validation — so this file
+ * mocks the allocation step to simulate an internal bug and prove
+ * `evaluateSupplier` lets it (and, by the same closed-list logic, any other
+ * unmapped exception) propagate instead of quietly becoming an `INVALID`
+ * supplier. The mock is isolated in its own file so it never leaks into
  * `SupplierEvaluation.test.ts`'s real-calculation assertions.
+ *
+ * This matters more since allocation failures became non-blocking: the narrow
+ * `try` around the allocation call must catch *only* the two unusable-base
+ * errors. An internal assertion travelling the same code path must still come
+ * out the other side.
+ *
+ * An out-of-range amount used to reach this error too. It no longer does —
+ * it is rejected up front as `PrecisionEnvelopeExceededError` — see
+ * `PrecisionBoundary.test.ts`.
  */
 vi.mock('../calculation/CostCalculation', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../calculation/CostCalculation')>()

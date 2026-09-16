@@ -17,6 +17,20 @@ export class InvalidPackSizeError extends Error {
 }
 
 /**
+ * An internal assertion, not a user-input error: MOQ and whole-pack rounding
+ * can only ever *raise* the quantity, so a resolved quantity below the
+ * effective minimum means this function's own arithmetic is wrong. It exists
+ * so that failure is loud and named, instead of surfacing indirectly as a
+ * negative excess quantity from `Quantity.subtract`.
+ */
+export class QuantityResolutionInvariantError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'QuantityResolutionInvariantError'
+  }
+}
+
+/**
  * Inputs to quantity resolution, all already-parsed `Quantity` values in the
  * requirement's comparison unit (except `unitsPerQuotedUnit`, which is a
  * conversion factor: how many comparison units make up one quoted unit).
@@ -57,7 +71,10 @@ export interface QuantityResolution {
    * those are bought. Equal to `resolvedQuantity` when no pack applies.
    */
   readonly quotedUnitQuantity: Quantity
-  /** `resolvedQuantity - requiredQuantity`. Never negative. */
+  /**
+   * `resolvedQuantity - requiredQuantity`. Non-negative — enforced by an
+   * explicit post-condition in `resolveOrderQuantity`, not assumed.
+   */
   readonly excessQuantity: Quantity
 }
 
@@ -92,6 +109,17 @@ export function resolveOrderQuantity(input: QuantityResolutionInput): QuantityRe
   } else {
     quotedUnitQuantity = minimumQuantity
     resolvedQuantity = minimumQuantity
+  }
+
+  // Post-condition rather than a comment claiming non-negativity: both steps
+  // above (MOQ, whole-pack ceiling) can only raise the quantity, so this can
+  // only fire if the underlying decimal arithmetic misbehaved. Checking it
+  // here keeps that failure named and loud instead of letting it reappear as
+  // an `InvalidQuantityError` from the excess subtraction below.
+  if (resolvedQuantity.compareTo(minimumQuantity) < 0) {
+    throw new QuantityResolutionInvariantError(
+      `Resolved quantity ${resolvedQuantity.toDecimalString()} is below the effective minimum ${minimumQuantity.toDecimalString()}; MOQ and pack rounding can only raise a quantity`,
+    )
   }
 
   const excessQuantity = resolvedQuantity.subtract(requiredQuantity)

@@ -1,4 +1,13 @@
-import { parseExactDecimal, roundHalfUp, truncateTowardZero, type Decimal } from './decimal'
+import {
+  addExact,
+  exceedsSettlementPrecision,
+  multiplyExact,
+  parseExactDecimal,
+  roundHalfUp,
+  subtractExact,
+  truncateTowardZero,
+  type Decimal,
+} from './decimal'
 import { parseCurrencyCode, type CurrencyCode } from './CurrencyCode'
 
 /**
@@ -46,19 +55,32 @@ export class Money {
     return this.currencyCode
   }
 
+  /**
+   * Exact sum. `addExact` rather than `Decimal#plus` because the plain
+   * operator rounds its result to the configured significant-digit budget:
+   * adding a cent to a thirty-digit total used to return the total unchanged.
+   * See the derived-precision section of `decimal.ts`.
+   */
   add(other: Money): Money {
     this.assertSameCurrency(other)
-    return new Money(this.amount.plus(other.amount), this.currencyCode)
+    return new Money(addExact(this.amount, other.amount), this.currencyCode)
   }
 
+  /** Exact difference, for the same reason as `add`. */
   subtract(other: Money): Money {
     this.assertSameCurrency(other)
-    return new Money(this.amount.minus(other.amount), this.currencyCode)
+    return new Money(subtractExact(this.amount, other.amount), this.currencyCode)
   }
 
-  /** Scales the amount by an exact decimal factor. No rounding is applied. */
+  /**
+   * Scales the amount by an exact decimal factor. No rounding is applied —
+   * and, since the product is evaluated at a precision derived from both
+   * operands, none happens implicitly either. This is the operation a
+   * percentage cost and an FX conversion are both built on, so a product
+   * truncated here would surface as a wrong cent with no other symptom.
+   */
   multiply(factor: string): Money {
-    return new Money(this.amount.times(parseExactDecimal(factor)), this.currencyCode)
+    return new Money(multiplyExact(this.amount, parseExactDecimal(factor)), this.currencyCode)
   }
 
   compareTo(other: Money): number {
@@ -121,6 +143,17 @@ export class Money {
   /** Truncates toward zero at a currency's minor-unit precision. The "floor" step of allocation. */
   truncateToMinorUnit(minorUnitDigits: number): Money {
     return new Money(truncateTowardZero(this.amount, minorUnitDigits), this.currencyCode)
+  }
+
+  /**
+   * True when this amount is too large to be settled exactly at
+   * `minorUnitDigits` under the configured decimal precision — see
+   * `exceedsSettlementPrecision` in `decimal.ts`. Callers use it to reject
+   * such an amount explicitly instead of letting a later sum silently lose a
+   * minor unit. Exposed as a method so the internal `Decimal` stays private.
+   */
+  exceedsSettlementPrecision(minorUnitDigits: number): boolean {
+    return exceedsSettlementPrecision(this.amount, minorUnitDigits)
   }
 
   /** Canonical exact decimal string, e.g. "0.0047". Never exponential notation. */
