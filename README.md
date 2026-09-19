@@ -1,10 +1,19 @@
 # LandedCompare
 
-Local-first, desktop-first responsive web app that lets importers and distributors
-compare supplier quotations by calculated landed cost, not just unit price.
+Local-first web app that carries one importing company's purchasing chain from
+*"which supplier quotation is actually cheapest once every landed cost is
+counted?"* through to *"what is in the warehouse, what is promised to a
+customer, and what is still on the water?"* — built around an audited,
+deterministic landed-cost engine and an append-only inventory movement ledger,
+with no backend and no cloud dependency.
 
-This repository is in early foundation stage (Phase 0). No business functionality
-is implemented yet. See [docs/](docs/) for product and architecture details.
+**Status.** The calculation and comparison engine (Phases 0–5) and the
+Turkish/English i18n foundation (Phase 6) are implemented. Phase 6.5 expanded
+the product scope to a local operational pilot — purchasing, inbound logistics,
+inventory, reservations, outbound goods, backup and restore — and defined the
+architecture for it; none of that is built yet. There is no UI and no
+persistence. See [Product Scope](docs/PRODUCT_SCOPE.md) and the
+[Implementation Plan](docs/IMPLEMENTATION_PLAN.md).
 
 ## Stack
 
@@ -46,10 +55,21 @@ Supported languages: Turkish (`tr`) and English (`en`).
 
 ## Documentation
 
-- [Product Requirements](docs/PRODUCT_REQUIREMENTS.md)
-- [Architecture](docs/ARCHITECTURE.md)
-- [Calculation Rules](docs/CALCULATION_RULES.md)
-- [Implementation Plan](docs/IMPLEMENTATION_PLAN.md)
+Each topic has exactly one canonical document.
+
+- [Product Scope](docs/PRODUCT_SCOPE.md) — what the product is, the pilot
+  operating model, MVP scope, out of scope, open product decisions
+- [Data Model](docs/DATA_MODEL.md) — entities, relationships, lifecycles, the
+  inventory ledger, invariants
+- [Local Persistence & Backup](docs/LOCAL_PERSISTENCE_AND_BACKUP.md) —
+  IndexedDB, schema versioning and migrations, autosave, snapshots, backup
+  format, restore
+- [Calculation Rules](docs/CALCULATION_RULES.md) — the financial rules of the
+  landed-cost engine
+- [Architecture](docs/ARCHITECTURE.md) — module boundaries and layering
+- [Implementation Plan](docs/IMPLEMENTATION_PLAN.md) — phase-by-phase build order
 - [Testing](docs/TESTING.md)
+- [Roadmap](docs/ROADMAP.md) — post-MVP candidates
 - [Deployment](docs/DEPLOYMENT.md)
-- [Roadmap](docs/ROADMAP.md)
+- [Product Requirements](docs/PRODUCT_REQUIREMENTS.md) — superseded, kept as a
+  pointer

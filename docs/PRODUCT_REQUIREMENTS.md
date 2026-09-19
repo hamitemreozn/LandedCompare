@@ -1,57 +1,34 @@
 # Product Requirements
 
-## What LandedCompare is
+> **Superseded by [Product Scope](PRODUCT_SCOPE.md) as of Phase 6.5.**
+>
+> This file used to be the canonical product definition, written when
+> LandedCompare was scoped to supplier-quotation comparison only. That scope was
+> expanded in Phase 6.5 into a local operational pilot (purchasing, inbound
+> logistics, inventory, reservations, outbound goods) for use inside a real
+> company alongside Logo Tiger.
+>
+> The material that used to live here — product definition, users, MVP
+> boundaries, excluded scope — now lives in one canonical place so the two
+> cannot drift apart.
 
-LandedCompare is a local-first, desktop-first responsive web application. Its core
-job is to normalize supplier quotations from an import/purchasing scenario into a
-common cost model, and show the user which complete quotation has the lowest
-calculated landed cost under the assumptions the user enters — not just the lowest
-unit price.
+| Topic | Canonical document |
+| --- | --- |
+| What the product is, who it is for, the pilot operating model | [Product Scope](PRODUCT_SCOPE.md) |
+| MVP scope and out-of-scope list | [Product Scope](PRODUCT_SCOPE.md) §5, §6 |
+| Open product decisions and their MVP defaults | [Product Scope](PRODUCT_SCOPE.md) §7 |
+| Entities, relationships, lifecycles, inventory model, invariants | [Data Model](DATA_MODEL.md) |
+| Storage, schema versions, migrations, backup and restore | [Local Persistence & Backup](LOCAL_PERSISTENCE_AND_BACKUP.md) |
+| Financial rules of the landed-cost engine | [Calculation Rules](CALCULATION_RULES.md) |
+| Module boundaries and layering | [Architecture](ARCHITECTURE.md) |
+| Build order and phase sizing | [Implementation Plan](IMPLEMENTATION_PLAN.md) |
+| Post-MVP candidates | [Roadmap](ROADMAP.md) |
 
-## Primary users
+## The unchanged core
 
-- Small and medium-sized importers
-- Distributors
-
-## Secondary users
-
-- Procurement / purchasing professionals
-- Small manufacturers
-
-## Core product job
-
-Given multiple supplier quotations (possibly in different currencies, with
-different MOQs, pack sizes, and cost structures), normalize them to a shared
-landed-cost model and produce a deterministic comparison of the calculated landed
-total and effective landed unit cost per quotation.
-
-## Local-first principle
-
-The application runs entirely in the browser. User data (projects, suppliers,
-quotations, costs) is not sent to a server. Persistence, backup, and data exchange
-are handled client-side (planned: IndexedDB, JSON backup/import, clipboard paste,
-controlled CSV/XLSX support).
-
-## MVP boundaries
-
-The MVP is scoped to the comparison workflow: projects, product requirements,
-suppliers, quotations, currencies/exchange rates, quantities, MOQs, pack/unit
-normalization, additional costs (freight, insurance, duty, brokerage, fees, local
-transport, tax, discounts, surcharges), shared cost allocation, incomplete-quote
-detection, and a deterministic results/comparison view. See
-[Roadmap](ROADMAP.md) and [Implementation Plan](IMPLEMENTATION_PLAN.md) for the
-phased build order.
-
-## Notable excluded scope (not planned for MVP)
-
-- Backend/server, authentication, cloud sync
-- Automatic currency or customs/duty APIs
-- AI/LLM integration, OCR, PDF parsing
-- Payments, subscriptions, licensing
-- Analytics/tracking of user data
-
-## Phase 0 status
-
-As of this phase, the repository contains only the engineering foundation
-(build tooling, test setup, placeholder UI). No product features described above
-are implemented yet.
+One thing from the original scope is unchanged and worth keeping here, because
+everything else was built around it: the product's job is to normalize supplier
+quotations — in different currencies, with different MOQs, pack sizes and cost
+structures — into a shared landed-cost model, and show which *complete*
+quotation has the lowest calculated landed cost under the assumptions the user
+entered. Not the lowest unit price, and never a "best supplier".

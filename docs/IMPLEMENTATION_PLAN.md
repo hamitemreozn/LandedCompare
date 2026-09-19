@@ -153,16 +153,210 @@ are not started until the current phase is accepted.
   (`comparison/SettlementAssertionPropagation.test.ts`). Documentation was
   corrected where it had fallen behind the code. Effective landed unit cost
   remains **not implemented**.
-- **Phase 6 — i18n**: Turkish and English UI support.
-- **Phase 7 — Local Persistence**: IndexedDB, autosave.
-- **Phase 8 — Projects & Requirements UI**.
-- **Phase 9 — Suppliers & Quotes UI**.
-- **Phase 10 — Quote Matrix**.
-- **Phase 11 — Costs & FX UI**.
-- **Phase 12 — Results**.
-- **Phase 13 — Data Exchange & Security**: JSON backup/import, clipboard paste,
-  controlled CSV/XLSX support.
-- **Phase 14 — Public MVP Hardening**.
+- **Phase 6 — Internationalization** (done): Turkish and English foundation
+  under `src/i18n/` — locale detection and the `landedcompare.locale`
+  preference, i18next wiring, `en`/`tr` catalogs typed against a shared shape
+  so a missing key is a compile error, `Intl`-based number/currency/percentage
+  formatting (presentation only, never fed back into a calculation), and
+  `engineText.ts` as the single mapping from the engine's machine-readable
+  codes to translation keys. The engine layers stay language-agnostic.
+- **Phase 6.5 — Product & Data Architecture Checkpoint** (done):
+  **documentation only — no production code changed.** The product was expanded
+  from a quotation comparison tool into a local operational pilot for a real
+  company running in parallel with Logo Tiger, and the architecture that
+  expansion needs was defined before any of it is built: MVP scope and
+  out-of-scope boundaries, five bounded domain areas, the catalog/purchasing/
+  logistics/inventory/outbound entity model, an append-only inventory movement
+  ledger with physical/reserved/available/on-order/in-transit separated, the
+  lifecycle-vs-derived-progress rule, twenty-one numbered invariants, the
+  IndexedDB/snapshot/external-backup recovery layering, `schemaVersion` versus
+  `backupFormatVersion`, migration and restore safety rules, autosave
+  behaviour, and fifteen open product decisions each carrying a recommended MVP
+  default. The financial engine was not touched. See
+  [Product Scope](PRODUCT_SCOPE.md), [Data Model](DATA_MODEL.md),
+  [Local Persistence & Backup](LOCAL_PERSISTENCE_AND_BACKUP.md).
+
+## Revised roadmap — Phase 7 onward
+
+The original Phase 7–14 plan (persistence, five UI phases, data exchange,
+hardening) was written for the comparison-only product and no longer covers the
+work. It is replaced by the phases below. Phases 0–6 above are complete and are
+not revisited.
+
+Difficulty is a 1–10 estimate of implementation risk, not of hours.
+
+### Ordering rationale
+
+Persistence and backup come first because nothing else is safe to enter real
+data into, and retrofitting a schema-versioned store under existing screens is
+strictly worse than building on one. Catalog follows because both the analysis
+screens and every operational document reference products. The analysis UI comes
+next because it is the product that already exists in the engine and it produces
+the purchase decisions the operational chain consumes. The inventory ledger is
+built **before** purchasing and receiving, standalone, with only opening
+balances and manual adjustments as inputs — the most correctness-critical module
+in the system gets built and tested against the simplest possible inputs, before
+documents start posting into it.
+
+| # | Phase | Difficulty |
+| --- | --- | --- |
+| 7 | Local Persistence & Schema Foundation | 8 |
+| 8 | Backup, Snapshots & Restore | 8 |
+| 9 | Catalog & Parties | 4 |
+| 10 | Projects, Requirements, Suppliers & Quotes UI | 7 |
+| 11 | Quote Matrix, Costs & FX UI | 7 |
+| 12 | Comparison Results UI | 6 |
+| 13 | Inventory Ledger Core | 9 |
+| 14 | Purchasing | 6 |
+| 15 | Inbound Logistics & Receiving | 8 |
+| 16 | Reservations & Outbound | 7 |
+| 17 | Reconciliation, Reporting & Data Exchange | 6 |
+| 18 | Pilot Hardening & Final QA | 7 |
+
+---
+
+- **Phase 7 — Local Persistence & Schema Foundation** (difficulty 8).
+  *Objective:* a durable, versioned local database that everything else is built
+  on.
+  *Deliverables:* `src/persistence/` — the IndexedDB connection, the store
+  layout from [Local Persistence & Backup](LOCAL_PERSISTENCE_AND_BACKUP.md) §2,
+  `schemaVersion` and the numbered migration runner with its
+  higher-version-refusal rule, aggregate read/write with explicit multi-store
+  transaction boundaries, the persisted-record ↔ runtime-domain mapping
+  (including `Money`/`Quantity` via their existing `toJSON`/`fromJSON`), the
+  autosave engine and save-state model (§5), stale-write detection on
+  `updatedAt`, multi-tab advisory, quota handling, and `navigator.storage`
+  persistence/estimate wiring.
+  *Dependencies:* Phases 0–6.
+  *Risk:* transaction-boundary correctness and the migration runner. Both are
+  things later phases cannot fix cheaply.
+
+- **Phase 8 — Backup, Snapshots & Restore** (difficulty 8).
+  *Objective:* the pilot cannot lose its data.
+  *Deliverables:* `src/backup/` — internal snapshots with the retention policy
+  (§6), the portable JSON backup envelope with manifest, entity counts and
+  SHA-256 over a canonical serialisation (§7), download export plus the optional
+  File System Access directory handle with the download path always available as
+  fallback, the full 15-step validated restore (§8) with the pre-restore
+  snapshot committed before the restore transaction, backup-freshness reminder,
+  and the security rules of §9 (prototype-safe parsing, factory-based
+  validation, size/depth limits, whole-file rejection).
+  *Dependencies:* Phase 7.
+  *Risk:* restore is the only operation that can destroy everything; the
+  pre-restore snapshot ordering and the atomicity of the restore transaction are
+  the two things that must not be wrong.
+
+- **Phase 9 — Catalog & Parties** (difficulty 4).
+  *Objective:* stable master records for products, suppliers and customers.
+  *Deliverables:* `Product` with its immutable-once-used `stockUnit`, SKU
+  uniqueness, active/inactive deactivation instead of deletion; supplier master
+  normalisation (the `suppliers` store + `supplierIds` on project records, with
+  the migration); minimal `Customer`; the additive optional
+  `RequirementItem.productId`; CRUD screens.
+  *Dependencies:* Phase 7.
+  *Risk:* low. The supplier normalisation migration is the only sharp edge.
+
+- **Phase 10 — Projects, Requirements, Suppliers & Quotes UI** (difficulty 7).
+  *Objective:* the existing engine becomes usable.
+  *Deliverables:* project list and editor, requirement entry with optional
+  product linking, supplier selection from the master, quote and quote-item
+  entry with MOQ/pack fields, validation surfaced through `engineText.ts`
+  translation keys, autosave integration.
+  *Dependencies:* Phases 7, 9.
+  *Risk:* first real UI phase — form/validation/i18n patterns get set here and
+  everything later copies them.
+
+- **Phase 11 — Quote Matrix, Costs & FX UI** (difficulty 7).
+  *Objective:* enter the comparison inputs the engine already accepts.
+  *Deliverables:* the side-by-side quote matrix, per-supplier additional costs
+  across the nine categories with discounts and surcharges, the
+  `alreadyIncludedInQuote` / `includeInComparison` distinction made
+  comprehensible, manual exchange-rate table entry, minor-unit overrides.
+  *Dependencies:* Phase 10.
+  *Risk:* this is where a UI can quietly misrepresent an engine concept. The
+  cost model's stage/base rules must be expressed, not simplified.
+
+- **Phase 12 — Comparison Results UI** (difficulty 6).
+  *Objective:* render the comparison result faithfully.
+  *Deliverables:* ranking, the authoritative settled total, cost breakdown, the
+  per-line trace with MOQ/pack/excess, allocation display with the
+  `ALLOCATION_UNAVAILABLE` warning shown as non-blocking, `INCOMPLETE`/`INVALID`
+  supplier states, insight codes rendered through i18n, and the "select this
+  supplier" action that feeds Phase 14.
+  *Dependencies:* Phase 11.
+  *Risk:* the product never names a "best supplier"; the UI must not imply one.
+
+- **Phase 13 — Inventory Ledger Core** (difficulty 9).
+  *Objective:* the stock truth, built and proven in isolation.
+  *Deliverables:* `InventoryMovement` append-only store, the seven movement
+  types, magnitude+direction, reversal rules (I9, I10), opening balances,
+  manual adjustments with reasons, the derived stock functions
+  (physical/reserved/available and the overlap-aware incoming buckets), the
+  per-product movement ledger view, and invariants I1–I13 under test.
+  *Dependencies:* Phases 7, 9.
+  *Risk:* the highest in the roadmap. Every later operational phase writes into
+  this ledger, and a wrong rule here is discovered late and corrected
+  expensively. It is deliberately built with no document dependencies so it can
+  be tested exhaustively.
+
+- **Phase 14 — Purchasing** (difficulty 6).
+  *Objective:* a decision becomes an order.
+  *Deliverables:* `PurchaseOrder` + lines, the `DRAFT → ORDERED → CLOSED |
+  CANCELLED` lifecycle with code allocation, the `analysisRef` snapshot taken
+  from the Phase 12 selection, manual (non-analysis) orders, derived
+  shipment/receipt progress, the on-order quantity, and invariants I5, I14, I17.
+  *Dependencies:* Phases 12, 13.
+  *Risk:* the snapshot boundary. Nothing in this phase may read live quote data.
+
+- **Phase 15 — Inbound Logistics & Receiving** (difficulty 8).
+  *Objective:* close the loop from order to stock.
+  *Deliverables:* `InboundShipment` + lines with the six-state lifecycle and the
+  same-purchase-order validation rule, transit/customs/arrival tracking,
+  `WarehouseReceipt` + lines posted atomically with their `PURCHASE_RECEIPT`
+  movements, partial receipt and discrepancy reasons, reversing receipts, and
+  invariants I6, I7, I8, I13, I15, I16.
+  *Dependencies:* Phases 13, 14.
+  *Risk:* the receipt-posting transaction is the first place documents and the
+  ledger must move together.
+
+- **Phase 16 — Reservations & Outbound** (difficulty 7).
+  *Objective:* committed stock and goods going out.
+  *Deliverables:* `InventoryReservation` with `ACTIVE | CLOSED | CANCELLED` and
+  derived remaining/fulfilment, the available-stock block (I4),
+  `OutboundShipment` + lines with `DRAFT → DISPATCHED → DELIVERED | CANCELLED`,
+  dispatch posting `CUSTOMER_DISPATCH` movements atomically, partial dispatch
+  against a reservation, customer returns, and the negative-physical-stock
+  confirmation path.
+  *Dependencies:* Phases 13, 9.
+  *Risk:* reserved-vs-available arithmetic is the part users get wrong if the
+  UI is ambiguous.
+
+- **Phase 17 — Reconciliation, Reporting & Data Exchange** (difficulty 6).
+  *Objective:* make the parallel run with Logo Tiger workable.
+  *Deliverables:* the stock-count adjustment workflow, the stock overview
+  showing all buckets as a decomposition that never sums, per-product movement
+  history with document drill-through, open-order and expected-incoming views,
+  CSV export of stock and movements for manual comparison, and the previously
+  planned quotation-entry conveniences (clipboard paste, controlled CSV/XLSX
+  import) if time allows.
+  *Dependencies:* Phases 15, 16.
+  *Risk:* low. The import conveniences are the droppable part.
+
+- **Phase 18 — Pilot Hardening & Final QA** (difficulty 7).
+  *Objective:* hand it to the pilot user.
+  *Deliverables:* end-to-end scenario tests across the whole chain
+  (quote → order → shipment → receipt → reservation → dispatch) with ledger
+  verification, a full backup → wipe → restore drill, migration tests against
+  realistic fixtures of every earlier version, empty/error/loading states,
+  Turkish copy review with the pilot user's vocabulary, accessibility and
+  keyboard flow for data-entry screens, performance at realistic ledger volume,
+  and the pilot operating notes (daily backup routine, what to do when something
+  looks wrong).
+  *Dependencies:* Phases 7–17.
+  *Risk:* this is where the honest answer to "is the pilot ready?" is produced.
+
+---
 
 Phases 0–5 are implemented — **Checkpoint 1: engine complete.** Phase 6
-onward (UI, i18n, persistence) is not started.
+(i18n) is implemented. Phase 6.5 is an architecture/product checkpoint with no
+production code. Phase 7 onward is not started.

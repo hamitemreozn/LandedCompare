@@ -377,6 +377,108 @@ See [Calculation Rules](CALCULATION_RULES.md). It is a deferred, open product
 decision, and not something a future UI layer should compute silently on its
 own.
 
+## Phase 6 state — internationalization
+
+`src/i18n/` holds locale detection/preference, i18next wiring, the `en`/`tr`
+catalogs typed against a shared shape, `Intl`-based presentation formatting, and
+`engineText.ts` — the single place the engine's machine-readable codes are
+mapped to translation keys. The engine layers (`domain`, `calculation`,
+`comparison`) stay language-agnostic and produce no natural-language text; the
+formatters are presentation only and never feed back into a calculation.
+
+## Phase 6.5 — product & data architecture checkpoint
+
+Phase 6.5 changed no production code. It expanded the product from a quotation
+comparison tool into a local operational pilot (purchasing, inbound logistics,
+inventory, reservations, outbound) and recorded the architecture that expansion
+requires. The canonical documents are:
+
+- [Product Scope](PRODUCT_SCOPE.md) — product definition, pilot operating model,
+  MVP scope, out-of-scope list, open product decisions.
+- [Data Model](DATA_MODEL.md) — entities, relationships, lifecycles, the
+  inventory ledger, invariants.
+- [Local Persistence & Backup](LOCAL_PERSISTENCE_AND_BACKUP.md) — IndexedDB,
+  schema versioning and migrations, autosave, snapshots, backup format, restore.
+
+Only the architectural consequences are recorded here.
+
+### Bounded modules after the expansion
+
+The existing three engine modules are joined by operational modules and a
+platform layer. The planned source layout:
+
+```text
+src/
+  domain/        # value objects + procurement-analysis entities   (unchanged)
+  calculation/   # landed-cost engine                              (unchanged)
+  comparison/    # supplier comparison engine                      (unchanged)
+  i18n/          #                                                 (unchanged)
+  operations/    # NEW — catalog, parties, purchasing, logistics, inventory
+  persistence/   # NEW — IndexedDB access, schema version, migrations, snapshots
+  backup/        # NEW — portable backup format, export, validation, restore
+  features/      # NEW — React screens; the only layer that knows about React
+```
+
+`operations/` follows the same constraints the engine layers already meet: plain
+TypeScript, no React, no DOM, no direct storage access, no i18n. Stock
+arithmetic, lifecycle transition rules and document invariants are pure
+functions over data, and `persistence/` is what turns them into IndexedDB
+writes. `persistence/` is the single module that knows IndexedDB exists.
+
+### The engine stays a reusable bounded module
+
+`domain`, `calculation` and `comparison` are untouched by the expansion, and the
+dependency runs one way only: `operations` may read a snapshot of a comparison
+result, and nothing in the engine may reference an operational entity. A
+purchase order never calls `compareSuppliers()`.
+
+Exactly one additive change to an engine-adjacent entity is planned in the whole
+revised roadmap — an optional `productId?: string` on `RequirementItem`
+(Phase 9). It is read by no code in `src/calculation` or `src/comparison`, which
+consume `id`, `requiredQuantity` and `comparisonUnit` only, and it changes no
+monetary behaviour.
+
+### Persisted record shape vs runtime domain shape
+
+The persistence layer is allowed to store a different shape from the one the
+domain works with, and converts on the boundary. This is what lets the
+operational model normalise data the engine holds denormalised, without editing
+audited code.
+
+The case that forced the rule: `Project` holds `readonly suppliers: readonly
+Supplier[]`, so suppliers are effectively project-scoped — but a purchase order
+must reference one company-wide supplier record. The resolution is to persist a
+`suppliers` store plus `supplierIds` on the project record, and to hydrate
+`Project.suppliers` on load into exactly the shape `compareSuppliers()` already
+expects. The engine sees no difference. Same mechanism, same reason, for
+`Money`/`Quantity`: stored as their existing `toJSON()` decimal-string shapes and
+rebuilt through `fromJSON()`, never as class instances.
+
+### Derived state is not stored
+
+The rule Phase 3 established for `QuoteItem.orderQuantity` — a calculated value
+has no business being a persisted field — now governs the operational model too.
+Physical stock, reserved stock, available stock, on-order and in-transit
+quantities, purchase-order shipment/receipt progress and reservation remainders
+are all computed from the inventory ledger and the open documents. There is no
+`product.stockQuantity`.
+
+The one apparent exception is a genuine one: a purchase order snapshots the
+commercial facts of the decision it came from (prices, quantities, the exchange
+rates used, the settled landed total at decision time). That is a record of a
+past event which cannot be re-derived once a quotation is edited — evidence, not
+cache — and it is never recomputed or compared against a live calculation.
+
+### Backup is architecture, not a feature
+
+Because the pilot is single-machine with no server, the storage design carries
+the durability responsibility an operations team would otherwise hold. The
+layering is working data (IndexedDB) → internal snapshots (undo, lost with the
+disk) → external portable backup files (the only disaster recovery), with an
+explicit `schemaVersion` separate from `backupFormatVersion`, migrations that
+snapshot before they run, and a restore that validates fully before it writes
+anything and applies atomically when it does.
+
 ## Forward-looking principles (not yet implemented)
 
 These are constraints for future phases, recorded here so early architectural
@@ -385,10 +487,14 @@ decisions don't accidentally violate them:
 - Order multiple (a Phase 3 "should have"), weight/volume allocation, and
   item-level costs remain deferred — see
   [Calculation Rules](CALCULATION_RULES.md).
-- Persistence (planned: IndexedDB, Phase 7) will be kept behind an interface
+- Persistence (IndexedDB, Phase 7) is kept behind the `persistence/` module,
   separate from domain logic, using each type's `toJSON()`/`fromJSON()`
-  contract, so the domain layer does not depend on browser storage APIs.
-- The MVP has no backend. All computation and storage happens client-side.
+  contract, so no domain or operations module depends on browser storage APIs.
+- The pilot has no backend. All computation and storage happens client-side.
+  Entity boundaries and UUID identity are chosen so a later `React → API →
+  PostgreSQL` architecture is a port rather than a redesign — but no repository
+  interface, unit-of-work abstraction or DTO layer is built for a backend that
+  may never exist (see [Data Model](DATA_MODEL.md), "Future backend migration").
 - Phase 5 produces a machine-readable comparison result only. Rendering it
   (Results UI), turning insight codes into text (i18n), and any
   supplier-quality/lead-time/warranty scoring — which this product does not
