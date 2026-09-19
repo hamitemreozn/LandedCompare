@@ -8,8 +8,13 @@ restore work.
 - Why the pilot is local-only → [Product Scope](PRODUCT_SCOPE.md)
 - Layering → [Architecture](ARCHITECTURE.md)
 
-Nothing here is implemented as of Phase 6.5. This is the design Phases 7 and 8
-build ([Implementation Plan](IMPLEMENTATION_PLAN.md)).
+**Implementation status.** §2 (the working database), §3 (persisted vs runtime
+shape), §4 (schema versioning and migrations) and §5 (autosave) are implemented
+by Phase 7 in `src/persistence/`. §6 (snapshots), §7 (external backup), §8
+(restore) and §9 (backup security) are **not** implemented; they are Phase 8.
+Where Phase 7 could not fully honour a rule because it depends on Phase 8 — the
+`PRE_MIGRATION` snapshot in §4, rule 3 — that is stated inline rather than left
+to be discovered ([Implementation Plan](IMPLEMENTATION_PLAN.md)).
 
 ---
 
@@ -47,7 +52,14 @@ only here.
 ### Database and stores
 
 One database, `landedcompare`, whose IndexedDB version number **is** the
-application's `schemaVersion` (§4).
+application's `schemaVersion` (§4). The name is a constant
+(`src/persistence/schema.ts`), never derived from a route, a project, a user or
+a generated id — one database is what a backup and a restore have to cover.
+
+IndexedDB is scoped to the **browser origin**, and nothing in this design
+changes that: a different browser, a different profile, or a cleared profile is
+a different — or empty — database. That limit is not a gap to work around; it
+is the reason §7 exists.
 
 | Store | Key | Contents | Indexes |
 | --- | --- | --- | --- |
@@ -99,6 +111,18 @@ never split across transactions and never issued as two awaited writes.
 Validation runs **before** the transaction opens (IndexedDB transactions
 auto-close on the first turn of the event loop with no pending request, so
 nothing may `await` anything non-IndexedDB inside one).
+
+As implemented, `Database` exposes only `read(stores, …)` and
+`write(stores, …)`: every operation names its stores up front and runs inside
+one transaction, and a write resolves on the transaction's `complete` event
+rather than on the individual request — a save is not reported as saved until
+it has committed. Anything thrown inside the callback aborts the whole
+transaction, so a validation failure between two writes leaves neither.
+
+Every store in the table above is created at `schemaVersion` 1, including the
+ones whose records a later phase writes: creating an object store *is* a schema
+change, so deferring it would cost a migration per phase for no benefit. What a
+later phase adds is the record type and its typed operations, not the store.
 
 ### No stored balances
 
@@ -177,7 +201,12 @@ branched on.
 2. **Never assume old data matches the new shape.** Each migration reads the
    previous shape explicitly and writes the new one.
 3. **A snapshot is written before any migration runs** (kind `PRE_MIGRATION`),
-   in its own transaction, before the upgrade begins.
+   in its own transaction, before the upgrade begins. **Not implemented as of
+   Phase 7** — snapshots are Phase 8, so this protection does not exist yet.
+   Rule 4's guarantee is in force and tested; rule 3's is not. Until Phase 8
+   ships there is no remedy for a migration that commits successfully and is
+   logically wrong, which is the reason no pilot data should be entered before
+   then.
 4. Migrations execute inside IndexedDB's `upgradeneeded` transaction, which
    aborts as a unit on any thrown error — a failed migration leaves the database
    at its previous version with its previous data (Data Model, I21). The
@@ -186,18 +215,45 @@ branched on.
 5. **A database whose `schemaVersion` is higher than the build supports must not
    be opened.** IndexedDB cannot downgrade, and an older build writing into a
    newer schema corrupts it. The app refuses, explains, and tells the user to
-   update — it does not try.
+   update — it does not try. Checked twice, because the two versions can
+   disagree: the stored database version is inspected before `open()`, and the
+   `meta` record's `schemaVersion` is re-validated after it, so a hand-edited
+   `meta` is refused as loudly as a genuinely newer database.
 6. Migration code is **frozen once released**. A shipped migration is edited only
    to fix a defect, never to accommodate a later schema change; that is what the
    next numbered migration is for.
 7. Every migration ships with tests that run it against a realistic fixture of
    the previous version, not against a hand-written object.
+8. **Steps run strictly in sequence.** A migration's work is issued as
+   IndexedDB requests and completes asynchronously, so the runner waits for one
+   step's writes to land before starting the next. Two steps cursoring over the
+   same store concurrently would have the later one read records the earlier
+   one had not rewritten yet — and silently overwrite its output.
+
+`MIGRATIONS` is empty at `schemaVersion` 1, and deliberately so: no earlier
+version of this schema has ever existed in anyone's browser, so there is no
+data to transform, and a fabricated `v0 → v1` step would run on every fresh
+install for no reason. The runner, its failure semantics and its tests exist
+now so the first real entry is a one-function change.
 
 ---
 
 ## 5. Autosave
 
 Phase 7 implements this; Phase 6.5 fixes the behaviour it must implement.
+
+**What Phase 7 shipped:** `src/persistence/autosave.ts` — the debounce, the
+flush, the four-state model, the retry backoff, the kept dirty buffer and the
+typed failure. It is plain TypeScript with no React and no global timers: the
+clock is injected, so the debounce and the backoff are tested with a controlled
+clock rather than by waiting, and the only timers that exist are started by a
+change and cancelled when nothing is left to save.
+
+**What belongs to the UI phases:** the indicator itself, the `beforeunload`
+guard (the controller answers `hasUnsavedChanges()`; wiring it to the window is
+a React concern), and the translated wording of each state. Persistence
+produces machine-readable error codes only — no user-facing Turkish or English
+string is written anywhere in this layer.
 
 ### What a save is
 

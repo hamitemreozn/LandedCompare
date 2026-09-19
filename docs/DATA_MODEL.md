@@ -14,8 +14,15 @@ TypeScript declarations — those arrive with the phases that build them
 TypeScript-like notation only because it is precise, not because the files
 exist.
 
-Nothing described here is implemented as of Phase 6.5. The only entities that
-exist in code today are the procurement-analysis ones in `src/domain/`.
+**Implementation status after Phase 7.** The *storage* for this model exists —
+stores, indexes, identity, time and mutability conventions, the append-only
+write path for the ledger — but almost none of the *behaviour* does. Persisted
+record shapes and validators exist for `Project` (with its requirements and
+quotes), `Supplier`, `InventoryMovement`, settings, counters and database
+metadata. Products, customers, purchase orders, shipments, receipts and
+reservations have stores and no records yet. No stock arithmetic, no lifecycle
+transition and no invariant from §11 beyond I18 is enforced in code; those
+arrive with Phases 9 and 13–16.
 
 ---
 
@@ -838,7 +845,7 @@ hopes.
 | Change | Migration | Destructive? |
 | --- | --- | --- |
 | `RequirementItem.productId` (Phase 9) | add optional field; existing requirements keep `undefined` | no |
-| Supplier master normalisation (Phase 9) | move project-embedded suppliers into a `suppliers` store, replace with `supplierIds` | no — mechanical, reversible from the snapshot |
+| ~~Supplier master normalisation (Phase 9)~~ | **no longer needed** — `suppliers` + `supplierIds` ship in `schemaVersion` 1 (Phase 7), and no persisted project data can predate it | n/a |
 | Multi-warehouse (future) | seed one `Location`; add required `locationId` to movements, receipts and dispatches; backfill every existing row with the seeded id | no — constant backfill, no information loss |
 | Lot tracking (future) | add `Lot` store; add optional `lotRef` to movements and receipt/dispatch lines; existing rows get `null` = "pre-lot-tracking" | no |
 | Stock balance cache (future) | add a rebuildable cache store; build it from the ledger on first run | no — derived, droppable |

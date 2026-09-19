@@ -7,12 +7,17 @@ customer, and what is still on the water?"* — built around an audited,
 deterministic landed-cost engine and an append-only inventory movement ledger,
 with no backend and no cloud dependency.
 
-**Status.** The calculation and comparison engine (Phases 0–5) and the
-Turkish/English i18n foundation (Phase 6) are implemented. Phase 6.5 expanded
-the product scope to a local operational pilot — purchasing, inbound logistics,
+**Status.** The calculation and comparison engine (Phases 0–5), the
+Turkish/English i18n foundation (Phase 6) and the local persistence layer
+(Phase 7 — a versioned IndexedDB database with migrations, transactions and
+autosave, in `src/persistence/`) are implemented. Phase 6.5 expanded the
+product scope to a local operational pilot — purchasing, inbound logistics,
 inventory, reservations, outbound goods, backup and restore — and defined the
-architecture for it; none of that is built yet. There is no UI and no
-persistence. See [Product Scope](docs/PRODUCT_SCOPE.md) and the
+architecture for it; none of that behaviour is built yet, and there is no UI.
+
+**Do not enter pilot data yet.** Backup, snapshots and restore are Phase 8, so
+the working database currently has nothing behind it. See
+[Product Scope](docs/PRODUCT_SCOPE.md) and the
 [Implementation Plan](docs/IMPLEMENTATION_PLAN.md).
 
 ## Stack

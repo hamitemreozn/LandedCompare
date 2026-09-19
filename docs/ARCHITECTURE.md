@@ -479,6 +479,111 @@ explicit `schemaVersion` separate from `backupFormatVersion`, migrations that
 snapshot before they run, and a restore that validates fully before it writes
 anything and applies atomically when it does.
 
+## Phase 7 state — local persistence & schema foundation
+
+`src/persistence/` is now the **only module in the application that knows
+IndexedDB exists**. The dependency runs one way:
+
+```text
+features / operations / domain
+          ↓
+      persistence
+          ↓
+       IndexedDB
+```
+
+`domain`, `calculation` and `comparison` gained no import, no field and no
+behavioural change; the engine remains storage-agnostic and is proven so by
+`persistence/engineIsolation.test.ts`, which runs `compareSuppliers()` on a
+project and on the same project after a full save/load round trip and requires
+the two results to be identical.
+
+```text
+src/
+  persistence/
+    schema.ts          # database name, SCHEMA_VERSION, the store/index layout
+    database.ts        # open/upgrade/close, version refusal, meta validation
+    migrations.ts      # the numbered migration runner
+    idb.ts             # the thin native IndexedDB wrapper + transaction scope
+    validation.ts      # structural validators for untrusted stored data
+    staleWrite.ts      # updatedAt conflict detection
+    autosave.ts        # debounce/retry/save-state engine (no React, no globals)
+    storage.ts         # navigator.storage persistence + quota estimate
+    tabAdvisory.ts     # BroadcastChannel multi-tab advisory
+    records/           # persisted record shapes, validators, runtime mapping
+    stores/            # typed read/write operations per store
+```
+
+### Native IndexedDB, not a wrapper library
+
+No storage dependency was added. What this layer actually needs is "promisify a
+request" and "run a callback inside one transaction, settling on
+`complete`/`abort`" — about eighty lines in `idb.ts`, and tested directly. A
+library would have added a proxy layer over the one property of IndexedDB that
+most needs to stay visible: when a transaction is still alive. The single new
+dependency is `fake-indexeddb`, and it is a devDependency used so the tests run
+against a real implementation rather than a mock of this code.
+
+### One database, one schema version
+
+The database is named `landedcompare` — fixed, never derived from a route, a
+project or a user. IndexedDB is already scoped to the browser origin, and this
+layer does not pretend otherwise: a different browser or a cleared profile is a
+different (or empty) database, which is precisely why external backup files
+exist.
+
+`schemaVersion` and the IndexedDB database version are kept numerically equal
+but remain distinct concepts, because a Phase 8 backup payload carries a
+`schemaVersion` and has no IndexedDB version at all. The application-level
+version is stamped into the `meta` store inside the upgrade transaction and is
+re-validated on every open; a database whose version — at either level — exceeds
+what the build supports is **refused rather than opened**, since IndexedDB
+cannot downgrade and an older build writing into a newer schema corrupts it
+silently.
+
+### Transactions are the unit of correctness
+
+`Database` exposes only `read(stores, …)` and `write(stores, …)`, so an
+operation cannot run outside a transaction, and any set of stores can
+participate in one. A write resolves on `oncomplete`, never on the individual
+request — which is what lets the UI say "Saved" truthfully. Anything thrown
+inside the callback, including a validation failure between two writes, aborts
+the whole transaction; a typed `PersistenceError` keeps its own code rather than
+being flattened into a generic abort.
+
+Validation, mapping and id generation happen **before** the transaction opens,
+because an IndexedDB transaction closes on the first turn of the event loop
+with no pending request.
+
+### Persisted shape vs runtime shape, made concrete
+
+The rule Phase 6.5 wrote down now has an implementation. A project is *stored*
+with `supplierIds` plus embedded requirements and quotes, and *loaded* as a
+`Project` holding full `Supplier` objects — exactly the shape
+`compareSuppliers()` already expects. Every `Money` and `Quantity` is stored as
+its `toJSON()` decimal string and rebuilt through `fromJSON()` and the domain
+factories; no class instance is written and nothing is hydrated by casting.
+
+Data read back is treated as untrusted — it may be old, half-migrated or
+hand-edited — so every record passes explicit structural validators that reject
+unknown fields, unknown enum values, non-canonical decimals, non-UUID ids and
+prototype-polluting keys.
+
+### What Phase 7 deliberately did not build
+
+No snapshots, no backup file, no restore (Phase 8); no catalog, purchasing,
+logistics or inventory behaviour (Phases 9, 13–16); no UI (Phase 9+). The
+`inventoryMovements` store exists with its append-only write path and no update
+or delete operation at all, but no stock arithmetic — Phase 13 owns that.
+
+**The honest limitation:** the canonical rule that a `PRE_MIGRATION` snapshot is
+written before any migration runs cannot hold yet, because snapshots are Phase
+8. The IndexedDB-level guarantee is real and tested — a migration that throws
+rolls back completely and leaves the database at its previous version with its
+previous data — but the other failure mode, a migration that commits and is
+logically wrong, has no remedy until Phase 8 exists. No pilot data should be
+entered before then.
+
 ## Forward-looking principles (not yet implemented)
 
 These are constraints for future phases, recorded here so early architectural
@@ -487,9 +592,6 @@ decisions don't accidentally violate them:
 - Order multiple (a Phase 3 "should have"), weight/volume allocation, and
   item-level costs remain deferred — see
   [Calculation Rules](CALCULATION_RULES.md).
-- Persistence (IndexedDB, Phase 7) is kept behind the `persistence/` module,
-  separate from domain logic, using each type's `toJSON()`/`fromJSON()`
-  contract, so no domain or operations module depends on browser storage APIs.
 - The pilot has no backend. All computation and storage happens client-side.
   Entity boundaries and UUID identity are chosen so a later `React → API →
   PostgreSQL` architecture is a port rather than a redesign — but no repository

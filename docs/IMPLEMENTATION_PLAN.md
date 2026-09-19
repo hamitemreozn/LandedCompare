@@ -215,21 +215,37 @@ documents start posting into it.
 
 ---
 
-- **Phase 7 — Local Persistence & Schema Foundation** (difficulty 8).
+- **Phase 7 — Local Persistence & Schema Foundation** (done, difficulty 8).
   *Objective:* a durable, versioned local database that everything else is built
   on.
-  *Deliverables:* `src/persistence/` — the IndexedDB connection, the store
+  *Delivered:* `src/persistence/` — the `landedcompare` IndexedDB connection
+  behind a thin native wrapper (no storage library; `fake-indexeddb` is a
+  devDependency so the tests run against a real implementation), the full store
   layout from [Local Persistence & Backup](LOCAL_PERSISTENCE_AND_BACKUP.md) §2,
-  `schemaVersion` and the numbered migration runner with its
-  higher-version-refusal rule, aggregate read/write with explicit multi-store
-  transaction boundaries, the persisted-record ↔ runtime-domain mapping
-  (including `Money`/`Quantity` via their existing `toJSON`/`fromJSON`), the
-  autosave engine and save-state model (§5), stale-write detection on
-  `updatedAt`, multi-tab advisory, quota handling, and `navigator.storage`
-  persistence/estimate wiring.
+  `schemaVersion` stamped into `meta` and re-validated on every open, the
+  numbered migration runner with sequential steps and the
+  higher-version-refusal rule checked both before and after `open()`, aggregate
+  read/write where every operation names its stores and runs in one transaction
+  that resolves on commit, the persisted-record ↔ runtime-domain mapping
+  (`supplierIds` → `Project.suppliers`; `Money`/`Quantity` via their existing
+  `toJSON`/`fromJSON`), explicit structural validation of untrusted stored
+  data, the append-only write path for `inventoryMovements` with no update or
+  delete operation at all, the autosave engine and save-state model (§5) with
+  an injected clock, stale-write detection on `updatedAt`, the `BroadcastChannel`
+  multi-tab advisory, typed quota handling, and `navigator.storage`
+  persistence/estimate wiring. The financial engine was not touched, and a test
+  runs `compareSuppliers()` before and after a save/load round trip to keep it
+  that way.
+  *Not delivered, by design:* snapshots, backup and restore (Phase 8); any
+  entity behaviour for catalog, purchasing, logistics or inventory (Phases 9,
+  13–16); any UI (Phase 9+). The canonical `PRE_MIGRATION` snapshot rule
+  therefore cannot hold yet — see the honest limitation recorded in
+  [Local Persistence & Backup](LOCAL_PERSISTENCE_AND_BACKUP.md) §4, rule 3.
   *Dependencies:* Phases 0–6.
-  *Risk:* transaction-boundary correctness and the migration runner. Both are
-  things later phases cannot fix cheaply.
+  *Risk (realised):* the migration runner was the sharp edge, exactly as
+  predicted — two defects found by its own tests, both silent-corruption class:
+  concurrent steps overwriting each other's output, and a failure captured
+  after the result had already been reported.
 
 - **Phase 8 — Backup, Snapshots & Restore** (difficulty 8).
   *Objective:* the pilot cannot lose its data.
@@ -249,12 +265,24 @@ documents start posting into it.
 - **Phase 9 — Catalog & Parties** (difficulty 4).
   *Objective:* stable master records for products, suppliers and customers.
   *Deliverables:* `Product` with its immutable-once-used `stockUnit`, SKU
-  uniqueness, active/inactive deactivation instead of deletion; supplier master
-  normalisation (the `suppliers` store + `supplierIds` on project records, with
-  the migration); minimal `Customer`; the additive optional
-  `RequirementItem.productId`; CRUD screens.
+  uniqueness, active/inactive deactivation instead of deletion; the supplier
+  master (records, lifecycle, screens); minimal `Customer`; the additive
+  optional `RequirementItem.productId`; CRUD screens.
   *Dependencies:* Phase 7.
-  *Risk:* low. The supplier normalisation migration is the only sharp edge.
+  *Risk:* low.
+
+  **Scope correction made during Phase 7.** This phase was written to include a
+  *supplier normalisation migration* — moving project-embedded suppliers into a
+  `suppliers` store and replacing them with `supplierIds`. That migration is no
+  longer needed and is not part of Phase 9. [Local Persistence &
+  Backup](LOCAL_PERSISTENCE_AND_BACKUP.md) §2 defines the schema as already
+  normalised, and Phase 7's deliverable was that layout, so `suppliers` and
+  `supplierIds` ship in `schemaVersion` 1. There is also nothing to migrate: no
+  UI exists before Phase 10, so no persisted project data can predate the
+  normalised shape. The corresponding row in [Data Model](DATA_MODEL.md) §12 is
+  annotated with the same correction. What remains in Phase 9 is the supplier
+  master's product surface — CRUD, deactivation, and the `active` flag — not a
+  schema move.
 
 - **Phase 10 — Projects, Requirements, Suppliers & Quotes UI** (difficulty 7).
   *Objective:* the existing engine becomes usable.
@@ -359,4 +387,6 @@ documents start posting into it.
 
 Phases 0–5 are implemented — **Checkpoint 1: engine complete.** Phase 6
 (i18n) is implemented. Phase 6.5 is an architecture/product checkpoint with no
-production code. Phase 7 onward is not started.
+production code. Phase 7 (local persistence) is implemented. Phase 8 onward is
+not started, and **no pilot data should be entered until Phase 8 ships** — the
+working database has no backup, no snapshot and no restore behind it yet.

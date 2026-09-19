@@ -1,4 +1,11 @@
 import '@testing-library/jest-dom/vitest'
+// jsdom ships no IndexedDB implementation, so the Phase 7 persistence tests
+// would have nothing to run against. `fake-indexeddb/auto` installs a real,
+// spec-following implementation on the global scope — the persistence layer is
+// exercised as written rather than mocked into agreeing with itself. It adds
+// the `indexedDB`/`IDBKeyRange` globals and nothing else, so no other suite
+// changes behaviour.
+import 'fake-indexeddb/auto'
 import { afterEach } from 'vitest'
 import { cleanup } from '@testing-library/react'
 
