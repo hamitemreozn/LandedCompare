@@ -106,13 +106,60 @@ const dropUnusableActiveIndexes: Migration = {
 }
 
 /**
+ * `v2 → v3`: the catalog and party record types arrive, and no stored record
+ * moves.
+ *
+ * Phase 9 introduces three shape changes at once: `products` gains a record
+ * type and a writer, `customers` does too, and `RequirementItem` gains the
+ * optional `productId` that links a requirement to the catalog (Data Model §4,
+ * "The RequirementItem → Product link", listed in §12 as an additive
+ * migration).
+ *
+ * ## Why it rewrites nothing
+ *
+ * - `products` and `customers` are **empty in every version-2 database**. The
+ *   stores were created at version 1 (Phase 7 created all of them up front),
+ *   but no code path has ever written to them: there was no record type, no
+ *   store helper and no UI. There is nothing to transform.
+ * - `productId` is optional and absent. Rule 2 — never assume old data matches
+ *   the new shape — is satisfied by the shape itself: `optional()` reads a
+ *   missing key as `undefined`, which is what an unlinked requirement means.
+ *   Backfilling it would require inventing a product reference, which is the
+ *   one thing a migration may never do.
+ *
+ * ## Why it is declared anyway
+ *
+ * The same reason the payload side of `v1 → v2` is (see
+ * `src/backup/payloadMigrations.ts`), plus one that only applies to the
+ * database. `schemaVersion` is the fence in rule 5: a build must refuse a
+ * database newer than it understands. Leaving this at 2 would let a Phase 8
+ * build open a database full of products it has no validator for — it would
+ * read them as nothing, and `validateBackupData` would refuse the backup it
+ * then produced with `BACKUP_STORE_UNSUPPORTED`. The bump turns that silent
+ * mismatch into the explicit refusal rule 5 exists to give.
+ */
+const catalogAndPartyRecordTypes: Migration = {
+  to: 3,
+  description: 'products/customers record types and RequirementItem.productId; no record rewritten',
+  migrate: () => {
+    // Intentionally empty. See the comment above: the two stores are empty at
+    // version 2 and the new field is optional-absent, so there is no previous
+    // shape to read and no new one to write. An assertion here would have to
+    // cursor over stores that are provably empty to prove they are empty.
+  },
+}
+
+/**
  * The released migration chain.
  *
  * Frozen once released (rule 4): a later shape change is the next number, never
  * an edit to a shipped step — a shipped step is the only thing that can read
  * the databases already out there.
  */
-export const MIGRATIONS: readonly Migration[] = [dropUnusableActiveIndexes]
+export const MIGRATIONS: readonly Migration[] = [
+  dropUnusableActiveIndexes,
+  catalogAndPartyRecordTypes,
+]
 
 /**
  * Checks that a chain is usable before anything runs it: sorted, no duplicate

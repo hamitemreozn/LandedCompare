@@ -1,0 +1,117 @@
+/*
+ * Design tokens.
+ *
+ * One scale for each decision, named by role rather than by value: a component
+ * asks for `--surface-raised`, not for `#ffffff`, so a change lands in one
+ * place instead of in forty. Everything visual in this application resolves to
+ * a variable declared here.
+ *
+ * `color-scheme: light` is deliberate and is not an oversight. A half-built
+ * dark mode looks worse than none — native form controls, focus rings and
+ * scrollbars all follow the declaration, and a product that flips half its
+ * surfaces and none of its inputs is the "Bootstrap admin demo" look this
+ * phase is explicitly trying not to produce. A real dark theme is a set of
+ * token overrides on this file, which is the point of having it.
+ */
+
+:root {
+  color-scheme: light;
+
+  /* ── Palette ─────────────────────────────────────────────────────────── */
+  /* A restrained trade/fintech palette: deep ink navigation, paper content,
+     one confident accent. No gradients, no second accent competing with it. */
+  --ink-900: #0b1524;
+  --ink-800: #131f33;
+  --ink-700: #1c2b44;
+  --ink-600: #2a3b57;
+
+  --slate-900: #16202e;
+  --slate-700: #3c4a5e;
+  --slate-500: #64748b;
+  --slate-400: #94a3b8;
+  --slate-300: #cbd5e1;
+  --slate-200: #e2e8f0;
+  --slate-100: #f1f5f9;
+  --slate-50: #f7f9fc;
+
+  --accent-700: #0f5f73;
+  --accent-600: #12718a;
+  --accent-500: #1587a3;
+  --accent-100: #dff1f6;
+  --accent-50: #f0f9fb;
+
+  --amber-700: #92620a;
+  --amber-500: #d08700;
+  --amber-100: #fdf3d9;
+
+  --red-700: #9f2c2c;
+  --red-600: #c03636;
+  --red-100: #fbe6e6;
+
+  --green-700: #17694a;
+  --green-100: #dcf3e9;
+
+  /* ── Roles ───────────────────────────────────────────────────────────── */
+  --surface-app: var(--slate-50);
+  --surface-raised: #ffffff;
+  --surface-sunken: var(--slate-100);
+  --surface-nav: var(--ink-900);
+
+  --text-primary: var(--slate-900);
+  --text-secondary: var(--slate-700);
+  --text-muted: var(--slate-500);
+  --text-on-nav: #e8eef7;
+  --text-on-nav-muted: #93a3bb;
+  --text-on-accent: #ffffff;
+
+  --border-subtle: var(--slate-200);
+  --border-strong: var(--slate-300);
+  --border-nav: rgba(255, 255, 255, 0.08);
+
+  --accent: var(--accent-600);
+  --accent-strong: var(--accent-700);
+  --focus-ring: var(--accent-500);
+
+  /* ── Type ────────────────────────────────────────────────────────────── */
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue',
+    Arial, sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'Cascadia Mono', 'Segoe UI Mono', Menlo, monospace;
+
+  --text-xs: 0.75rem;
+  --text-sm: 0.8125rem;
+  --text-base: 0.9375rem;
+  --text-md: 1rem;
+  --text-lg: 1.125rem;
+  --text-xl: 1.375rem;
+  --text-2xl: 1.75rem;
+  --text-3xl: 2.25rem;
+
+  --weight-normal: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+
+  /* ── Space ───────────────────────────────────────────────────────────── */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-10: 2.5rem;
+  --space-12: 3rem;
+  --space-16: 4rem;
+
+  /* ── Shape ───────────────────────────────────────────────────────────── */
+  --radius-sm: 4px;
+  --radius-md: 7px;
+  --radius-lg: 11px;
+  --radius-pill: 999px;
+
+  --shadow-sm: 0 1px 2px rgba(15, 30, 55, 0.06), 0 1px 1px rgba(15, 30, 55, 0.04);
+  --shadow-md: 0 2px 6px rgba(15, 30, 55, 0.07), 0 6px 16px rgba(15, 30, 55, 0.06);
+  --shadow-lg: 0 8px 28px rgba(15, 30, 55, 0.14);
+
+  --sidebar-width: 244px;
+  --content-max: 1180px;
+}

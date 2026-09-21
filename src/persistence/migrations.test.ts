@@ -115,8 +115,8 @@ function chainWith(...steps: readonly Migration[]): readonly Migration[] {
 
 describe('the released migration chain', () => {
   it('reaches exactly the schema version this build declares', () => {
-    expect(MIGRATIONS.map((step) => step.to)).toEqual([2])
-    expect(SCHEMA_VERSION).toBe(2)
+    expect(MIGRATIONS.map((step) => step.to)).toEqual([2, 3])
+    expect(SCHEMA_VERSION).toBe(3)
   })
 
   it('never reaches beyond the schema version it claims to produce', () => {

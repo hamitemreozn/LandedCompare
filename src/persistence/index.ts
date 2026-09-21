@@ -52,6 +52,9 @@ export { assertNotStale, type StaleWriteCheck } from './staleWrite'
 
 export type { MetaRecord } from './records/meta'
 export type { SupplierRecord } from './records/supplier'
+export { normaliseSku, type ProductRecord } from './records/product'
+export type { CustomerRecord } from './records/customer'
+export { withoutUndefined } from './records/shape'
 export type { ProjectRecord, QuoteRecord, QuoteItemRecord, RequirementItemRecord } from './records/project'
 export type { SettingRecord, SettingValue } from './records/settings'
 export type { CounterRecord } from './records/counter'
@@ -79,6 +82,22 @@ export {
   putSupplierRecord,
   readSupplierRecord,
 } from './stores/supplierStore'
+export {
+  saveProduct,
+  loadProductRecord,
+  listProductRecords,
+  putProductRecord,
+  readProductRecord,
+  readAllProductRecords,
+} from './stores/productStore'
+export {
+  saveCustomer,
+  loadCustomerRecord,
+  listCustomerRecords,
+  putCustomerRecord,
+  readCustomerRecord,
+  readAllCustomerRecords,
+} from './stores/customerStore'
 export {
   saveProject,
   loadProject,

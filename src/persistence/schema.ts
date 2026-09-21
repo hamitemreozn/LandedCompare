@@ -43,14 +43,24 @@ export const DATABASE_NAME = 'landedcompare'
  * `products.active`, `suppliers.active` and `customers.active`. See
  * `REMOVED_BOOLEAN_INDEXES` below for why they could not work, and
  * `migrations.ts` for the step that deletes them from a stored v1 database.
+ *
+ * **Version 3** is Phase 9's record-shape change: `products` and `customers`
+ * gain record types and writers, and `RequirementItem` gains the optional
+ * `productId` that links a requirement to the catalog. No stored record is
+ * rewritten — the two stores are provably empty at version 2 because no code
+ * path wrote them, and an absent optional field is absent either way — but the
+ * *set of shapes this database may contain* has changed, which is exactly what
+ * `schemaVersion` describes. Without the bump a version-2 build would open a
+ * database full of products it has no validator for and export a backup it
+ * could never restore.
  */
-export const SCHEMA_VERSION = 2
+export const SCHEMA_VERSION = 3
 
 /**
  * Informational build marker recorded in `meta`. Never branched on — it exists
  * so a support question ("which build wrote this?") has an answer.
  */
-export const APP_VERSION = '0.7.0'
+export const APP_VERSION = '0.9.0'
 
 export const STORE_NAMES = [
   'meta',

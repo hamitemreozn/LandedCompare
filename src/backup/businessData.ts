@@ -39,7 +39,9 @@ import { PersistenceError } from '../persistence/errors'
 import type { TransactionScope } from '../persistence/idb'
 import { BUSINESS_STORE_NAMES, type StoreName } from '../persistence/schema'
 import { parseCounterRecord } from '../persistence/records/counter'
+import { parseCustomerRecord } from '../persistence/records/customer'
 import { parseInventoryMovementRecord } from '../persistence/records/inventoryMovement'
+import { parseProductRecord } from '../persistence/records/product'
 import { parseProjectRecord } from '../persistence/records/project'
 import { parseSettingRecord } from '../persistence/records/settings'
 import { parseSupplierRecord } from '../persistence/records/supplier'
@@ -82,7 +84,9 @@ type RecordParser = (value: unknown, path: string) => unknown
 const RECORD_PARSERS: Partial<Record<BusinessStoreName, RecordParser>> = {
   settings: parseSettingRecord,
   counters: parseCounterRecord,
+  products: parseProductRecord,
   suppliers: parseSupplierRecord,
+  customers: parseCustomerRecord,
   projects: parseProjectRecord,
   inventoryMovements: parseInventoryMovementRecord,
 }

@@ -42,6 +42,30 @@ export function formatCurrency(
   }).format(Number(amount))
 }
 
+/**
+ * An ISO instant (`createdAt`, `updatedAt`) as a readable local date and time.
+ *
+ * The **stored** value is always UTC with milliseconds, because that is what
+ * makes `updatedAt` comparable as a string and the stale-write check
+ * meaningful. This turns it into something a person reads, in their own time
+ * zone, and the result is never parsed back — same contract as the number
+ * helpers above.
+ *
+ * An unparseable value is returned as it was stored rather than rendered as
+ * "Invalid Date": if a record ever carries a timestamp this build does not
+ * understand, showing the raw value is what lets someone diagnose it.
+ */
+export function formatInstant(instant: string, locale: SupportedLocale): string {
+  const parsed = Date.parse(instant)
+  if (Number.isNaN(parsed)) {
+    return instant
+  }
+  return new Intl.DateTimeFormat(toIntlLocale(locale), {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  }).format(new Date(parsed))
+}
+
 /** `value` is a fraction (e.g. `0.1856`, not `18.56`) — `Intl` multiplies by 100 for display. */
 export function formatPercentage(
   value: string | number,

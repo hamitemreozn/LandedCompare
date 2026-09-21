@@ -126,7 +126,7 @@ describe('a fresh version-2 database', () => {
   it('never creates the unusable indexes in the first place', async () => {
     const name = createTestDatabaseName('v2-fresh')
     const database = await openDatabase({ name })
-    expect(database.schemaVersion).toBe(2)
+    expect(database.schemaVersion).toBe(SCHEMA_VERSION)
     database.close()
 
     for (const { store, index } of REMOVED_BOOLEAN_INDEXES) {
@@ -177,7 +177,7 @@ describe('upgrading a real version-1 database', () => {
     expect(before.customers).toContain('active')
 
     const upgraded = await openDatabase({ name })
-    expect(upgraded.schemaVersion).toBe(2)
+    expect(upgraded.schemaVersion).toBe(SCHEMA_VERSION)
     upgraded.close()
 
     expect(await readIndexNames(name, 'products')).toEqual(['sku'])
@@ -311,16 +311,16 @@ describe('upgrading a real version-1 database', () => {
     expect(await readStoredSchemaVersion(name)).toBe(1)
 
     const upgraded = await openDatabase({ name })
-    expect(upgraded.schemaVersion).toBe(2)
-    expect(upgraded.meta.schemaVersion).toBe(2)
+    expect(upgraded.schemaVersion).toBe(SCHEMA_VERSION)
+    expect(upgraded.meta.schemaVersion).toBe(SCHEMA_VERSION)
     upgraded.close()
 
-    expect(await readStoredSchemaVersion(name)).toBe(2)
+    expect(await readStoredSchemaVersion(name)).toBe(SCHEMA_VERSION)
 
     // Reopening is a no-op: no upgrade fires, and the version still reads back
-    // as 2 from both the stored record and the connection.
+    // as the current one from both the stored record and the connection.
     const reopened = await openDatabase({ name })
-    expect(reopened.meta.schemaVersion).toBe(2)
+    expect(reopened.meta.schemaVersion).toBe(SCHEMA_VERSION)
     expect(await readIndexNames(name, 'suppliers')).toEqual([])
     reopened.close()
 
@@ -342,8 +342,8 @@ describe('upgrading a real version-1 database', () => {
   })
 
   it('is the released chain, not a chain a test invented', async () => {
-    expect(MIGRATIONS.map((step) => step.to)).toEqual([2])
-    expect(SCHEMA_VERSION).toBe(2)
+    expect(MIGRATIONS.map((step) => step.to)).toEqual([2, 3])
+    expect(SCHEMA_VERSION).toBe(3)
     expect(() => assertMigrationChain(MIGRATIONS, SCHEMA_VERSION)).not.toThrow()
 
     const name = await seededV1('v2-released-chain')
@@ -420,7 +420,7 @@ describe('an upgrade that fails', () => {
     ).rejects.toMatchObject({ code: 'MIGRATION_FAILED' })
 
     const upgraded = await openDatabase({ name })
-    expect(upgraded.meta.schemaVersion).toBe(2)
+    expect(upgraded.meta.schemaVersion).toBe(SCHEMA_VERSION)
     upgraded.close()
     expect(await readIndexNames(name, 'suppliers')).toEqual([])
 

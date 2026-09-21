@@ -52,7 +52,15 @@ describe('backup scope', () => {
 
   it('knows which stores this build can actually validate', () => {
     expect([...VALIDATED_STORE_NAMES].sort()).toEqual(
-      ['counters', 'inventoryMovements', 'projects', 'settings', 'suppliers'].sort(),
+      [
+        'counters',
+        'customers',
+        'inventoryMovements',
+        'products',
+        'projects',
+        'settings',
+        'suppliers',
+      ].sort(),
     )
   })
 
@@ -322,13 +330,18 @@ describe('validateBackupData', () => {
   })
 
   it('refuses records for a store this build has no validator for', () => {
+    // `purchaseOrders` exists in the schema — Phase 7 created every store up
+    // front — but its record type arrives with Phase 14. Until then a payload
+    // claiming to carry one is refused rather than written unchecked.
     expect(
-      codeOf(() => validateBackupData(dataWith({ products: [{ id: testUuid(1), sku: 'A' }] }))),
+      codeOf(() =>
+        validateBackupData(dataWith({ purchaseOrders: [{ id: testUuid(1), code: 'PO-1' }] })),
+      ),
     ).toBe('BACKUP_STORE_UNSUPPORTED')
   })
 
   it('accepts an empty array for such a store', () => {
-    expect(() => validateBackupData(dataWith({ products: [] }))).not.toThrow()
+    expect(() => validateBackupData(dataWith({ purchaseOrders: [] }))).not.toThrow()
   })
 
   it('rejects duplicate primary keys inside one store', () => {

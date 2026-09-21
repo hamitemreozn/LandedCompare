@@ -696,7 +696,8 @@ inverting the dependency direction this whole layering is built on. So the
 sequence — read the stored version, open *at that version*, snapshot, close,
 then open normally — belongs to whoever starts the application.
 `ensurePreMigrationSnapshot()` implements it and reports; the startup wiring
-and the screen that explains a `VERSION_UNKNOWN` are Phase 9's.
+and the screen that explains a `VERSION_UNKNOWN` are Phase 9's — **built, in
+`src/app/bootstrap.ts`; see the Phase 9 section below.**
 
 ### No React, no i18n, one DOM function
 
@@ -713,6 +714,153 @@ No Settings screen, no file picker, no restore wizard, no notification UI
 a user gesture in a picker, which is the UI this phase must not build, and the
 download path is required to remain the fallback in every case regardless. No
 backup encryption (Product Scope, Open Decision 9 — post-pilot).
+
+## Phase 9 state — application boot, catalog & parties
+
+The first phase with a user in it. Two things arrive together, and they are
+related: the startup sequence that connects Phases 7 and 8 to a running
+application, and the first three screens with real records behind them.
+
+```text
+src/
+  app/
+    bootstrap.ts          # the startup sequence; no React, no strings
+    useApplicationBoot.ts # drives it from React; owns the connection + advisory
+    runtime.ts            # the AppRuntime context: the one thing screens get
+    routes.ts             # four route ids and a hash
+    useRoute.ts           # keeps the route and the address bar in step
+  features/
+    shell/                # navigation rail, boot screens, advisory banners
+    dashboard/            # counts, local-data facts, backup freshness
+    catalog/              # product service, screen, form
+    parties/              # supplier + customer services, screens, forms
+    shared/               # list mechanics, error translation, form errors
+  ui/                     # tokens.css, components.css, fields, feedback, dialog
+```
+
+### The boot gate is a safety mechanism, not a loading spinner
+
+`App.tsx` renders exactly one of four things — initialising, failed, migration
+blocked, or the application — and the first three render **no business data at
+all**. That is the point. An application that drops a user into an empty
+product list because the database would not open has told them their catalogue
+is gone, and the natural response is to start re-entering it over data that was
+never lost. `AppRuntimeProvider` is mounted only inside the `READY` branch, so
+`useAppRuntime()` cannot be reached without an open database and throws if it
+is; a screen is structurally incapable of rendering over a failed boot.
+
+The order inside `bootstrapApplication()` is fixed by IndexedDB's semantics,
+not by preference: the `PRE_MIGRATION` snapshot has to commit **before** the
+connection that triggers the upgrade is opened, for the reason in the Phase 8
+section above. Snapshot maintenance and backup freshness come after the open
+because both need the connection, and neither is allowed to stop the
+application — a daily snapshot that will not fit is a warning, not a reason to
+refuse to start over data that is perfectly intact.
+
+Two failures *do* stop it, and both stop it before anything has been written:
+
+- **the stored version cannot be established** (`VERSION_UNKNOWN` — a browser
+  without `indexedDB.databases()`). "No database" and "a database one version
+  behind" are the same answer there, and picking the harmless reading is the
+  guess that silently migrates real data with no way back;
+- **the protective snapshot could not be written.** The upgrade is not
+  attempted. There is deliberately no override: a button labelled "upgrade
+  anyway" is a button that destroys data.
+
+Neither screen offers to delete the database. `deleteDatabase()` already
+refuses the production name without an explicit token, and a test asserts that
+the failure screen's only control is "try again".
+
+### Screens do not know that IndexedDB exists
+
+```text
+screen → feature service → typed persistence store → IndexedDB
+```
+
+No component imports `src/persistence/idb`, opens a transaction, or calls
+`TransactionScope.put`. That boundary is the one an independent audit warned
+about: a raw low-level write bypasses the record validators, and a record that
+never met them can be written today and refuse to restore from a backup
+tomorrow. The services are where identity and time are decided — `id` is
+generated once on create and reused on edit, `createdAt` survives every edit,
+and `updatedAt` is restamped by the service rather than by the store, because
+that value is what the stale-write check compares against.
+
+### Active/inactive is a filtered read, and stays one
+
+`schemaVersion` 2 removed the three boolean `active` indexes because a boolean
+is not a valid IndexedDB key and the indexes were therefore always empty.
+Phase 9 owns the surface they were meant to serve and does **not** reintroduce
+them in any form — no `activeFlag`, no `activeKey`. `matchesActiveFilter` in
+`features/shared/masterData.ts` decides it over records already read, which at
+pilot volume is a scan of data that is about to be rendered anyway.
+
+The same file carries the two Turkish text rules the rest of the UI depends on:
+search folds case with `toLocaleLowerCase(locale)` (so "istanbul" finds
+"İSTANBUL"), and sorting uses `Intl.Collator` (so `Ç` lands between C and D
+rather than after Z). The deliberate exception is `normaliseSku`, which folds
+case **without** a locale — whether two SKUs collide is a question about
+identity and must not depend on the selected language.
+
+### Stored values are locale-independent; only labels are translated
+
+Two places in Phase 9 where the interface language could have leaked into the
+data, and neither does.
+
+**Units.** The predefined units are stored as codes (`PIECE`, `BOX`, …) and
+labelled at render time, so the same choice made in Turkish and in English
+persists the same value. A unit the company typed itself is stored and shown
+verbatim and is never translated. One field carries both cases — membership in
+the canonical vocabulary distinguishes them — because a `unitCode` beside a
+`unitLabel` is duplicated state of exactly the kind `active` already refuses.
+See `features/shared/units.ts` and [Data Model](DATA_MODEL.md) §4.
+
+**Decimals.** A Turkish user types `12,5` and an English user types `12.5`;
+both store `"12.5"`. `features/shared/decimalInput.ts` rewrites separator
+characters for the current locale and does nothing else — no `parseFloat`, no
+arithmetic — and hands the result to `Quantity.fromString`, which remains the
+authority on whether it is a quantity at all. Thousands separators are not
+accepted, which is what keeps the conversion free of magnitude guessing: the
+one genuinely two-way shape (a locale grouping character followed by exactly
+three digits, as in a Turkish `1.500`) is refused by name with a message
+offering both unambiguous spellings, rather than resolved by a convention the
+user did not know they were relying on.
+
+`schemaVersion` does not move for either. The record shapes are unchanged, and
+the only stored units are development records holding label-shaped strings,
+which degrade gracefully into custom units — they remain valid, display exactly
+as they were typed, and nothing rewrites them.
+
+### Explicit Save, not autosave
+
+Phase 7's autosave engine exists and these forms do not use it. Autosave is
+right for a long-lived working document; a master record is a handful of fields
+entered once, and its SKU is unique — autosaving would race the uniqueness
+check against the user's typing. Explicit Save is also the shape the
+stale-write contract wants: one save, one `previousUpdatedAt`, one answer. A
+refused save surfaces as a banner with a reload action, never as a silent
+merge.
+
+### `schemaVersion` 3
+
+Adding record types for `products` and `customers`, plus the optional
+`RequirementItem.productId` the Data Model has had planned since §12, is a
+record-shape change. Both database and payload migration chains gain a step
+that rewrites nothing — the two stores are provably empty at version 2 and the
+new field is optional-absent — declared for the reason rule 5 makes
+non-negotiable: without the bump, a Phase 8 build would open a database full of
+products it has no validator for, and export a backup it could never restore.
+
+### What Phase 9 deliberately did not build
+
+No backup export or restore UI — the dashboard states backup freshness
+truthfully and says the export screen arrives later, which is a smaller claim
+than a button that does not exist. No enforcement of Data Model I11
+(`stockUnit` immutable once movements exist): at Phase 9 no movement can exist,
+the ledger has no producer until Phase 13, and widening every product save into
+a cross-store transaction against a provably empty store is Phase 13's rule to
+implement where it can be proven. No hard delete anywhere. No project,
+requirement, quote or comparison screens (Phases 10–12).
 
 ## Forward-looking principles (not yet implemented)
 

@@ -366,14 +366,59 @@ documents start posting into it.
      `withoutUndefined` in the store helpers; there is no stored pilot data to
      migrate.
 
-- **Phase 9 — Catalog & Parties** (difficulty 4).
-  *Objective:* stable master records for products, suppliers and customers.
-  *Deliverables:* `Product` with its immutable-once-used `stockUnit`, SKU
-  uniqueness, active/inactive deactivation instead of deletion; the supplier
-  master (records, lifecycle, screens); minimal `Customer`; the additive
-  optional `RequirementItem.productId`; CRUD screens.
-  *Dependencies:* Phase 7.
-  *Risk:* low.
+- **Phase 9 — Application Boot, Catalog & Parties** (done, difficulty 4).
+  *Objective:* stable master records for products, suppliers and customers —
+  and, because nothing can be entered into them until the application starts,
+  the startup sequence that connects Phases 7 and 8 to a running product.
+  *Delivered, part A — startup:* `src/app/bootstrap.ts` is the production
+  caller the Phase 8 audit found missing. It asks for durable storage (best
+  effort), calls `ensurePreMigrationSnapshot()` **before** opening — the order
+  IndexedDB forces, since a snapshot written inside `upgradeneeded` rolls back
+  with the migration it protects — opens (which is where a migration actually
+  runs), runs `runSnapshotMaintenance()`, and reads `externalBackupStatus()`.
+  Four explicit boot states (`INITIALIZING`, `READY`, `MIGRATION_BLOCKED`,
+  `FAILED`); **no business data renders in any of them but `READY`**, so an
+  empty product list can never stand in for a database that did not open.
+  `VERSION_UNKNOWN` and a failed protective snapshot both block rather than
+  migrate, with no override; the failure screen's only control is "try again",
+  asserted by a test. The multi-tab `BroadcastChannel` advisory is connected
+  and surfaces as a banner. Every failure crosses into the UI as a code and is
+  translated by `src/i18n/persistenceText.ts`; no `DOMException` text reaches a
+  screen.
+  *Delivered, part B — product:* the application shell (navigation rail with
+  the future modules shown as explicitly unavailable, language switch,
+  app-level advisories), a hash router with no dependency, a dashboard of
+  counts and local-data facts, and CRUD for `Product`, `Supplier` and
+  `Customer` — list with search/status-filter/sort, form with validation,
+  explicit Save under the stale-write contract, and deactivation instead of
+  deletion. `products` and `customers` gain record types, typed stores and
+  backup validators; `RequirementItem.productId` is added (Data Model §12).
+  All three land at `schemaVersion` 3, with a database and a payload migration
+  step that rewrite nothing and are declared and tested as no-ops.
+  Case-insensitive SKU uniqueness is enforced inside the write transaction,
+  because the unique index compares by code unit and cannot express it.
+  *Dependencies:* Phases 7, 8.
+  *Risk (realised):* low, as predicted. The sharp edges were Turkish text
+  handling — `toLowerCase()` mangles `İ`, and code-unit sorting puts every
+  Turkish letter after Z — and the fact that CSS `text-transform: uppercase` is
+  language-sensitive, so `document.documentElement.lang` has to follow the
+  selected locale or a heading loses its dotted capital `İ`.
+
+  **Two canonical rules Phase 9 was careful not to break.** The three boolean
+  `active` indexes removed at `schemaVersion` 2 are **not** reintroduced in any
+  form — no `activeFlag`, no `activeKey`; "only the active ones" is a filtered
+  read in the application layer. And no React component reaches past the typed
+  stores: nothing imports `src/persistence/idb`, opens a transaction or calls
+  `TransactionScope.put`, because a raw low-level write bypasses the record
+  validators and can produce a record that will not restore.
+
+  **One rule deliberately left to the phase that can prove it.** Data Model
+  I11 — `product.stockUnit` is immutable once any movement exists — is not
+  enforced here. At Phase 9 no movement can exist: `inventoryMovements` has no
+  producer until Phase 13 builds the ledger. Implementing it now would mean
+  widening every product save into a cross-store transaction against a store
+  that is provably empty, which is Phase 13 logic wearing a Phase 9 label. The
+  form tells the user the field becomes fixed once stock movements exist.
 
   **Scope correction made during Phase 7.** This phase was written to include a
   *supplier normalisation migration* — moving project-embedded suppliers into a
@@ -491,20 +536,28 @@ documents start posting into it.
 
 Phases 0–5 are implemented — **Checkpoint 1: engine complete.** Phase 6
 (i18n) is implemented. Phase 6.5 is an architecture/product checkpoint with no
-production code. Phase 7 (local persistence) and Phase 8 (backup, snapshots and
-restore) are implemented. Phase 9 onward is not started.
+production code. Phase 7 (local persistence), Phase 8 (backup, snapshots and
+restore) and Phase 9 (application boot, catalog and parties) are implemented.
+Phase 10 onward is not started.
 
-**On entering pilot data.** The recovery layer is now in place: data can be
-snapshotted, exported to a portable checksummed file, and restored atomically
-with a pre-restore snapshot and read-back verification. That removes the reason
-Phase 7 gave for entering no data at all.
+**On entering pilot data.** The wiring Phase 8 named as Phase 9's first
+responsibility is done: `runSnapshotMaintenance()` runs on startup,
+`ensurePreMigrationSnapshot()` is called before any upgrade and blocks the
+upgrade if it fails, and the staleness state is on the first screen the user
+sees. Master data — products, suppliers, customers — can now be entered through
+the application, and what is entered is snapshotted daily and covered by the
+backup payload.
 
-It does **not** mean the product is usable. There is still no UI, so there is
-no way to enter data except through code, and nothing to press to take a
-backup. The honest statement is narrower and worth keeping precise: *persistence
-and recovery are sound enough that data entered through the Phase 9+ screens,
-once they exist, will not be data at risk.* The remaining wiring that makes
-that true in practice — running `runSnapshotMaintenance()` on startup, calling
-`ensurePreMigrationSnapshot()` before an upgrade, and putting the
-staleness warning somewhere the user cannot miss — is Phase 9's first
-responsibility, not an optional polish item.
+The honest limits, which are narrower than "ready":
+
+- **There is still no way to press "export a backup".** The freshness warning
+  is truthful and will stay loud, because nothing can make it go away yet. The
+  Settings screen that exports and restores is a later phase, and until it
+  exists the only disaster-recovery layer is unreachable from the UI. Data
+  entered now survives a browser crash and a bad migration; it does not survive
+  a dead disk.
+- **Nothing operational exists.** No projects, quotes, comparisons, orders,
+  shipments or stock. Master data entered now is exactly that — master data.
+
+So: entering the company's real product, supplier and customer lists is now a
+reasonable thing to do. Running the pilot on it is not.

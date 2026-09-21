@@ -9,6 +9,22 @@ export interface RequirementItem {
   readonly id: string
   readonly productName: string
   readonly sku?: string
+  /**
+   * Optional link to a `Product` in the catalog master (Data Model §4, "The
+   * RequirementItem → Product link"; the additive Phase 9 change listed in
+   * §12).
+   *
+   * **Nothing in `src/calculation` or `src/comparison` reads it.** Those
+   * modules consume `id`, `requiredQuantity` and `comparisonUnit` only, so this
+   * field changes no monetary behaviour — it exists so that a requirement which
+   * *does* name a catalog product can carry a stable reference instead of a
+   * retyped name, which is what a purchase-order line will need in Phase 14.
+   *
+   * It stays optional on a requirement on purpose: a quick comparison of
+   * something the company has never bought must not force catalog entry. The
+   * link becomes mandatory only where an operational document depends on it.
+   */
+  readonly productId?: string
   readonly requiredQuantity: Quantity
   readonly comparisonUnit: string
 }
@@ -17,6 +33,7 @@ export interface CreateRequirementItemInput {
   id: string
   productName: string
   sku?: string
+  productId?: string
   requiredQuantity: string
   comparisonUnit: string
 }
@@ -42,6 +59,7 @@ export function createRequirementItem(input: CreateRequirementItemInput): Requir
     id: input.id,
     productName: input.productName,
     sku: input.sku,
+    productId: input.productId,
     requiredQuantity: Quantity.fromString(input.requiredQuantity),
     comparisonUnit: input.comparisonUnit,
   }

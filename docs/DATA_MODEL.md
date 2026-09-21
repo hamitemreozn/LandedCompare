@@ -204,7 +204,36 @@ sees stock units. This keeps stock arithmetic a plain sum with no hidden
 multiplications, which is what makes it auditable.
 
 Consequently `stockUnit` is **immutable once at least one movement exists for
-the product** (Product Scope, Open Decision 14). `defaultPurchaseUnit` and
+the product** (Product Scope, Open Decision 14; invariant I11).
+
+*Implementation note.* Phase 9 builds the product master but does **not**
+enforce that rule, because at Phase 9 no movement can exist — `inventoryMovements`
+has no producer until Phase 13 builds the ledger. The enforcement belongs to
+the phase that can prove the precondition; the catalogue form states the rule
+to the user in the meantime.
+
+**What a unit value is.** `stockUnit` and `defaultPurchaseUnit` are `string`,
+and a value is one of two things:
+
+- a **canonical code** from a small fixed vocabulary — `PIECE`, `BOX`,
+  `PACKAGE`, `CARTON`, `SET`, `METER`, `KILOGRAM`, `LITER` — chosen from the
+  unit dropdown and displayed through a translation;
+- **anything else**, which is a unit the company typed itself (`"Rulo"`),
+  stored verbatim and displayed verbatim in every language.
+
+The codes exist because the alternative is storing the *label*: a Turkish and
+an English user picking the same unit would then create `"Adet"` and `"Piece"`
+for one semantic fact. That is untidy on a single-user local pilot and a defect
+the moment the data is shared, because nothing could group or compare across
+the two — and I11 (`movement.unit === product.stockUnit`) would become a
+question about which language someone had selected. Changing the interface
+language must never change a stored value, and this is what makes that true.
+
+There is deliberately **no second field.** No `unitCode` beside a `unitLabel`:
+two fields meaning one fact is duplicated state that every writer has to keep
+in step, which is the same trade §2 already refuses for `active`. Membership in
+the canonical vocabulary is a total function over the single stored value, so
+"is this one of ours?" needs no flag. `defaultPurchaseUnit` and
 `unitsPerPurchaseUnit` are only defaults for new document lines; changing them
 never touches history, because every line snapshots the factor it used.
 
@@ -252,8 +281,8 @@ for one-off deliveries that do not deserve a customer record.
 `RequirementItem` today has `productName: string` and an optional free-text
 `sku`. Operations need a real product reference.
 
-**Planned change (Phase 9, not made in Phase 6.5): add `productId?: string` to
-`RequirementItem`.** Additive, optional, and read by nobody in
+**Made in Phase 9: `productId?: string` on `RequirementItem`**, at
+`schemaVersion` 3. Additive, optional, and read by nobody in
 `src/calculation` or `src/comparison` — those modules consume `id`,
 `requiredQuantity` and `comparisonUnit` only. It is the sole planned
 modification to an engine-adjacent entity in the whole revised roadmap, and it
@@ -844,7 +873,7 @@ hopes.
 
 | Change | Migration | Destructive? |
 | --- | --- | --- |
-| `RequirementItem.productId` (Phase 9) | add optional field; existing requirements keep `undefined` | no |
+| ~~`RequirementItem.productId` (Phase 9)~~ | **done** — added at `schemaVersion` 3; existing requirements keep the key absent | no |
 | ~~Supplier master normalisation (Phase 9)~~ | **no longer needed** — `suppliers` + `supplierIds` ship in `schemaVersion` 1 (Phase 7), and no persisted project data can predate it | n/a |
 | Multi-warehouse (future) | seed one `Location`; add required `locationId` to movements, receipts and dispatches; backfill every existing row with the seeded id | no — constant backfill, no information loss |
 | Lot tracking (future) | add `Lot` store; add optional `lotRef` to movements and receipt/dispatch lines; existing rows get `null` = "pre-lot-tracking" | no |

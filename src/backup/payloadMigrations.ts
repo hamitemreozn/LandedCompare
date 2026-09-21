@@ -82,7 +82,33 @@ const activeIndexRemovalIsPayloadNeutral: PayloadMigration = {
   migrate: (data) => data,
 }
 
-export const PAYLOAD_MIGRATIONS: readonly PayloadMigration[] = [activeIndexRemovalIsPayloadNeutral]
+/**
+ * `v2 → v3`: also a no-op, for a different and more interesting reason.
+ *
+ * The database step of the same number (`src/persistence/migrations.ts`)
+ * introduces the `products` and `customers` record types and the optional
+ * `RequirementItem.productId`. A version-2 **payload** cannot carry a product
+ * or a customer — no build that wrote a version-2 file had any way to put one
+ * in those stores — so the records that need the new validators do not exist in
+ * the files this step reads. And `productId` is optional and absent, which is
+ * precisely what an unlinked requirement means: adding it as an explicit
+ * `undefined` would violate §3's absent-key rule and break the checksum.
+ *
+ * So a version-2 file is already a valid version-3 payload, and the honest
+ * transformation is identity. Declaring it is what keeps that claim testable
+ * and what stops `migrateBackupPayload` refusing last week's backup with
+ * `BACKUP_SCHEMA_UNSUPPORTED`.
+ */
+const catalogRecordTypesArePayloadNeutral: PayloadMigration = {
+  to: 3,
+  description: 'schemaVersion 3 added record types for stores a v2 payload cannot have filled',
+  migrate: (data) => data,
+}
+
+export const PAYLOAD_MIGRATIONS: readonly PayloadMigration[] = [
+  activeIndexRemovalIsPayloadNeutral,
+  catalogRecordTypesArePayloadNeutral,
+]
 
 /**
  * Checks a chain is usable before anything runs it: contiguous from 2 upward,

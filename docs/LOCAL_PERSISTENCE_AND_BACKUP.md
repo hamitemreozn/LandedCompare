@@ -254,10 +254,25 @@ branched on.
    The function reports rather than enforces. When the browser does not
    implement `indexedDB.databases()` the honest answer is `VERSION_UNKNOWN`,
    and what to do about it — refuse to upgrade, or require an external backup
-   first — is a decision with a user in it. **Wiring it into startup, and the
-   screen that explains a `VERSION_UNKNOWN`, are Phase 9's**; the mechanism and
-   its guarantee are tested now, including the case that matters: a snapshot
-   taken this way survives a migration that aborts.
+   first — is a decision with a user in it.
+
+   **Phase 9 made that decision and wired it in** (`src/app/bootstrap.ts`).
+   The startup sequence calls `ensurePreMigrationSnapshot()` before
+   `openDatabase()`, and **refuses to open** on anything other than `CREATED`,
+   `NOT_NEEDED` or `NO_DATABASE`:
+
+   - `VERSION_UNKNOWN` blocks. "No database" and "a database one version
+     behind" are the same answer from a browser that will not enumerate, and
+     picking the harmless reading is the guess that silently migrates real data
+     with no snapshot behind it. The user is told to open the application in a
+     browser that reports the version.
+   - A snapshot that could not be written blocks. The upgrade is not attempted
+     and the stored data is untouched. There is deliberately **no override**: a
+     button labelled "upgrade anyway" is a button that destroys data, and the
+     honest remedy is free space, not a confirmation dialog.
+
+   The mechanism's own guarantee is tested separately, including the case that
+   matters: a snapshot taken this way survives a migration that aborts.
 4. Migrations execute inside IndexedDB's `upgradeneeded` transaction, which
    aborts as a unit on any thrown error — a failed migration leaves the database
    at its previous version with its previous data (Data Model, I21). The
@@ -283,11 +298,12 @@ branched on.
 
 ### The released chain
 
-**Current `schemaVersion`: 2.**
+**Current `schemaVersion`: 3.**
 
 | Step | What it does | Payload effect |
 | --- | --- | --- |
 | `v1 → v2` | deletes the `products.active`, `suppliers.active` and `customers.active` indexes | none — structurally a no-op |
+| `v2 → v3` | Phase 9: `products` and `customers` gain record types and writers; `RequirementItem` gains the optional `productId` | none — structurally a no-op |
 
 There is no `v0 → v1`, and there never will be: version 1 is the first that has
 existed in anyone's browser, so a fabricated step would run on every fresh
@@ -311,6 +327,23 @@ without an entry at 2 a perfectly good version-1 file would be refused with
 needs no transformation" an assertion a test can *fail*, where silently
 treating 1 and 2 as interchangeable would be an assumption nothing could catch.
 `backupFormatVersion` does **not** move — the envelope did not change.
+
+`v2 → v3` rewrites no record either, for two reasons that are worth separating.
+`products` and `customers` are **empty in every version-2 database**: the
+stores were created at version 1, but no code path had a record type, a store
+helper or a screen to write one, so there is nothing to transform. And
+`productId` is optional and absent, which is exactly what an unlinked
+requirement means — backfilling it would require inventing a product reference,
+which is the one thing a migration may never do.
+
+It is still a real bump, and the reason is rule 5 rather than the data. A
+version-2 build opening a version-3 database would find products it has no
+validator for: it would read them as nothing, and `validateBackupData` would
+refuse the backup it then produced with `BACKUP_STORE_UNSUPPORTED`. The bump
+turns that silent mismatch into the explicit refusal rule 5 exists to give.
+The payload chain gains a matching step for the same reason `v1 → v2` has one:
+so a version-2 file is not rejected, and so "a version-2 payload needs no
+transformation" is an assertion a test can fail.
 
 ---
 

@@ -67,7 +67,7 @@ describe('ensurePreMigrationSnapshot', () => {
 
     expect(result.outcome).toBe('CREATED')
     expect(result.storedVersion).toBe(1)
-    expect(result.targetVersion).toBe(2)
+    expect(result.targetVersion).toBe(SCHEMA_VERSION)
     expect(result.snapshot?.kind).toBe('PRE_MIGRATION')
     expect(result.snapshot?.entityCounts.suppliers).toBe(2)
     // Taken at the version the data was written at, which is the version a
@@ -178,12 +178,13 @@ describe('ensurePreMigrationSnapshot', () => {
     expect(result.outcome).toBe('CREATED')
 
     const upgraded = await openDatabase({ name })
-    // A version-1 snapshot read by a version-2 build: the payload migration
-    // chain is what makes it usable, and it must be found rather than assumed.
+    // A version-1 snapshot read by a current build: the payload migration
+    // chain is what makes it usable, and every step from the version the
+    // snapshot was taken at must be found rather than assumed.
     const plan = await prepareRestoreFromSnapshot(upgraded, result.snapshot!.id)
     expect(plan.preview.backupSchemaVersion).toBe(1)
     expect(plan.preview.targetSchemaVersion).toBe(SCHEMA_VERSION)
-    expect(plan.preview.migrationsApplied).toEqual([2])
+    expect(plan.preview.migrationsApplied).toEqual([2, 3])
     expect(plan.data.suppliers).toHaveLength(2)
 
     upgraded.close()

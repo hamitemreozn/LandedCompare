@@ -37,10 +37,14 @@ describe('interpolation and pluralization', () => {
 
   it('interpolates variables into a translated string', async () => {
     await setLocale('en')
-    expect(i18n.t('app.currentLanguage', { language: 'English' })).toBe('Current language: English')
+    expect(i18n.t('dashboard.activeOfTotal', { active: 3, total: 7 })).toBe(
+      '3 of 7 records are active',
+    )
 
     await setLocale('tr')
-    expect(i18n.t('app.currentLanguage', { language: 'Türkçe' })).toBe('Geçerli dil: Türkçe')
+    expect(i18n.t('dashboard.activeOfTotal', { active: 3, total: 7 })).toBe(
+      '7 kayıttan 3 tanesi aktif',
+    )
   })
 
   it('selects the correct plural form by count in English', async () => {

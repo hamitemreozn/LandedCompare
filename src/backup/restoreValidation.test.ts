@@ -367,12 +367,15 @@ describe('record validation', () => {
   })
 
   it('rejects records for a store this build cannot validate', async () => {
-    // `products` exists in the schema but has no record type until Phase 9, so
-    // a payload carrying product records is refused rather than written
-    // unchecked.
-    expect(await refusalCode(await signedButInvalid([{ id: testUuid(5), sku: 'A' }], 'products'))).toBe(
-      'BACKUP_STORE_UNSUPPORTED',
-    )
+    // `purchaseOrders` exists in the schema but has no record type until
+    // Phase 14, so a payload carrying one is refused rather than written
+    // unchecked. (`products` was this test's example until Phase 9 gave it a
+    // validator — the rule is about the registry, not about any one store.)
+    expect(
+      await refusalCode(
+        await signedButInvalid([{ id: testUuid(5), code: 'PO-1' }], 'purchaseOrders'),
+      ),
+    ).toBe('BACKUP_STORE_UNSUPPORTED')
   })
 
   it('rejects a record that is not an object at all', async () => {

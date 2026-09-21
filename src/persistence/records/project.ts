@@ -50,6 +50,12 @@ export interface RequirementItemRecord {
   readonly id: string
   readonly productName: string
   readonly sku?: string
+  /**
+   * Optional link into the `products` store, added at `schemaVersion` 3
+   * (Data Model §12). Absent on every requirement written before it, which is
+   * the correct value: the requirement simply names no catalog product.
+   */
+  readonly productId?: string
   readonly requiredQuantity: QuantitySnapshot
   readonly comparisonUnit: string
 }
@@ -98,7 +104,14 @@ const PROJECT_KEYS = [
   'requirements',
   'quotes',
 ]
-const REQUIREMENT_KEYS = ['id', 'productName', 'sku', 'requiredQuantity', 'comparisonUnit']
+const REQUIREMENT_KEYS = [
+  'id',
+  'productName',
+  'sku',
+  'productId',
+  'requiredQuantity',
+  'comparisonUnit',
+]
 const QUOTE_KEYS = [
   'id',
   'supplierId',
@@ -142,6 +155,7 @@ function parseRequirementItemRecord(value: unknown, path: string): RequirementIt
     id: expectUuid(record.id, `${path}.id`),
     productName: expectNonEmptyString(record.productName, `${path}.productName`),
     sku: optional(record.sku, `${path}.sku`, expectString),
+    productId: optional(record.productId, `${path}.productId`, expectUuid),
     requiredQuantity: parseQuantitySnapshot(record.requiredQuantity, `${path}.requiredQuantity`),
     comparisonUnit: expectNonEmptyString(record.comparisonUnit, `${path}.comparisonUnit`),
   }
@@ -234,6 +248,7 @@ export function toProjectRecord(project: Project): ProjectRecord {
         id: requirement.id,
         productName: requirement.productName,
         sku: requirement.sku,
+        productId: requirement.productId,
         requiredQuantity: requirement.requiredQuantity.toJSON(),
         comparisonUnit: requirement.comparisonUnit,
       }),
@@ -269,6 +284,7 @@ function toRuntimeRequirement(record: RequirementItemRecord): RequirementItem {
     id: record.id,
     productName: record.productName,
     sku: record.sku,
+    productId: record.productId,
     requiredQuantity: record.requiredQuantity.value,
     comparisonUnit: record.comparisonUnit,
   })

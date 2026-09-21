@@ -101,7 +101,7 @@ async function fileAtVersion(data: BackupData, schemaVersion: number): Promise<s
 
 describe('the released payload migration chain', () => {
   it('has a step for every version bump the database chain has', () => {
-    expect(PAYLOAD_MIGRATIONS.map((step) => step.to)).toEqual([2])
+    expect(PAYLOAD_MIGRATIONS.map((step) => step.to)).toEqual([2, 3])
     expect(() => assertPayloadMigrationChain(PAYLOAD_MIGRATIONS, SCHEMA_VERSION)).not.toThrow()
   })
 
@@ -109,11 +109,14 @@ describe('the released payload migration chain', () => {
     const data = businessPayload()
     const before = canonicalize(data, 'data')
 
-    const migrated = migrateBackupPayload(data, 1, { targetVersion: 2 })
+    const migrated = migrateBackupPayload(data, 1)
 
-    expect(migrated.applied).toEqual([2])
+    // Both released steps ran, and both are declared no-ops: 2 removed
+    // database indexes a payload never carried, 3 added record types for
+    // stores a version-1 file had no way to fill.
+    expect(migrated.applied).toEqual([2, 3])
     expect(migrated.fromVersion).toBe(1)
-    expect(migrated.toVersion).toBe(2)
+    expect(migrated.toVersion).toBe(SCHEMA_VERSION)
     expect(canonicalize(migrated.data, 'data')).toBe(before)
   })
 
@@ -131,7 +134,7 @@ describe('restoring a schemaVersion 1 backup file', () => {
 
     expect(plan.preview.backupSchemaVersion).toBe(1)
     expect(plan.preview.targetSchemaVersion).toBe(SCHEMA_VERSION)
-    expect(plan.preview.migrationsApplied).toEqual([2])
+    expect(plan.preview.migrationsApplied).toEqual([2, 3])
     // The manifest's own wrapper version did not move with the schema.
     expect(plan.preview.backupFormatVersion).toBe(BACKUP_FORMAT_VERSION)
   })
@@ -160,7 +163,7 @@ describe('restoring a schemaVersion 1 backup file', () => {
     expect(values).toEqual(['0.000001', '99999999.999999'])
   })
 
-  it('emits schemaVersion 2 when the restored database is backed up again', async () => {
+  it('emits the current schemaVersion when the restored database is backed up again', async () => {
     await applyRestore(
       database,
       await prepareRestore(database, await fileAtVersion(businessPayload(), 1)),
@@ -168,15 +171,15 @@ describe('restoring a schemaVersion 1 backup file', () => {
 
     const artifact = await createBackup(database)
     expect(artifact.envelope.schemaVersion).toBe(SCHEMA_VERSION)
-    expect(artifact.envelope.schemaVersion).toBe(2)
+    expect(artifact.envelope.schemaVersion).toBe(3)
     // Still the same wrapper. The payload moved; the envelope did not.
     expect(artifact.envelope.backupFormatVersion).toBe(BACKUP_FORMAT_VERSION)
 
     const reparsed = parseBackupEnvelope(JSON.parse(artifact.json))
-    expect(reparsed.manifest.schemaVersion).toBe(2)
+    expect(reparsed.manifest.schemaVersion).toBe(3)
   })
 
-  it('re-reads its own version-2 output with no migration at all', async () => {
+  it('re-reads its own current-version output with no migration at all', async () => {
     await applyRestore(
       database,
       await prepareRestore(database, await fileAtVersion(businessPayload(), 1)),
@@ -184,7 +187,7 @@ describe('restoring a schemaVersion 1 backup file', () => {
     const artifact = await createBackup(database)
 
     const plan = await prepareRestore(database, artifact.json)
-    expect(plan.preview.backupSchemaVersion).toBe(2)
+    expect(plan.preview.backupSchemaVersion).toBe(SCHEMA_VERSION)
     expect(plan.preview.migrationsApplied).toEqual([])
   })
 })
@@ -207,6 +210,13 @@ describe('when the compatibility path fails', () => {
             migrate: () => {
               throw new Error('unexpected shape')
             },
+          },
+          // Declared so the chain reaches the current version and the refusal
+          // under test is the *step failing*, not a missing path.
+          {
+            to: 3,
+            description: 'never reached: the previous step throws first',
+            migrate: (data) => data,
           },
         ],
       })
@@ -252,10 +262,10 @@ describe('when the compatibility path fails', () => {
 
 describe('the three version numbers stay three version numbers', () => {
   it('moved schemaVersion without moving backupFormatVersion', () => {
-    // The whole point of keeping them apart: an index was removed from the
-    // database, which is a payload-shape question, and the envelope that wraps
-    // the payload did not change at all.
-    expect(SCHEMA_VERSION).toBe(2)
+    // The whole point of keeping them apart: the stored shapes have moved
+    // twice — an index removed at 2, the catalog and party record types added
+    // at 3 — and the envelope that wraps the payload has not changed once.
+    expect(SCHEMA_VERSION).toBe(3)
     expect(BACKUP_FORMAT_VERSION).toBe(1)
   })
 
