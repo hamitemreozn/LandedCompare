@@ -14,17 +14,19 @@
  * 4. A released migration is frozen. Later shape changes are the next number,
  *    not an edit to a shipped step.
  *
- * ### What Phase 7 does not yet give you
+ * ### The snapshot that covers the other failure mode
  *
  * Rule 3 of the canonical document also requires a `PRE_MIGRATION` snapshot
- * written before the upgrade begins. Snapshots are Phase 8, so **that
- * protection does not exist yet.** The IndexedDB-level guarantee above is real
- * and tested: a migration that throws rolls back completely. What is missing is
- * the cover for the other failure mode — a migration that commits successfully
- * but is logically wrong. Until Phase 8, the only remedy for that is a restore
- * from a backup that does not exist either. This is why no pilot data should be
- * entered before Phase 8 ships.
+ * written before the upgrade begins. The IndexedDB-level guarantee above is
+ * real and tested: a migration that throws rolls back completely. What it does
+ * not cover is a migration that commits successfully but is logically wrong,
+ * and no transaction can — the transaction did what it was told. That cover is
+ * `ensurePreMigrationSnapshot()` in `src/backup/preMigration.ts`, which opens
+ * the database at the version it is already at, snapshots, and closes, so the
+ * copy is committed *outside* the upgrade it protects.
  */
+
+import { REMOVED_BOOLEAN_INDEXES } from './schema'
 
 export interface MigrationContext {
   readonly oldVersion: number
@@ -39,6 +41,22 @@ export interface MigrationContext {
   putRecord(store: string, record: unknown): void
   /** Removes a store that no longer exists in the current schema. */
   deleteStore(store: string): void
+  /**
+   * Removes an index that no longer exists in the current schema.
+   *
+   * Schema surgery, not data surgery: it touches no record, so it issues no
+   * request and completes synchronously inside the `upgradeneeded`
+   * transaction. An abort restores the index along with everything else,
+   * because index deletion is part of the version-change transaction like any
+   * other schema change.
+   *
+   * "Ensure this index is gone" means the same thing whether it runs once or
+   * twice, so an index that is already absent is not an error — the same
+   * reasoning `createMissingStores` applies in the other direction. A data
+   * migration does not get that latitude, which is why it is numbered and
+   * applied exactly once instead.
+   */
+  deleteIndex(store: string, index: string): void
 }
 
 export interface Migration {
@@ -55,16 +73,46 @@ export interface Migration {
 }
 
 /**
- * The released migration chain. Empty at `schemaVersion` 1: there has never
- * been a version 0 of this schema in anyone's browser, so there is no data
- * transformation to perform. A fabricated `v0 → v1` step would be a lie that
- * runs on every fresh install.
+ * `v1 → v2`: drop the three `active` indexes a boolean key can never populate.
  *
- * The runner, its failure semantics and its tests exist now precisely so that
- * the first real entry here is a one-function change rather than an
- * architecture change.
+ * The defect they carried is described in full on `REMOVED_BOOLEAN_INDEXES` in
+ * `schema.ts`. In one line: a boolean is not a valid IndexedDB key, so those
+ * indexes silently contained **no entries at all**, and a query through one
+ * would have reported an empty catalogue over a populated store.
+ *
+ * ## Why this step touches no record
+ *
+ * Nothing about the stored *shape* changes. `active: boolean` was and remains
+ * the canonical field on every product, supplier and customer; what is removed
+ * is an index that never indexed anything. So this migration rewrites no
+ * record, and every existing row survives the upgrade byte for byte — which is
+ * the property its tests assert rather than assume.
+ *
+ * It is still a real `schemaVersion` bump: the set of indexes is part of the
+ * stored schema, an upgrade is the only place IndexedDB permits the change, and
+ * a v1 database left alone would keep three indexes this build no longer
+ * declares. Pretending v1 never existed by silently editing
+ * `STORE_DEFINITIONS` would leave exactly that — stale indexes in every
+ * already-created database, visible to nothing that would ever correct them.
  */
-export const MIGRATIONS: readonly Migration[] = []
+const dropUnusableActiveIndexes: Migration = {
+  to: 2,
+  description: 'products/suppliers/customers: drop the unusable boolean "active" indexes',
+  migrate: (context) => {
+    for (const { store, index } of REMOVED_BOOLEAN_INDEXES) {
+      context.deleteIndex(store, index)
+    }
+  },
+}
+
+/**
+ * The released migration chain.
+ *
+ * Frozen once released (rule 4): a later shape change is the next number, never
+ * an edit to a shipped step — a shipped step is the only thing that can read
+ * the databases already out there.
+ */
+export const MIGRATIONS: readonly Migration[] = [dropUnusableActiveIndexes]
 
 /**
  * Checks that a chain is usable before anything runs it: sorted, no duplicate
@@ -191,6 +239,15 @@ function createContext(
     deleteStore(store) {
       if (database.objectStoreNames.contains(store)) {
         database.deleteObjectStore(store)
+      }
+    },
+    deleteIndex(store, index) {
+      if (!database.objectStoreNames.contains(store)) {
+        return
+      }
+      const objectStore = transaction.objectStore(store)
+      if (objectStore.indexNames.contains(index)) {
+        objectStore.deleteIndex(index)
       }
     },
   }

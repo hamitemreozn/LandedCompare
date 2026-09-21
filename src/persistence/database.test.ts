@@ -8,6 +8,7 @@ import {
   STORE_NAMES,
   BUSINESS_STORE_NAMES,
 } from './schema'
+import { MIGRATIONS } from './migrations'
 import { META_KEY } from './records/meta'
 import { createTestDatabaseName, openTestDatabase } from './testSupport'
 
@@ -140,12 +141,15 @@ describe('refusing data this build cannot safely handle', () => {
   it('refuses a database whose IndexedDB version is newer than this build', async () => {
     const name = createTestDatabaseName('too-new')
 
-    // A future build's database: schemaVersion 2, created through the same code
-    // path with a migration chain this build does not have.
+    // A future build's database: one version past this build's, created through
+    // the same code path with a migration chain this build does not have.
     const future = await openDatabase({
       name,
-      schemaVersion: 2,
-      migrations: [{ to: 2, description: 'future schema', migrate: () => {} }],
+      schemaVersion: SCHEMA_VERSION + 1,
+      migrations: [
+        ...MIGRATIONS,
+        { to: SCHEMA_VERSION + 1, description: 'future schema', migrate: () => {} },
+      ],
     })
     future.close()
 

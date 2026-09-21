@@ -80,6 +80,27 @@ export interface TransactionScope {
     count?: number,
   ): Promise<T[]>
   getAllKeys(store: StoreName): Promise<IDBValidKey[]>
+  /**
+   * Walks an index in key order, handing **one** stored value at a time to
+   * `visit`, and never materialising the store.
+   *
+   * `getAll` is the right tool for a store whose records are small. It is the
+   * wrong one for `snapshots`, where every record carries a full copy of the
+   * database: listing twenty snapshots to decide which to prune would load
+   * every byte they protect into memory at once, on a machine that is being
+   * pruned precisely because it is short of space. A cursor keeps the peak at
+   * one record.
+   *
+   * `visit` is synchronous on purpose — awaiting anything non-IndexedDB inside
+   * it would let the transaction close mid-walk (see the rule at the top of
+   * this file). Anything it throws rejects the walk and, through
+   * `runInTransaction`, aborts the transaction.
+   */
+  forEachFromIndex(
+    store: StoreName,
+    index: string,
+    visit: (value: unknown) => void,
+  ): Promise<void>
   count(store: StoreName, query?: IDBKeyRange | IDBValidKey | null): Promise<number>
   /** Insert or replace. */
   put(store: StoreName, value: unknown): Promise<void>
@@ -107,6 +128,28 @@ function createScope(transaction: IDBTransaction): TransactionScope {
         objectStore(store).index(index).getAll(query ?? undefined, count) as IDBRequest<T[]>,
       ),
     getAllKeys: (store: StoreName) => promisifyRequest(objectStore(store).getAllKeys()),
+    forEachFromIndex: (store: StoreName, index: string, visit: (value: unknown) => void) =>
+      new Promise<void>((resolve, reject) => {
+        const request = objectStore(store).index(index).openCursor()
+        request.onerror = () => reject(request.error)
+        request.onsuccess = () => {
+          const cursor = request.result
+          if (cursor === null) {
+            resolve()
+            return
+          }
+          try {
+            visit(cursor.value)
+          } catch (cause) {
+            // A throw inside a request handler is reported to the global scope
+            // rather than to the caller, so it is captured here and turned
+            // into a rejection the transaction boundary can act on.
+            reject(cause)
+            return
+          }
+          cursor.continue()
+        }
+      }),
     count: (store: StoreName, query?: IDBKeyRange | IDBValidKey | null) =>
       promisifyRequest(objectStore(store).count(query ?? undefined)),
     put: async (store: StoreName, value: unknown) => {

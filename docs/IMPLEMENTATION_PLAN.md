@@ -247,20 +247,124 @@ documents start posting into it.
   concurrent steps overwriting each other's output, and a failure captured
   after the result had already been reported.
 
-- **Phase 8 — Backup, Snapshots & Restore** (difficulty 8).
+- **Phase 8 — Backup, Snapshots & Restore** (done, difficulty 8).
   *Objective:* the pilot cannot lose its data.
-  *Deliverables:* `src/backup/` — internal snapshots with the retention policy
-  (§6), the portable JSON backup envelope with manifest, entity counts and
-  SHA-256 over a canonical serialisation (§7), download export plus the optional
-  File System Access directory handle with the download path always available as
-  fallback, the full 15-step validated restore (§8) with the pre-restore
-  snapshot committed before the restore transaction, backup-freshness reminder,
-  and the security rules of §9 (prototype-safe parsing, factory-based
-  validation, size/depth limits, whole-file rejection).
+  *Delivered:* `src/backup/` — internal snapshots taken in one transaction so
+  they are coherent, with the full retention policy as a pure, deterministic
+  function (§6); the versioned portable JSON envelope with manifest, per-store
+  entity counts and SHA-256 over a canonical serialisation (§7); download
+  export with `lastExternalBackupAt` stamped only after generation *and*
+  delivery succeed, and the 7-day staleness rule as machine-readable state; the
+  two-part restore — `prepareRestore()` read-only, `applyRestore()` destructive
+  — with the `PRE_RESTORE` snapshot committed before a single atomic
+  replace-all transaction over the business stores, **whose read-back
+  verification runs inside that same transaction** so a refused restore aborts
+  rather than replaces (§8); the payload migration runner that transforms a backup in
+  memory and never uses the working database as a scratchpad; and the security
+  rules of §9 (prototype-polluting keys reject the whole file, every record
+  re-proven by the runtime validators, size/depth/record limits checked before
+  the work they bound, whole-file rejection with a specific code).
+  *Resolved from Phase 7:* the `PRE_MIGRATION` snapshot rule now has a working
+  mechanism (`ensurePreMigrationSnapshot()`), which opens the database at its
+  stored version, snapshots, and closes — because a snapshot written inside
+  `upgradeneeded` rolls back with the migration it exists to survive. Tested
+  against exactly that case.
+  *Not delivered, by design:* any UI — Settings screen, file picker, restore
+  wizard, notification (Phase 9+); the optional File System Access directory
+  handle, which needs a picker and therefore that UI, and which the canonical
+  design already requires the download path to stand in for; backup encryption
+  (Product Scope, Open Decision 9 — post-pilot). Wiring
+  `ensurePreMigrationSnapshot()` and `runSnapshotMaintenance()` into
+  application startup is Phase 9's, because the decision on failure is
+  user-facing.
   *Dependencies:* Phase 7.
-  *Risk:* restore is the only operation that can destroy everything; the
-  pre-restore snapshot ordering and the atomicity of the restore transaction are
-  the two things that must not be wrong.
+  *Risk (realised):* the round-trip property test found a defect the unit tests
+  could not. Phase 7's record parsers re-add absent optional fields as an
+  explicit `undefined`, and the store helpers write that straight back — so a
+  real database contains `note: undefined`, which has no canonical JSON form
+  and which would have made a restored record differ from the one it came from.
+  Normalising at the payload boundary fixes it; the underlying inconsistency is
+  recorded below. The two things predicted to be dangerous — the pre-restore
+  snapshot ordering and the atomicity of the restore transaction — were built
+  as designed and are each proven by a test that injects the corresponding
+  failure.
+
+  **Correction made during review.** Post-restore verification originally ran
+  on a *separate* transaction opened after the replace-all had committed, so a
+  verification failure reported "the restore failed" over a database whose old
+  contents were already gone — measured at the time as 2 suppliers / 1 project
+  / 2 movements becoming 1 / 0 / 0. That is recoverable through the
+  `PRE_RESTORE` snapshot, but it is not *failed restore = no-op*, which is what
+  Phase 6.5 and Data Model I20 require. Verification now runs inside the
+  replace-all transaction against its own uncommitted writes, and a failure
+  aborts it; the same injected fault now leaves the database at 2 / 1 / 2. A
+  post-commit read remains as a durability confirmation under a separate code,
+  `RESTORE_COMMITTED_BUT_UNVERIFIABLE`, so a destructive outcome can never be
+  reported with a no-op's error. Validation was not weakened: the same counts
+  and the same sampled re-validation run, one step earlier.
+
+  **Three corrections made during independent audit remediation.** An
+  adversarial review of Phase 8 returned three findings of medium severity.
+  Each is fixed here, with a regression test that fails without the fix.
+
+  1. *The `active` indexes were always empty — now removed, at
+     `schemaVersion` 2.* `products`, `suppliers` and `customers` each declared
+     an index on a **boolean** `active` keyPath, and a boolean is not a valid
+     IndexedDB key: a record carrying one is skipped by the index entirely.
+     Reproduced: three products, two suppliers and three customers in the
+     stores, **zero** entries reachable through any of the three `active`
+     indexes, with no error anywhere. Phase 9 owns the active/inactive surface
+     and would have met this as a catalogue screen that silently shows nothing
+     over a populated database.
+
+     The fix removes the indexes rather than replacing them with a stored
+     `activeFlag: 0 | 1`. A mirrored copy of a boolean is duplicated state that
+     every writer has to keep in step, and the day one forgets, the index and
+     the record disagree with nothing to detect it. `active: boolean` stays the
+     canonical field and "only the active ones" is a filtered read, which at
+     pilot volume is the same reasoning §2 "No stored balances" already
+     applies. This is the first real entry in both migration chains: a database
+     step that deletes the three indexes and a payload step that is
+     structurally a no-op and explicitly tested as one. See [Local Persistence
+     & Backup](LOCAL_PERSISTENCE_AND_BACKUP.md) §2 and §4.
+  2. *The payload normaliser silently destroyed values it did not
+     understand.* `Date`, `Map`, `Set`, `RegExp` and `ArrayBuffer` were
+     flattened to `{}` and a `Uint8Array` to an object with numeric keys —
+     **before** canonical serialisation could reject them, so the payload
+     checksummed cleanly and the loss was invisible. All of those are valid
+     IndexedDB values that read back intact; the damage was at the backup
+     boundary. That boundary now normalises exactly one thing (a plain-object
+     property whose value is `undefined` may be omitted) and refuses everything
+     else through the same rules and the same failure `canonicalize()` uses.
+     Array order and length are data: an `undefined` element is rejected, never
+     dropped.
+  3. *A post-commit confirmation failure was reported as a no-op.* Once the
+     replace-all transaction has committed, "the restore failed" can only mean
+     "…and your data has already been replaced". A confirmation *read* that
+     could not be performed — a connection closed by `versionchange`, for
+     instance — surfaced as a bare `TRANSACTION_ABORTED`, which is
+     indistinguishable from the pre-commit abort that leaves the old data in
+     place. The whole post-commit phase now reports
+     `RESTORE_COMMITTED_BUT_UNVERIFIABLE` with `workingDatabaseReplaced: true`
+     and the `PRE_RESTORE` snapshot id, whether the read disagreed
+     (`reason: COUNT_MISMATCH`) or could not happen at all
+     (`CONFIRMATION_UNREADABLE`).
+
+  **One Phase 7 observation recorded during Phase 8.** It does not block the
+  pilot and belongs to the phase that owns the surface.
+
+  1. *Absent optionals are written as explicit `undefined`.*
+     [Local Persistence & Backup](LOCAL_PERSISTENCE_AND_BACKUP.md) §3's rule —
+     an absent optional field is stored by the key *not existing* — is
+     documented and enforced in `records/project.ts` on the write path. The
+     read path does not honour it: `optional()` returns `undefined`, so
+     `parseSupplierRecord()` yields `{ …, note: undefined }`, and
+     `putSupplierRecord` stores the parsed record verbatim. Phase 8 normalises
+     every payload, so backup, snapshot and restore are correct regardless —
+     and this is the *only* normalisation that boundary is permitted to
+     perform (see correction 2 above). The tidy fix is the same
+     `withoutUndefined` in the store helpers; there is no stored pilot data to
+     migrate.
 
 - **Phase 9 — Catalog & Parties** (difficulty 4).
   *Objective:* stable master records for products, suppliers and customers.
@@ -387,6 +491,20 @@ documents start posting into it.
 
 Phases 0–5 are implemented — **Checkpoint 1: engine complete.** Phase 6
 (i18n) is implemented. Phase 6.5 is an architecture/product checkpoint with no
-production code. Phase 7 (local persistence) is implemented. Phase 8 onward is
-not started, and **no pilot data should be entered until Phase 8 ships** — the
-working database has no backup, no snapshot and no restore behind it yet.
+production code. Phase 7 (local persistence) and Phase 8 (backup, snapshots and
+restore) are implemented. Phase 9 onward is not started.
+
+**On entering pilot data.** The recovery layer is now in place: data can be
+snapshotted, exported to a portable checksummed file, and restored atomically
+with a pre-restore snapshot and read-back verification. That removes the reason
+Phase 7 gave for entering no data at all.
+
+It does **not** mean the product is usable. There is still no UI, so there is
+no way to enter data except through code, and nothing to press to take a
+backup. The honest statement is narrower and worth keeping precise: *persistence
+and recovery are sound enough that data entered through the Phase 9+ screens,
+once they exist, will not be data at risk.* The remaining wiring that makes
+that true in practice — running `runSnapshotMaintenance()` on startup, calling
+`ensurePreMigrationSnapshot()` before an upgrade, and putting the
+staleness warning somewhere the user cannot miss — is Phase 9's first
+responsibility, not an optional polish item.

@@ -541,6 +541,18 @@ what the build supports is **refused rather than opened**, since IndexedDB
 cannot downgrade and an older build writing into a newer schema corrupts it
 silently.
 
+The current version is **2**. Version 1 declared an index on a boolean
+`active` keyPath for `products`, `suppliers` and `customers`; a boolean is not
+a valid IndexedDB key, so those indexes silently contained nothing at all over
+populated stores. Version 2 deletes them and keeps `active: boolean` as the
+canonical record field, filtered on read rather than mirrored into a second,
+index-friendly copy that two writers could disagree about. The set of indexes
+is part of the stored schema, so this is a genuine numbered migration — and
+because `schemaVersion` also describes exported payloads, the backup migration
+chain carries a matching, explicitly-tested, structurally-empty step.
+`backupFormatVersion` is unaffected, which is the distinction those two numbers
+exist to preserve.
+
 ### Transactions are the unit of correctness
 
 `Database` exposes only `read(stores, …)` and `write(stores, …)`, so an
@@ -576,13 +588,131 @@ logistics or inventory behaviour (Phases 9, 13–16); no UI (Phase 9+). The
 `inventoryMovements` store exists with its append-only write path and no update
 or delete operation at all, but no stock arithmetic — Phase 13 owns that.
 
-**The honest limitation:** the canonical rule that a `PRE_MIGRATION` snapshot is
-written before any migration runs cannot hold yet, because snapshots are Phase
-8. The IndexedDB-level guarantee is real and tested — a migration that throws
-rolls back completely and leaves the database at its previous version with its
-previous data — but the other failure mode, a migration that commits and is
-logically wrong, has no remedy until Phase 8 exists. No pilot data should be
-entered before then.
+**The limitation Phase 7 recorded here — that the `PRE_MIGRATION` snapshot rule
+could not hold — is resolved by Phase 8 below.**
+
+## Phase 8 state — backup, snapshots & restore
+
+`src/backup/` is the recovery layer. It sits **above** `src/persistence` and
+depends on it one way; persistence knows nothing about backups, which is what
+forced one structural decision worth recording (see "the pre-migration
+sequence" below).
+
+```text
+features / operations
+          ↓
+       backup            ← here
+          ↓
+      persistence
+          ↓
+       IndexedDB
+```
+
+```text
+src/
+  backup/
+    canonicalJson.ts     # deterministic serialisation + prototype-safe parsing
+    checksum.ts          # SHA-256 via Web Crypto; scope and honest limits
+    limits.ts            # size, depth and record bounds on untrusted input
+    businessData.ts      # what a backup covers; per-store record validators
+    envelope.ts          # the versioned file format, filename, strict parser
+    payloadMigrations.ts # migrating a payload in memory, never the live DB
+    snapshots.ts         # internal recovery snapshots (undo)
+    retention.ts         # the retention policy, as a pure function
+    maintenance.ts       # daily snapshot + retention, driven by app lifecycle
+    preMigration.ts      # the PRE_MIGRATION snapshot and its open/close dance
+    externalBackup.ts    # export, lastExternalBackupAt, staleness, origin info
+    download.ts          # the one DOM-aware function in the module
+    restore.ts           # prepare (read-only) and apply (destructive)
+```
+
+### Three layers, and the difference is the architecture
+
+Working data in IndexedDB; internal snapshots as **undo**, which die with the
+disk; external backup files as **the only disaster recovery**. The API keeps
+the two recovery layers lexically apart — nothing in `snapshots.ts` is called a
+backup and nothing in `externalBackup.ts` is called a snapshot — because the
+one mistake this design cannot survive is a user believing a snapshot protects
+them from a dead drive.
+
+### Everything decidable is decided before anything is written
+
+Restore is split into `prepareRestore()` (parse, verify, migrate in memory,
+preview — writes nothing) and `applyRestore()` (snapshot, then replace **and
+verify** inside one transaction). The split is what makes a confirmation screen
+possible at all, and it is what lets every rejection path be tested by
+asserting the database did not move.
+
+The second half has a subtlety worth recording, because the obvious
+implementation is wrong. `Database.write` resolves on the transaction's
+`complete` event, so a verification step written *after* it inspects a database
+whose old contents are already gone — a failure there reports "the restore
+failed" over data that is neither the old state nor a valid new one, and the
+pre-restore snapshot downgrades from a safety net to the only way back. So
+counting and re-validating happen **inside** the replace-all transaction,
+against its own uncommitted writes, and a failure aborts it. A post-commit read
+still runs as a durability confirmation, under a different error code, because
+once the transaction has committed the no-op guarantee no longer applies and
+must not be implied.
+
+That code covers the *whole* post-commit phase, not just the count comparison.
+The confirmation read needs a connection and a transaction, and both can fail
+on their own — most plausibly when `versionchange` closes the handle because
+another tab started an upgrade. Letting that surface as a generic aborted
+transaction would describe the confirmation's failure while implying the
+restore's had rolled back, so a caller would report "nothing happened" over a
+database that had already been replaced. Every exit past the commit therefore
+carries `RESTORE_COMMITTED_BUT_UNVERIFIABLE` with `workingDatabaseReplaced:
+true` and the pre-restore snapshot id, and names the cause in a
+machine-readable `reason`. The two outcomes a caller must distinguish — *old
+data intact* and *working database replaced* — are the one thing this layer
+never leaves to inference.
+
+### The read boundary refuses what it cannot represent
+
+`Date`, `Map`, `Set`, `RegExp`, `ArrayBuffer` and the typed arrays are all
+valid IndexedDB values: the store accepts them and reads them back intact. None
+of them has a canonical JSON form. A normaliser that walked stored objects by
+their own enumerable properties would therefore convert each of them into
+something harmless-looking — `{}`, or numeric keys — *before* the canonical
+serialiser could object, producing a checksummed backup file that had silently
+thrown data away.
+
+So `normaliseStoredValue` enforces the canonical serialiser's own table, with
+its own predicates and its own failure, and is permitted exactly one
+normalisation: omitting a plain-object property whose value is `undefined`
+(the absent-optional rule Phase 7 honours on write but not on read). Arrays are
+not normalised at all — order and length are data. Everything else fails loudly
+at a named path, which is the only acceptable outcome when the alternative is a
+verified artifact that quietly means less than it says.
+
+### The pre-migration sequence, and why it is not in `openDatabase()`
+
+Two independent reasons, both of which look like they should not apply.
+`upgradeneeded` runs inside the version-change transaction, so a snapshot
+written there rolls back with a failed migration — it vanishes in the case it
+exists for. And `openDatabase()` cannot call the backup module without
+inverting the dependency direction this whole layering is built on. So the
+sequence — read the stored version, open *at that version*, snapshot, close,
+then open normally — belongs to whoever starts the application.
+`ensurePreMigrationSnapshot()` implements it and reports; the startup wiring
+and the screen that explains a `VERSION_UNKNOWN` are Phase 9's.
+
+### No React, no i18n, one DOM function
+
+The module produces machine-readable `BackupError` codes and state objects and
+contains no user-facing string in any language. `downloadBackup()` is the only
+function that touches `document`, isolated so that everything deciding *what a
+backup is* remains testable without a browser — and so a missing API can never
+cost the product its backup capability.
+
+### What Phase 8 deliberately did not build
+
+No Settings screen, no file picker, no restore wizard, no notification UI
+(Phase 9+). No File System Access directory handle: a handle can only come from
+a user gesture in a picker, which is the UI this phase must not build, and the
+download path is required to remain the fallback in every case regardless. No
+backup encryption (Product Scope, Open Decision 9 — post-pilot).
 
 ## Forward-looking principles (not yet implemented)
 

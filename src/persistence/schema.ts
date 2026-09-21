@@ -38,8 +38,13 @@ export const DATABASE_NAME = 'landedcompare'
  * makes the application-level version readable independently of the connection.
  *
  * Bumping this number is what creates a migration step (see `migrations.ts`).
+ *
+ * **Version 2** removes three indexes version 1 should never have declared —
+ * `products.active`, `suppliers.active` and `customers.active`. See
+ * `REMOVED_BOOLEAN_INDEXES` below for why they could not work, and
+ * `migrations.ts` for the step that deletes them from a stored v1 database.
  */
-export const SCHEMA_VERSION = 1
+export const SCHEMA_VERSION = 2
 
 /**
  * Informational build marker recorded in `meta`. Never branched on — it exists
@@ -85,6 +90,49 @@ interface IndexDefinition {
   readonly multiEntry?: boolean
 }
 
+/**
+ * Indexes that existed at `schemaVersion` 1 and must not exist from 2 onward.
+ *
+ * ## Why they were wrong
+ *
+ * **A boolean is not a valid IndexedDB key.** The valid key types are number,
+ * string, `Date`, binary data and arrays of those; anything else makes the
+ * record *unindexable*. IndexedDB does not report this — it does not reject the
+ * `put`, it does not warn, it simply leaves that record out of the index. So
+ * `products`, `suppliers` and `customers` could hold hundreds of records while
+ * their `active` index held **zero entries**, and a perfectly reasonable
+ * `index('active').getAll(true)` would answer "there are none" instead of
+ * failing.
+ *
+ * That is the worst failure shape available: a query that looks correct,
+ * returns successfully, and is silently empty. A catalogue screen built on it
+ * would show a blank list over a populated database.
+ *
+ * ## Why they are removed rather than repaired
+ *
+ * The obvious repair is a second, index-friendly copy of the same fact — an
+ * `activeFlag: 1 | 0`, or an `activeKey: 'ACTIVE' | 'INACTIVE'` written beside
+ * `active`. That buys an index at the cost of two fields that mean the same
+ * thing and can disagree: every writer has to remember both, and the day one
+ * forgets, the index and the record contradict each other with nothing to
+ * detect it. Duplicated state whose only justification is a lookup is a
+ * correctness liability, and this schema does not take it.
+ *
+ * `active` stays exactly what it is — `active: boolean` on the record, the
+ * canonical domain field — and "only the active ones" is answered by reading
+ * the store and filtering the result. At pilot volume (a few hundred products,
+ * suppliers and customers) that is a single-digit-millisecond scan over data
+ * that is being rendered anyway, which is the same reasoning §2 "No stored
+ * balances" already applies to stock figures. If catalogue volume ever makes it
+ * a real cost, the answer is an index on a field that is genuinely a key — not
+ * a mirrored copy of a boolean.
+ */
+export const REMOVED_BOOLEAN_INDEXES: readonly { store: StoreName; index: string }[] = [
+  { store: 'products', index: 'active' },
+  { store: 'suppliers', index: 'active' },
+  { store: 'customers', index: 'active' },
+]
+
 interface StoreDefinition {
   readonly name: StoreName
   readonly keyPath: string
@@ -106,16 +154,10 @@ export const STORE_DEFINITIONS: readonly StoreDefinition[] = [
   { name: 'meta', keyPath: 'key', indexes: [] },
   { name: 'settings', keyPath: 'key', indexes: [] },
   { name: 'counters', keyPath: 'key', indexes: [] },
-  {
-    name: 'products',
-    keyPath: 'id',
-    indexes: [
-      { name: 'sku', keyPath: 'sku', unique: true },
-      { name: 'active', keyPath: 'active' },
-    ],
-  },
-  { name: 'suppliers', keyPath: 'id', indexes: [{ name: 'active', keyPath: 'active' }] },
-  { name: 'customers', keyPath: 'id', indexes: [{ name: 'active', keyPath: 'active' }] },
+  // No `active` index on the three master stores: see `REMOVED_BOOLEAN_INDEXES`.
+  { name: 'products', keyPath: 'id', indexes: [{ name: 'sku', keyPath: 'sku', unique: true }] },
+  { name: 'suppliers', keyPath: 'id', indexes: [] },
+  { name: 'customers', keyPath: 'id', indexes: [] },
   { name: 'projects', keyPath: 'id', indexes: [{ name: 'updatedAt', keyPath: 'updatedAt' }] },
   {
     name: 'purchaseOrders',

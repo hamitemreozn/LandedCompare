@@ -17,7 +17,13 @@
  * ```
  */
 
-export { openDatabase, deleteDatabase, type Database, type OpenDatabaseOptions } from './database'
+export {
+  openDatabase,
+  deleteDatabase,
+  readStoredSchemaVersion,
+  type Database,
+  type OpenDatabaseOptions,
+} from './database'
 export {
   PersistenceError,
   isPersistenceError,

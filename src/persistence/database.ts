@@ -130,6 +130,39 @@ async function assertNotNewerThanSupported(
   }
 }
 
+/**
+ * The version of the stored database, without opening or upgrading it.
+ *
+ * Added for Phase 8. Taking a `PRE_MIGRATION` snapshot requires reading the
+ * *old* data before the upgrade begins, and the only safe way to do that is to
+ * open the database at the version it is already at — which means knowing that
+ * version first. `upgradeneeded` is not a usable place for it: it runs inside
+ * the transaction that rewrites the data, so anything written there rolls back
+ * with a failed migration, and the snapshot would vanish exactly when it was
+ * needed.
+ *
+ * Returns `undefined` when the database does not exist **or** when the browser
+ * does not support `databases()`. The caller must treat those as "cannot
+ * prove" rather than as "nothing to protect" — they are different situations
+ * with the same answer here, and only the caller knows which one matters.
+ */
+export async function readStoredSchemaVersion(
+  name: string,
+  options: { indexedDBFactory?: IDBFactory } = {},
+): Promise<number | undefined> {
+  const factory = defaultFactory(options.indexedDBFactory)
+  const list = (factory as { databases?: () => Promise<IDBDatabaseInfo[]> }).databases
+  if (typeof list !== 'function') {
+    return undefined
+  }
+  try {
+    const entries = await list.call(factory)
+    return entries.find((entry) => entry.name === name)?.version
+  } catch {
+    return undefined
+  }
+}
+
 function openConnection(options: {
   factory: IDBFactory
   name: string

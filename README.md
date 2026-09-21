@@ -8,17 +8,33 @@ deterministic landed-cost engine and an append-only inventory movement ledger,
 with no backend and no cloud dependency.
 
 **Status.** The calculation and comparison engine (Phases 0–5), the
-Turkish/English i18n foundation (Phase 6) and the local persistence layer
-(Phase 7 — a versioned IndexedDB database with migrations, transactions and
-autosave, in `src/persistence/`) are implemented. Phase 6.5 expanded the
-product scope to a local operational pilot — purchasing, inbound logistics,
-inventory, reservations, outbound goods, backup and restore — and defined the
-architecture for it; none of that behaviour is built yet, and there is no UI.
+Turkish/English i18n foundation (Phase 6), the local persistence layer (Phase 7
+— a versioned IndexedDB database with migrations, transactions and autosave, in
+`src/persistence/`) and the recovery layer (Phase 8 — snapshots, portable
+backup files and validated restore, in `src/backup/`) are implemented. Phase
+6.5 expanded the product scope to a local operational pilot — purchasing,
+inbound logistics, inventory, reservations, outbound goods — and defined the
+architecture for it; none of that behaviour is built yet, and **there is no
+UI.**
 
-**Do not enter pilot data yet.** Backup, snapshots and restore are Phase 8, so
-the working database currently has nothing behind it. See
-[Product Scope](docs/PRODUCT_SCOPE.md) and the
-[Implementation Plan](docs/IMPLEMENTATION_PLAN.md).
+### Recovery, in one paragraph
+
+Three layers, and the difference between them is deliberate.
+**IndexedDB** holds the working data. **Internal snapshots** are undo at the
+database level — fast, automatic, and *lost with the disk, the browser profile
+or the origin*. **External backup files** are the only disaster recovery: a
+single checksummed JSON document that has left the machine. A restore is
+replace-all, validated in full before anything is written, preceded by a
+committed pre-restore snapshot, applied in one atomic transaction, and verified
+by reading the database back.
+
+The checksum detects corruption. It is not tamper-proofing — there is no
+secret, so anyone who edits a backup can recompute it. And an exported file is
+*exported*, not proven to be on disk: a browser never tells a page where a
+download went.
+
+See [Local Persistence & Backup](docs/LOCAL_PERSISTENCE_AND_BACKUP.md) for the
+format, the retention policy and the restore flow.
 
 ## Stack
 

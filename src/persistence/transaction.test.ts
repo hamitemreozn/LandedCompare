@@ -153,6 +153,75 @@ describe('multi-store transactions', () => {
   })
 })
 
+/**
+ * Added for Phase 8. `snapshots` records carry a full copy of the database,
+ * so listing them with `getAll` would load every byte they protect into
+ * memory to answer a question about their metadata. The cursor keeps the peak
+ * at one record — and, like every other scope method, it must respect the
+ * transaction boundary.
+ */
+describe('index iteration', () => {
+  /** A movement at a chosen instant, so the `occurredAt` index has an order. */
+  function movementAt(seed: number, occurredAt: string): InventoryMovementRecord {
+    return { ...movementRecord(seed), occurredAt }
+  }
+
+  it('walks an index in key order, not insertion order', async () => {
+    await database.write(['inventoryMovements'], async (scope) => {
+      await scope.add('inventoryMovements', movementAt(3, '2026-09-19T12:00:00.000Z'))
+      await scope.add('inventoryMovements', movementAt(1, '2026-09-17T12:00:00.000Z'))
+      await scope.add('inventoryMovements', movementAt(2, '2026-09-18T12:00:00.000Z'))
+    })
+
+    const seen: string[] = []
+    await database.read(['inventoryMovements'], (scope) =>
+      scope.forEachFromIndex('inventoryMovements', 'occurredAt', (value) => {
+        seen.push((value as InventoryMovementRecord).occurredAt)
+      }),
+    )
+
+    expect(seen).toEqual([
+      '2026-09-17T12:00:00.000Z',
+      '2026-09-18T12:00:00.000Z',
+      '2026-09-19T12:00:00.000Z',
+    ])
+  })
+
+  it('visits nothing in an empty store', async () => {
+    let visits = 0
+    await database.read(['inventoryMovements'], (scope) =>
+      scope.forEachFromIndex('inventoryMovements', 'occurredAt', () => {
+        visits += 1
+      }),
+    )
+    expect(visits).toBe(0)
+  })
+
+  it('aborts the transaction when the visitor throws', async () => {
+    await database.write(['inventoryMovements'], async (scope) => {
+      await scope.add('inventoryMovements', movementAt(1, '2026-09-17T12:00:00.000Z'))
+      await scope.add('inventoryMovements', movementAt(2, '2026-09-18T12:00:00.000Z'))
+    })
+
+    let failure: unknown
+    try {
+      await database.write(['inventoryMovements', 'suppliers'], async (scope) => {
+        await scope.put('suppliers', supplierRecord(9))
+        await scope.forEachFromIndex('inventoryMovements', 'occurredAt', () => {
+          throw new PersistenceError('RECORD_INVALID', 'a record this build refuses to read')
+        })
+      })
+    } catch (cause) {
+      failure = cause
+    }
+
+    expect(isPersistenceError(failure) && failure.code).toBe('RECORD_INVALID')
+    // The write issued before the walk rolled back with it.
+    const suppliers = await database.read(['suppliers'], (scope) => scope.count('suppliers'))
+    expect(suppliers).toBe(0)
+  })
+})
+
 describe('counter reservation', () => {
   it('hands out consecutive values and never repeats one', async () => {
     const values: number[] = []

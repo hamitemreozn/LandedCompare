@@ -1,3 +1,19 @@
+/**
+ * The migration **runner**: sequencing, chain validation, and what a failure
+ * costs.
+ *
+ * The released `v1 → v2` step has its own suite in `schemaVersion2.test.ts`,
+ * against a genuine version-1 database. This file tests the machinery that will
+ * carry every step after it, and does so with the only fixture that can prove a
+ * runner works: steps that actually rewrite records, applied to records that
+ * are actually stored.
+ *
+ * Those steps are numbered 3 and 4 because the database they run against is
+ * already at version 2 — the current one. Inventing a second `to: 2` here would
+ * mean testing the runner against a version the released chain also claims,
+ * which is the one arrangement guaranteed to stop matching production.
+ */
+
 import { describe, expect, it } from 'vitest'
 import { deleteDatabase, openDatabase } from './database'
 import { isPersistenceError, type PersistenceError } from './errors'
@@ -7,19 +23,12 @@ import { SCHEMA_VERSION } from './schema'
 import { createTestDatabaseName, TEST_INSTANT, testUuid } from './testSupport'
 
 /**
- * A genuine previous-schema fixture.
+ * A genuine previous-shape fixture.
  *
- * The supplier master as it might have looked one version earlier: a `name`
+ * The supplier master as it might look one version before a rename: a `name`
  * field instead of `displayName`, and no `active` flag. It is written into a
- * real database at its real IndexedDB version, so the migration under test
- * transforms persisted records through the production runner rather than
- * transforming a hand-held object in memory.
- *
- * The shape is test-only on purpose. `schemaVersion` 1 is the first version
- * that has ever existed, so there is no real `v1 → v2` step to test; inventing
- * one in `MIGRATIONS` would ship a migration that runs on every pilot database
- * for no reason. What must be proved now is that the *mechanism* works, and
- * that is what this fixture does.
+ * real database and transformed by the production runner, rather than by a
+ * hand-held object in memory.
  */
 interface LegacySupplierRecord {
   readonly id: string
@@ -37,8 +46,11 @@ function legacySupplier(seed: number): LegacySupplierRecord {
   }
 }
 
+/** The first step past the released chain. */
+const NEXT_VERSION = SCHEMA_VERSION + 1
+
 const renameSupplierName: Migration = {
-  to: 2,
+  to: NEXT_VERSION,
   description: 'suppliers: name -> displayName, add active',
   migrate: (context) => {
     context.rewriteStore('suppliers', (record) => {
@@ -55,7 +67,7 @@ const renameSupplierName: Migration = {
 }
 
 const addSupplierNote: Migration = {
-  to: 3,
+  to: NEXT_VERSION + 1,
   description: 'suppliers: record why each supplier was migrated',
   migrate: (context) => {
     context.rewriteStore('suppliers', (record) => ({
@@ -66,7 +78,7 @@ const addSupplierNote: Migration = {
 }
 
 const failsOnSecondRecord: Migration = {
-  to: 2,
+  to: NEXT_VERSION,
   description: 'suppliers: fails partway through',
   migrate: (context) => {
     let seen = 0
@@ -81,7 +93,10 @@ const failsOnSecondRecord: Migration = {
   },
 }
 
-/** Creates a database at `schemaVersion` 1 holding two legacy supplier rows. */
+/**
+ * A database at the current schema version holding two previous-shape supplier
+ * rows, ready for a step that has not shipped yet.
+ */
 async function seedLegacyDatabase(label: string): Promise<string> {
   const name = createTestDatabaseName(label)
   const database = await openDatabase({ name })
@@ -93,31 +108,50 @@ async function seedLegacyDatabase(label: string): Promise<string> {
   return name
 }
 
+/** The released chain plus the steps under test, as a build one version on would ship it. */
+function chainWith(...steps: readonly Migration[]): readonly Migration[] {
+  return [...MIGRATIONS, ...steps]
+}
+
 describe('the released migration chain', () => {
-  it('is empty at schemaVersion 1 — there has never been an earlier version', () => {
-    expect(MIGRATIONS).toEqual([])
-    expect(SCHEMA_VERSION).toBe(1)
+  it('reaches exactly the schema version this build declares', () => {
+    expect(MIGRATIONS.map((step) => step.to)).toEqual([2])
+    expect(SCHEMA_VERSION).toBe(2)
   })
 
   it('never reaches beyond the schema version it claims to produce', () => {
     expect(() => assertMigrationChain(MIGRATIONS, SCHEMA_VERSION)).not.toThrow()
   })
 
+  it('gives every step a description that is not a user-facing string', () => {
+    for (const step of MIGRATIONS) {
+      expect(step.description.length).toBeGreaterThan(0)
+    }
+  })
+
   it('rejects a chain with a gap', () => {
-    expect(() =>
-      assertMigrationChain([renameSupplierName, { ...addSupplierNote, to: 4 }], 4),
-    ).toThrow(/not contiguous/)
+    const toTwo: Migration = { to: 2, description: 'two', migrate: () => {} }
+    const toFour: Migration = { to: 4, description: 'four', migrate: () => {} }
+    expect(() => assertMigrationChain([toTwo, toFour], 4)).toThrow(/not contiguous/)
+  })
+
+  it('rejects a chain that does not start at 2', () => {
+    const toThree: Migration = { to: 3, description: 'three', migrate: () => {} }
+    expect(() => assertMigrationChain([toThree], 3)).toThrow(/not contiguous/)
   })
 
   it('rejects a chain that overshoots the schema version', () => {
-    expect(() => assertMigrationChain([renameSupplierName], 1)).toThrow(/beyond schemaVersion/)
+    expect(() => assertMigrationChain(chainWith(renameSupplierName), SCHEMA_VERSION)).toThrow(
+      /beyond schemaVersion/,
+    )
   })
 
   it('selects only the steps between the stored and the target version', () => {
-    const chain = [renameSupplierName, addSupplierNote]
-    expect(selectMigrations(chain, 1, 3).map((step) => step.to)).toEqual([2, 3])
-    expect(selectMigrations(chain, 2, 3).map((step) => step.to)).toEqual([3])
-    expect(selectMigrations(chain, 3, 3)).toEqual([])
+    const chain = chainWith(renameSupplierName, addSupplierNote)
+    expect(selectMigrations(chain, 1, 4).map((step) => step.to)).toEqual([2, 3, 4])
+    expect(selectMigrations(chain, 2, 4).map((step) => step.to)).toEqual([3, 4])
+    expect(selectMigrations(chain, 3, 4).map((step) => step.to)).toEqual([4])
+    expect(selectMigrations(chain, 4, 4)).toEqual([])
   })
 })
 
@@ -127,11 +161,11 @@ describe('migrating a real previous-version database', () => {
 
     const migrated = await openDatabase({
       name,
-      schemaVersion: 2,
-      migrations: [renameSupplierName],
+      schemaVersion: NEXT_VERSION,
+      migrations: chainWith(renameSupplierName),
     })
 
-    expect(migrated.meta.schemaVersion).toBe(2)
+    expect(migrated.meta.schemaVersion).toBe(NEXT_VERSION)
 
     const suppliers = await migrated.read(['suppliers'], (scope) =>
       scope.getAll<unknown>('suppliers'),
@@ -156,17 +190,17 @@ describe('migrating a real previous-version database', () => {
 
     const migrated = await openDatabase({
       name,
-      schemaVersion: 3,
-      migrations: [renameSupplierName, addSupplierNote],
+      schemaVersion: NEXT_VERSION + 1,
+      migrations: chainWith(renameSupplierName, addSupplierNote),
     })
 
-    expect(migrated.meta.schemaVersion).toBe(3)
+    expect(migrated.meta.schemaVersion).toBe(NEXT_VERSION + 1)
     const suppliers = await migrated.read(['suppliers'], (scope) =>
       scope.getAll<unknown>('suppliers'),
     )
     const parsed = suppliers.map((record) => parseSupplierRecord(record))
     // `note: 'migrated'` could only have been added after `displayName` existed:
-    // step 3 reads the shape step 2 produced.
+    // the second step reads the shape the first one produced.
     expect(parsed.every((record) => record.note === 'migrated')).toBe(true)
     expect(parsed.every((record) => record.displayName.startsWith('Legacy supplier'))).toBe(true)
 
@@ -182,8 +216,8 @@ describe('migrating a real previous-version database', () => {
 
     const migrated = await openDatabase({
       name,
-      schemaVersion: 2,
-      migrations: [renameSupplierName],
+      schemaVersion: NEXT_VERSION,
+      migrations: chainWith(renameSupplierName),
     })
     expect(migrated.meta.installId).toBe(installId)
     expect(migrated.meta.createdAt).toBe(createdAt)
@@ -199,7 +233,11 @@ describe('a failed migration', () => {
 
     let captured: PersistenceError | null = null
     try {
-      await openDatabase({ name, schemaVersion: 2, migrations: [failsOnSecondRecord] })
+      await openDatabase({
+        name,
+        schemaVersion: NEXT_VERSION,
+        migrations: chainWith(failsOnSecondRecord),
+      })
     } catch (error) {
       if (!isPersistenceError(error)) {
         throw error
@@ -208,7 +246,7 @@ describe('a failed migration', () => {
     }
 
     expect(captured?.code).toBe('MIGRATION_FAILED')
-    expect(captured?.details.targetVersion).toBe(2)
+    expect(captured?.details.targetVersion).toBe(NEXT_VERSION)
 
     await deleteDatabase(name)
   })
@@ -217,7 +255,11 @@ describe('a failed migration', () => {
     const name = await seedLegacyDatabase('migrate-rollback')
 
     await expect(
-      openDatabase({ name, schemaVersion: 2, migrations: [failsOnSecondRecord] }),
+      openDatabase({
+        name,
+        schemaVersion: NEXT_VERSION,
+        migrations: chainWith(failsOnSecondRecord),
+      }),
     ).rejects.toMatchObject({ code: 'MIGRATION_FAILED' })
 
     // The migration had already rewritten the first record before it threw on
@@ -225,7 +267,7 @@ describe('a failed migration', () => {
     // this database would now hold one new-shape row and one old-shape row —
     // a half-migrated state no version number describes.
     const reopened = await openDatabase({ name })
-    expect(reopened.meta.schemaVersion).toBe(1)
+    expect(reopened.meta.schemaVersion).toBe(SCHEMA_VERSION)
 
     const suppliers = await reopened.read(['suppliers'], (scope) =>
       scope.getAll<LegacySupplierRecord>('suppliers'),
