@@ -87,6 +87,39 @@ export interface TranslationResource {
     readonly snapshotInvalid: string
     readonly unexpected: string
   }
+  /**
+   * Cloud failures, which only exist once the data lives somewhere else.
+   *
+   * Separate from `dataError` rather than merged into it, because the two
+   * layers answer different questions: `dataError` says what went wrong with a
+   * record, and these say what went wrong with the *connection to the company's
+   * data*. A user who is told "the record was refused" when the truth is "the
+   * server is paused" is being sent to fix the wrong thing.
+   */
+  readonly cloudError: {
+    readonly offline: string
+    readonly serverUnavailable: string
+    readonly serverUnavailableAdmin: string
+    readonly sessionExpired: string
+    readonly forbidden: string
+    readonly noMembership: string
+    readonly membershipDeactivated: string
+    readonly organizationLocked: string
+    readonly notConfigured: string
+    readonly unexpected: string
+  }
+  readonly cloudAuth: {
+    readonly signInTitle: string
+    readonly emailLabel: string
+    readonly passwordLabel: string
+    readonly signIn: string
+    readonly signOut: string
+    readonly noSelfServiceReset: string
+    readonly mustChangePasswordTitle: string
+    readonly mustChangePasswordHint: string
+    readonly newPasswordLabel: string
+    readonly changePassword: string
+  }
   readonly backupStatus: {
     readonly label: string
     readonly never: string

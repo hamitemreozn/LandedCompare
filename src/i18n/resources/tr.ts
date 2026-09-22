@@ -95,6 +95,37 @@ const tr: TranslationResource = {
     snapshotInvalid: 'Kayıtlı anlık kopya okunamadı.',
     unexpected: 'Beklenmeyen bir hata oluştu.',
   },
+  cloudError: {
+    offline: 'İnternet bağlantısı yok. Bağlantı kurulana kadar kayıt yapılamaz.',
+    serverUnavailable:
+      'Sunucuya ulaşılamıyor. Verileriniz sunucuda güvende; bağlantı kurulana kadar kayıt yapılamaz. Lütfen yöneticinize bildirin.',
+    serverUnavailableAdmin:
+      'Ücretsiz plandaki proje yaklaşık bir hafta kullanılmazsa otomatik olarak duraklatılır. Supabase panelinden projeyi "Resume project" ile yeniden başlatın.',
+    sessionExpired: 'Oturumunuz sona erdi. Lütfen yeniden giriş yapın.',
+    forbidden: 'Bu işlem için yetkiniz yok.',
+    noMembership: 'Hesabınız bir şirkete bağlı değil. Yöneticinize başvurun.',
+    membershipDeactivated:
+      'Hesabınızın bu şirketteki erişimi pasife alınmış. Yöneticinize başvurun.',
+    organizationLocked:
+      'Şirket verisi bakım nedeniyle geçici olarak salt okunur. Görüntüleme açık, kayıt kapalı.',
+    notConfigured:
+      'Uygulama sunucu bilgileriyle yapılandırılmamış. Bu bir kurulum hatasıdır; yöneticinize bildirin.',
+    unexpected: 'Sunucu isteği tamamlanamadı.',
+  },
+  cloudAuth: {
+    signInTitle: 'Giriş yap',
+    emailLabel: 'E-posta',
+    passwordLabel: 'Parola',
+    signIn: 'Giriş yap',
+    signOut: 'Çıkış yap',
+    noSelfServiceReset:
+      'Parolanızı unuttuysanız yöneticinizle iletişime geçin. Bu sürümde e-posta ile parola sıfırlama yoktur.',
+    mustChangePasswordTitle: 'Parolanızı değiştirin',
+    mustChangePasswordHint:
+      'Hesabınız yöneticiniz tarafından geçici bir parolayla oluşturuldu. Devam etmeden önce kendi parolanızı belirleyin.',
+    newPasswordLabel: 'Yeni parola',
+    changePassword: 'Parolayı değiştir',
+  },
   backupStatus: {
     label: 'Dış yedek',
     never: 'Henüz hiç dış yedek dosyası dışa aktarılmadı.',

@@ -574,3 +574,87 @@ re-audit before Phase 6+ (UI) work begins. Beyond that, the highest testing
 priority remains financial calculation correctness and business-risk
 scenarios — since errors there directly affect the numbers users rely on to
 make purchasing decisions.
+
+---
+
+## Phase 10 — the two database suites
+
+The application suite (`npm run test`) is unchanged and still runs with no
+container runtime: 75 files, 1121 assertions, none of which know the cloud
+exists. Two new suites sit beside it, and the split between them is not
+organisational — each one is blind to something the other sees.
+
+### `npm run db:test` — pgTAP, 105 assertions in six files
+
+Runs inside the database, in a transaction that is rolled back.
+
+| File | What it establishes |
+| --- | --- |
+| `010_schema_posture` | P0–P17 over the **catalogue**: RLS enabled *and* forced, a policy per granted command, `with_check` on every UPDATE policy, no `delete` anywhere, `anon` holding nothing including schema `USAGE`, `security_invoker=on` on every `api` view, `EXECUTE` revoked from `PUBLIC` on every function, `search_path` pinned on every function, the RLS helpers granted to `authenticated` and the trigger helpers to nobody, `api` holding no base table, and the decimal forward guard |
+| `020_policy_pattern` | The four-policy pattern, exercised by a real `authenticated` session against a probe table built and rolled back inside the test. Cross-tenant INSERT refused, tenant-move refused, forged audit fields overwritten, DELETE refused at the privilege level |
+| `030_tenant_isolation` | Two organisations, four users, every read taken through an `api` view — including an account with no membership at all, and a JWT that *claims* an organisation and a role |
+| `040_membership_lifecycle` | Disabling a membership takes effect on the next statement with the session untouched; a member cannot promote themselves |
+| `050_provisioning` | The five failure cases A–E at the transactional level, plus the authority checks the database re-proves rather than trusting the Edge Function for |
+| `060_integrity_and_write_gate` | The restore write gate including threat 22 (the lock holder's *own* second session is refused), append-only enforcement against the table owner, tenant immutability, and the stale-write predicate in `api.update_own_profile` |
+
+Every assertion is expressed over the catalogue rather than over a list of
+names, so an object added by a later phase is inside its scope automatically. An
+assertion phrased as "`app_data.products` has RLS" would pass forever while
+`app_data.quotes` did not.
+
+### `npm run test:security` — HTTP, 37 assertions in four files
+
+Runs `supabase db reset` first, so **the migration chain is replayed from an
+empty database on every run** rather than on the days somebody remembers. Then
+it makes real requests.
+
+These exist because of one sentence: *pgTAP runs inside the database and
+therefore cannot see PostgREST's exposed-schema configuration at all.* The
+control that makes the exact-decimal contract and the stale-write guarantee
+invariants — that `app_data` has no route — is a property of a server setting a
+dashboard edit can change, and no in-database assertion can see it.
+
+| File | What only HTTP can show |
+| --- | --- |
+| `routeIsolation` | B4, B5, B8, B9. `app_data` and `app_private` answer `PGRST106` with the exposed-schema list quoted back, so widening `[api] schemas` fails here immediately. The RLS helper is **executable and simultaneously uncallable** — the pair that makes "a privilege is not a route" an observed state. A crafted `PATCH` reaches nothing. `anon` is refused at the schema, before any object is consulted |
+| `tenantIsolation` | B1, B2, B6/B7 with two real access tokens. A wrong tenant and a nonexistent uuid return **identical** responses, which is what closes the enumeration oracle. The version predicate cannot be omitted, because there is no overload without it |
+| `membershipDisable` | Threat 3, with the **same** token across the change. The in-database version of this test never involves a token, a signature or an expiry — and the tempting implementation that reads the organisation from a JWT claim passes it and fails here, silently, for as long as the token lives |
+| `provisioning` | The Edge Functions against the real Auth Admin API: that authorisation happens *before* an account is created, that a retry returns the stored outcome and no second password, that an existing account is linked rather than re-credentialled, and that a stuck attempt is refused rather than raced |
+
+The suite is excluded from `npm run test` by filename, so a developer without
+Docker keeps the whole of Phases 0–9.
+
+### `npm run verify:hosted` — twelve checks against a deployed project
+
+Unauthenticated, and creates nothing — which is what makes it safe to point at
+production before anybody exists on it. It asks the server what it is actually
+serving, because the exposed-schema list lives on the `authenticator` role and a
+dashboard edit changes it out from under the repository.
+
+It is itself tested the only way a guard can be: by running it against a
+deliberately broken local configuration. With `public` added to `[api] schemas`
+it fails and quotes the wrong allow-list back; with `[auth] enable_signup = true`
+it fails on sign-up. That second run also created a real auth row, which is why
+the sign-up probe now sends a one-character password — GoTrue evaluates
+`DISABLE_SIGNUP` before password strength, so a correct project still answers
+`signup_disabled` and a broken one refuses the password before writing anything.
+
+The script refuses to run if handed a secret key: `service_role` bypasses the
+posture every check exists to confirm, so all twelve would pass while proving
+nothing.
+
+### `npm run db:advisors` — Supabase's own security advisor
+
+Against the local database it reports exactly two INFO findings, both of them
+intentional: `app_data.counters` and `app_private.managed_table` have RLS enabled
+with no policy, which for a SERVER_ONLY table is the configuration rather than an
+oversight. At `--level warn --fail-on warn` the result is "No issues found", so
+the hosted step is an enforceable gate rather than a report somebody reads.
+
+### The guard on the build
+
+`npm run build` greps the production bundle for `sb_secret_` and the legacy
+`service_role` marker and fails on a hit. It was verified by planting one — a
+check of this kind that has never been seen to fail is a check nobody knows
+works. It prints the marker and never the value, because moving a key from a
+build artefact into a CI log is not an improvement.

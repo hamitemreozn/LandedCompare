@@ -12,6 +12,29 @@ dist
 dist-ssr
 *.local
 
+# Client configuration. `.env.example` is committed and holds no value;
+# everything else may hold a real project URL and publishable key, and a
+# developer machine may additionally carry a database connection string for
+# migrations. docs/CLOUD_MULTIUSER_ARCHITECTURE.md §19: nothing secret is ever
+# committed, and `npm run build` fails if secret key material reaches the
+# bundle.
+.env
+.env.*
+!.env.example
+
+# Supabase CLI working state: the linked project ref and temporary files.
+supabase/.branches
+supabase/.temp
+
+# A safety net, NOT a sanctioned location. Pre-deployment dumps must be written
+# OUTSIDE this repository entirely — `data.sql` carries `auth.users` today and
+# will carry the company's real business data as soon as the pilot has any, and
+# a file that is merely gitignored is one `git add -f`, one tooling change or
+# one careless glob away from being committed forever. This rule exists only to
+# catch the mistake of writing one here by accident.
+supabase/dumps
+*.dump.sql
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

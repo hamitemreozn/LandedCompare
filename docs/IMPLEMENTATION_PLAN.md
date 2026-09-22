@@ -568,7 +568,11 @@ precisely why guessing now would be the expensive option.
   master's product surface — CRUD, deactivation, and the `active` flag — not a
   schema move.
 
-- **Phase 10 — Cloud Foundation** (difficulty 8).
+- **Phase 10 — Cloud Foundation** (difficulty 8). **Implemented locally; the
+  hosted link is an outstanding operator action.** What was built, what was
+  corrected in the design because it did not compile, and what was deliberately
+  deferred is recorded in
+  [Cloud & Multi-User Architecture](CLOUD_MULTIUSER_ARCHITECTURE.md) §28.
   *Objective:* a shared, secured, version-controlled database exists, and a user
   can sign in to it — with no business data in it yet.
   *Deliverables:* the `supabase/` directory in the repository (config,
@@ -828,7 +832,16 @@ Phases 0–5 are implemented — **Checkpoint 1: engine complete.** Phase 6
 (i18n) is implemented. Phase 6.5 and Phase 9.5 are architecture/product
 checkpoints with no production code. Phase 7 (local persistence), Phase 8
 (backup, snapshots and restore) and Phase 9 (application boot, catalog and
-parties) are implemented. Phase 10 onward is not started.
+parties) are implemented.
+
+**Phase 10 (cloud foundation) is implemented against the local stack.** The
+schema separation, the identity and tenancy tables, the RLS posture, the helper
+and function privileges, the shared triggers, the two Edge Functions, the
+application seam and both test suites exist and pass. Two things remain before
+it can be called finished: the hosted Free project is **not yet linked** — that
+needs a CLI access token obtained through a browser, which is an operator action
+([Deployment](DEPLOYMENT.md)) — and therefore nothing has been pushed to it.
+Phase 11 onward is not started.
 
 **On entering pilot data — revised by Phase 9.5.** The Phase 9 wiring is done:
 `runSnapshotMaintenance()` runs on startup, `ensurePreMigrationSnapshot()` is

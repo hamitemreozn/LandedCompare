@@ -43,7 +43,20 @@ limitation.
 
 The canonical design is
 **[Cloud & Multi-User Architecture](docs/CLOUD_MULTIUSER_ARCHITECTURE.md)**.
-Nothing in it is implemented yet.
+
+**Phase 10 built its foundation**, against a local Supabase stack: the
+three-schema separation in which `api` is the only schema the Data API serves,
+the identity and tenancy tables, row-level security enabled *and forced*
+everywhere, the idempotent user-provisioning workflow, and 142 security
+assertions across pgTAP and real HTTP requests. The hosted project is not yet
+linked — that needs one operator action, described in
+[Deployment](docs/DEPLOYMENT.md).
+
+**The application you run today is still the local Phase 9 one.** Products,
+suppliers and customers read and write IndexedDB, unchanged. Phase 11 moves them
+to PostgreSQL in a single step and retires the local database — deliberately in
+one step, because a half-migration is two sources of truth, which is exactly
+what the cloud architecture exists to prevent.
 
 ### Recovery, in one paragraph — as it works today (local, Phase 9)
 
@@ -87,16 +100,36 @@ start.
 - Vitest + React Testing Library (tests)
 - oxlint (linting)
 - i18next + react-i18next (internationalization)
+- Supabase — PostgreSQL, Auth, PostgREST, Edge Functions (cloud foundation)
+- pgTAP (database security assertions), Supabase CLI pinned as a dev dependency
 
 ## Commands
 
 ```bash
 npm run dev        # start local dev server
-npm run test       # run test suite
+npm run test       # run test suite  (no Docker needed)
 npm run lint       # run oxlint
 npm run typecheck  # run TypeScript project check (no emit)
-npm run build      # production build (tsc -b && vite build)
+npm run build      # production build, and refuse it if a secret key is in the bundle
 npm run preview    # preview the production build locally
+```
+
+Database and cloud security — these need a running Docker-compatible runtime,
+and everything above keeps working without one:
+
+```bash
+npx supabase start    # bring up the local stack
+npm run db:reset      # replay every migration from empty, then seed
+npm run db:test       # pgTAP catalogue and behavioural assertions
+npm run db:lint       # database lint
+npm run test:security # HTTP: routing, tenancy, membership, provisioning
+```
+
+Against a deployed project (no Docker needed, creates nothing):
+
+```bash
+npm run db:advisors   # Supabase security advisor against the linked project
+SUPABASE_URL=… SUPABASE_PUBLISHABLE_KEY=… npm run verify:hosted
 ```
 
 ## Internationalization

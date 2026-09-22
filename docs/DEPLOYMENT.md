@@ -1,9 +1,385 @@
 # Deployment
 
-## Current status — nothing is deployed yet
+## Current status
 
-Phases 0–9 run from a local development server on one machine, and there is
-nothing to deploy because there is nothing shared to deploy *to*.
+Phase 10 built the database, its security posture, its two Edge Functions and
+the application-side seam. They run against the **local** Supabase stack and are
+proved there — 105 pgTAP assertions and 37 HTTP behavioural assertions, with
+every migration replayed from an empty database on each run.
+
+**The hosted project is not yet linked**, and connecting it is an operator
+action rather than something a build can do: it needs a CLI access token
+obtained through a browser. The sequence is below, and it has one rule attached
+that is not optional.
+
+The client is still the Phase 9 application reading IndexedDB, so there is no
+desktop build to distribute yet either. Phase 11 moves the catalog to PostgreSQL
+and switches the application onto the cloud seam in one move.
+
+---
+
+## Local development — the only place migrations are written
+
+```bash
+npm install                 # includes the Supabase CLI, pinned
+npx supabase start          # needs Docker Desktop or a compatible runtime
+
+npm run db:reset            # replays EVERY migration from empty, then seeds
+npm run db:test             # pgTAP: the catalogue and behavioural suites
+npm run test:security       # HTTP: routing, tenancy, provisioning
+npx supabase functions serve   # only needed to exercise the Edge Functions by hand
+```
+
+`supabase start` refuses to finish if the `api` schema does not exist, because
+PostgREST is configured to serve that schema and nothing else. A failed start
+with `schema "api" does not exist` means the migrations have not been applied —
+run `npm run db:reset`.
+
+The local stack binds to `127.0.0.1` and is never exposed. Its keys are
+identical on every machine, are published in Supabase's own documentation, and
+open a throwaway database holding four synthetic users — they are not secrets,
+and `supabase/seed.sql` contains no Akgün Medikal data of any kind.
+
+**Docker is the primary path, not a convenience.** A developer who cannot run it
+can link a remote project and push, but loses `db reset` and therefore loses the
+ability to prove the migration chain from empty — which is the precondition the
+hosted push depends on.
+
+---
+
+## Connecting the hosted project — the operator sequence
+
+Run these in **your own terminal**. Two of them involve credentials, and neither
+should be typed anywhere except into the prompt that asks for it.
+
+### Why the order is what it is
+
+The exposed-schema list is a security control, and it is also the one setting
+that can be pushed *before the thing it points at exists*. Locally, starting the
+stack with `[api] schemas = ["api"]` against a database with no `api` schema
+made PostgREST fail its health check and refuse to serve at all — the schema
+cache cannot load a schema that is not there.
+
+So **migrations go first, configuration second**. At the moment `api` becomes
+the exposed schema it already exists, already holds the `security_invoker` views,
+and already has its grants.
+
+**There is a brief window between the two, and it is harmless on an empty
+project.** Until `config push` lands, the hosted project still has its factory
+defaults: exposed schemas `public, graphql_public`, and sign-up enabled. During
+that window —
+
+- **no LandedCompare business table is exposed, at any moment.** The canonical
+  tables are created in `app_data`, which is not in the default list and is not
+  in the final list either. `app_private` likewise. There is no ordering in
+  which they are reachable.
+- **`public` is exposed and empty.** It holds no LandedCompare object — pgTAP
+  P16 asserts that over the catalogue — so exposing it publishes nothing.
+- **`api` exists but is not yet routed.** The views are unreachable for a few
+  seconds. No client is deployed, so nobody notices.
+- **sign-up is still open.** Someone who knew the project ref and publishable
+  key could create an account. That account would have no membership and
+  therefore no access to any business row — RLS is enabled *and forced* the
+  moment the migrations land — and there is no business data in the project
+  regardless. The ref and key are not published anywhere at this point.
+
+The window is seconds long, and it can be closed entirely: **optionally, turn
+"Allow new users to sign up" off in the Dashboard before step 5.** That is a
+configuration action, not a schema change, so it does not breach the rule that
+the dashboard is never the schema's source of truth — and `config push` makes
+the repository authoritative over it a moment later anyway.
+
+### The sequence
+
+```bash
+# 1  Authorise the CLI. Opens a browser; no token is typed or pasted anywhere.
+npx supabase login
+
+# 2  Link this repository to the project. Choose it from the list, or pass
+#    --project-ref. The database password is prompted for, locally.
+npx supabase link
+
+# 3  Confirm the server is PostgreSQL 15 or later. `security_invoker` views do
+#    not exist before 15, and a view without that option returns every tenant's
+#    rows. This goes through the Management API, so no connection string and no
+#    password enters your shell history.
+npx supabase db query --linked "SHOW server_version;"
+
+#    Belt and braces: the first migration asserts server_version_num >= 150000
+#    and aborts the whole chain if it is not met, so a skipped check fails
+#    safely rather than silently.
+
+# 4  The dump set — the rollback. See "Backup semantics" below for what each
+#    file actually contains; the names are not self-explanatory and one of them
+#    used to be labelled wrongly.
+#
+#    WRITE THESE OUTSIDE THE REPOSITORY — they are company data, not source.
+#    Stay in the working tree so the CLI finds supabase/, and give -f an
+#    absolute path that points somewhere else.
+BACKUP_DIR=~/landedcompare-backups/$(date +%Y-%m-%d)
+mkdir -p "$BACKUP_DIR"
+
+npx supabase db dump --linked -f "$BACKUP_DIR/roles.sql"  --role-only
+npx supabase db dump --linked -f "$BACKUP_DIR/schema.sql"
+npx supabase db dump --linked -f "$BACKUP_DIR/data.sql"   --data-only --use-copy
+
+# 5  Dry run, then push. The dry run prints the migrations that WOULD be
+#    applied and applies none of them.
+npx supabase db push --linked --dry-run
+npx supabase db push --linked
+
+# 6  Push the configuration. THIS is what sets the exposed-schema list to `api`
+#    alone and disables sign-up on the hosted project; `db push` does not touch
+#    either of them.
+#
+#    Review the diff first, and read the `declared` flag on every entry — see
+#    "What config push actually writes" below. Exactly two entries must say
+#    declared: true.
+npx supabase config diff
+npx supabase config push
+
+# 7  Deploy the two Edge Functions. There is NO secret to set — see
+#    "Secret handling" below.
+npx supabase functions deploy admin-provision-user
+npx supabase functions deploy admin-reset-password
+```
+
+### Verify, rather than assume
+
+```bash
+# 8  Migration history: local and remote must agree.
+npx supabase migration list --linked
+
+# 9  Supabase's own security advisor against the hosted database.
+npm run db:advisors        # supabase db advisors --linked --type security
+                           #   --level warn --fail-on warn
+
+# 10 The configuration, asked of the server over real HTTP.
+SUPABASE_URL=https://<project-ref>.supabase.co \
+SUPABASE_PUBLISHABLE_KEY=sb_publishable_… \
+npm run verify:hosted
+```
+
+Step 10 is the one that matters, and it exists because steps 6 and 8 can both
+succeed while the Data API serves something else. PostgREST reads its
+exposed-schema list from `pgrst.db_schemas` on the `authenticator` role — a
+value a dashboard edit changes out from under the repository — so the list is
+**asked of the server** rather than read back from the file that was pushed.
+
+`scripts/verify-hosted.mjs` makes twelve unauthenticated requests and creates
+nothing: it confirms that `app_data`, `app_private` and `public` all answer
+`PGRST106` with the allow-list quoted back, that `anon` is refused at the schema
+before any object is consulted, that the private helper and the provisioning
+RPCs have no reachable route, that a crafted `PATCH` against a canonical table
+is refused, that sign-up is closed, and that the password grant still works.
+
+Two details of that script are deliberate. It **refuses to run if handed a
+secret key**, because `service_role` bypasses the posture the checks exist to
+confirm and every one of them would pass while proving nothing. And its sign-up
+probe sends a one-character password: GoTrue evaluates `DISABLE_SIGNUP` before
+it validates password strength, so a correctly configured project still answers
+`signup_disabled`, and a misconfigured one rejects the password before writing a
+row. An earlier version used a valid password and created a real account when
+run against a deliberately broken configuration, which is how this was found.
+
+### What `config push` actually writes
+
+**It writes every property this repository declares, and leaves the rest
+alone.** That is the CLI's own contract:
+
+> Pushes the properties your local config.toml declares to the linked project.
+> Properties the file does not declare are left unchanged.
+
+Which makes `supabase/config.toml`'s **silence** as meaningful as its contents,
+and makes the file as generated by `supabase init` actively dangerous. Run
+against this project for the first time, `config diff` reported **fifteen
+declared differences**, of which thirteen were accidents of the template:
+
+| Would have been overwritten | Local value | Hosted value |
+| --- | --- | --- |
+| `auth.site_url` | `http://127.0.0.1:3000` | `http://localhost:3000` |
+| `auth.additional_redirect_urls` | `["https://127.0.0.1:3000"]` | `[]` |
+| `auth.email.enable_confirmations` | `false` | `true` |
+| `auth.email.max_frequency` | `1s` | `1m0s` |
+| `auth.email.otp_length` | `6` | `8` |
+| `auth.minimum_password_length` | `8` | `6` |
+| `auth.password_requirements` | `""` | unset |
+| `auth.mfa.totp.enroll_enabled` / `verify_enabled` | `false` | `true` |
+| `auth.sms.twilio.enabled` | `false` | `true` |
+| `db.pooler.default_pool_size` | `20` | `15` |
+| `db.pooler.max_client_conn` | `100` | `200` |
+| `storage.analytics.enabled` | `false` | `true` |
+
+Pushing that would have pointed a production authentication service at a
+developer's laptop, halved the connection pool, and switched off MFA — none of
+which Phase 10 asks for, and none of which anyone would have connected to "I
+deployed the exposed-schema setting" a week later.
+
+So the file was stripped to what this product actually governs. `config.toml`'s
+own header records the rule and the verified list of local-only keys.
+
+**Reading a diff before a push.** `config diff` reports a `declared` flag on
+every entry. Entries with `declared: false` are the CLI showing you where its
+local defaults differ from your project — informational, and **not** pending
+writes. Only `declared: true` entries are written:
+
+```bash
+npx supabase config diff            # human-readable
+npx supabase config diff --exit-code   # exit 2 if any difference exists, for CI
+```
+
+The current state of this repository produces exactly two declared differences,
+and they are the two Phase 10 requires:
+
+```
+DECLARED  update  api.schemas         ["api"] -> ["public","graphql_public"]
+DECLARED  update  auth.enable_signup  false   -> true
+```
+
+`config push` prompts per changed resource in a terminal, showing the exact
+diff. **Expect exactly two prompts. If a third appears, abort.** A
+non-interactive run (no TTY, `--yes`, or piped stdin) defaults to proceeding,
+which is why it must not be scripted.
+
+### When local and hosted must genuinely differ
+
+`[remotes.<name>]` override blocks, confirmed working on the pinned CLI:
+
+```toml
+[remotes.pilot]
+project_id = "<project-ref>"
+
+[remotes.pilot.auth]
+site_url = "https://the-real-origin.example"
+```
+
+`config diff` then reports `Comparing against project … using [remotes.pilot]`
+and the override replaces the base value for that project.
+
+Phase 10 does not need one: the three properties it governs — the exposed-schema
+list, public sign-up, and the e-mail provider — have the same correct value in
+both places. The first real case will be `auth.site_url` when a web client is
+deployed and the hosted origin stops being `localhost`.
+
+**An override is applied on top of the base, not instead of it.** A base
+declaration still reaches the hosted project unless the remote block overrides
+that exact property, so stripping the base remains the load-bearing step and a
+remote block is not a substitute for it.
+
+### One deliberately deferred decision
+
+`auth.minimum_password_length` was declared as `8` locally; the hosted project
+has Supabase's default of `6`. That declaration was **removed rather than
+pushed**, because no part of the canonical Phase 10 architecture specifies a
+value and "the local file happened to say 8" is not a reason to reconfigure a
+production auth service.
+
+It is recorded here rather than silently dropped: **raising the hosted minimum
+is a reasonable change, and it should be made as its own reviewed decision.**
+The exposure is small — accounts are provisioned with 18-character generated
+passwords (§4) and only a user's own later choice is governed by the minimum —
+but it is a real, if minor, weakness and it should be somebody's explicit call
+rather than a side effect of a deployment.
+
+### Secret handling
+
+**There is no project secret to set, and that is a correction.** The first
+Phase 10 runbook required
+`supabase secrets set LANDEDCOMPARE_SECRET_KEY=sb_secret_…` before the Edge
+Functions would work. Measured against the pinned CLI's runtime, that variable
+duplicated a credential the platform already injects into every invocation:
+
+| Injected variable | What it is |
+| --- | --- |
+| `SUPABASE_SECRET_KEYS` | the current server credential, as a JSON envelope keyed by name — `{"default":"sb_secret_…"}` |
+| `SUPABASE_SERVICE_ROLE_KEY` | the legacy key, still injected; Supabase is retiring the legacy pair by the end of 2026 |
+| `SUPABASE_URL` | the project URL |
+
+A duplicated secret is not a neutral extra step. It is a second copy of the most
+dangerous credential in the system, created and carried by a human, which
+diverges from the real one the first time the project's keys are rotated and
+nobody remembers the copy exists. It was removed.
+
+`supabase/functions/_shared/secretKey.ts` resolves the credential, prefers the
+current key over the deprecated one, tolerates the envelope changing shape —
+it is **plural** because Supabase supports several active keys during a rotation
+— and fails closed with a named reason rather than returning an empty string
+that would surface later as an unexplained 401. It takes a plain environment
+record and touches no Deno global, which is what lets
+`src/cloud/serverSecretKey.test.ts` unit-test every shape with no runtime and no
+real credential.
+
+What still belongs in Edge Function secrets, if it is ever added: SMTP
+credentials. Nothing else.
+
+### Backup semantics — what each dump command actually contains
+
+The names are not self-explanatory, and the earlier version of this document
+labelled one of these files as something it is not. Every row below was produced
+by running the command against the local database and reading the result.
+
+| Command | Contains | Does NOT contain |
+| --- | --- | --- |
+| `db dump --role-only` | cluster roles | role passwords — a restored custom login role needs its password set again |
+| `db dump` (no flags) | `pg_dump --schema-only`, excluding the Supabase-managed schemas: the LandedCompare tables, views, functions, policies and grants | **any data**; **anything in `auth`** |
+| `db dump --data-only --use-copy` | `pg_dump --data-only --schema '*'`. The business data **and `auth.users`** — `auth` is absent from the exclude list. Only the three `*_migrations` tables are skipped | schema definitions |
+| `db dump --schema auth` | `pg_dump --schema-only --schema=auth`: **the table definitions of the `auth` schema and zero user rows** | **the users.** A file from this command filed as "the Auth backup" is an empty promise |
+| `db dump --data-only --schema auth --use-copy` | the `auth` rows alone — a targeted subset of what the plain data dump already holds | everything else |
+
+Two consequences worth stating plainly, because the earlier text had them
+backwards:
+
+1. **The users are already in `data.sql`.** The ordinary data dump carries
+   `COPY "auth"."users"`.
+2. **The command that names `auth` in its flags is the one that does not contain
+   them**, unless `--data-only` is given as well.
+
+**For the first deployment, three files is the proportionate set** — roles,
+schema, data — and on a project this new they are nearly empty. They are taken
+anyway because the habit is what is being established, and the day it matters is
+not the day to start. The separate `authdata.sql` becomes worth taking once
+there are accounts worth isolating from a large business dump.
+
+The schema's authority is the migration files in this repository, never
+`schema.sql`; that file exists to be *compared* against them to catch drift. And
+whether Auth accounts survive being restored into a *fresh* project is still not
+promised — capturing them is solved, restoring them into a managed service has
+never been rehearsed here, and the Phase 21 drill is what turns that into a fact.
+See [Cloud & Multi-User Architecture](CLOUD_MULTIUSER_ARCHITECTURE.md) §16-B.
+
+### Creating the first organisation
+
+There is deliberately no self-service path to an OWNER: `admin-provision-user`
+requires the caller to already be an ACTIVE OWNER or ADMIN, and a "first user
+becomes OWNER" rule would be self-registration wearing a different name on a
+project where sign-up is disabled precisely to prevent one.
+
+So the first organisation is created once, by the operator, from a superuser
+connection:
+
+```sql
+-- After creating the owner's auth account in the dashboard's Authentication
+-- section (an account, not a table row — the schema is never edited there).
+select app_private.bootstrap_organization(
+  'Akgün Medikal',
+  '<the new auth user id>',
+  'Ad Soyad'
+);
+```
+
+`bootstrap_organization` is a function in a migration rather than five rows
+typed into the Table Editor, because what it does — normalise, verify the auth
+user exists, create the organisation, the profile, the membership and the admin
+event — is five statements that must agree, and five statements typed by hand at
+midnight are four statements and a mistake. `EXECUTE` is revoked from every Data
+API role including `service_role`; it is reachable only from a superuser
+connection.
+
+**Not yet, and not without being asked:** no real customer, supplier or
+product data, and no employee accounts. Phase 11 builds and proves the import
+path, and entering the real catalogue is better done after it than before it.
+
+---
 
 **Phase 9.5 changed the target.** From Phase 10 the application has a backend:
 PostgreSQL hosted by Supabase, which is the single source of truth for shared
@@ -22,8 +398,16 @@ repo/supabase/migrations/*.sql
   → supabase db reset        (local, Docker — proves the chain from empty)
   → npm test  +  supabase test db
   → THE DUMP SET             (the hosted project, BEFORE the push — the rollback)
-  → supabase db push         (the hosted project)
+  → supabase db push         (the hosted project: schema, first)
+  → supabase config push     (the hosted project: exposed schemas + auth, second)
+  → npm run verify:hosted    (ask the server what it is actually serving)
 ```
+
+**`db push` and `config push` are two different deployments and both are
+required.** `db push` applies migrations; it does not touch the exposed-schema
+list or the sign-up switch. Migrations go first because PostgREST cannot serve a
+schema that does not exist yet — the operator sequence above explains the order
+and why the gap between them is harmless on an empty project.
 
 **Migrations are the canonical schema history.** Nothing is changed through the
 Supabase dashboard; if it ever is, `supabase db diff` captures it into a
@@ -43,23 +427,36 @@ must 404. See
 
 **The dump set before every push is not optional, and it is a set rather than a
 command.** `supabase db dump` with default flags produces a **schema-only** dump
-and **excludes the Supabase-managed schemas**, `auth` among them — so one
-invocation backs up neither the data nor the users:
+and **excludes the Supabase-managed schemas**, so one invocation backs up no data
+at all:
 
 ```bash
-supabase db dump --db-url "$URL" -f roles.sql  --role-only
-supabase db dump --db-url "$URL" -f schema.sql
-supabase db dump --db-url "$URL" -f data.sql   --data-only --use-copy
-supabase db dump --db-url "$URL" -f auth.sql   --schema auth     # see §16-B
+npx supabase db dump --linked -f roles.sql  --role-only
+npx supabase db dump --linked -f schema.sql
+npx supabase db dump --linked -f data.sql   --data-only --use-copy
 ```
 
+**Write them outside this repository.** `data.sql` already contains
+`auth.users`, and from Phase 11 it will contain the company's product,
+supplier and customer records — that is company data and a backup artefact, not
+source code, and it does not belong in version control under any circumstances.
+`.gitignore` carries a rule for `supabase/dumps` as a safety net against writing
+one here by accident, but a gitignored file is one `git add -f` or one tooling
+change away from being committed permanently, and a secret or a customer list
+committed once is committed in every clone forever. Use a directory outside the
+working tree, such as `~/landedcompare-backups/<date>/`, and move the artefacts
+off the machine (§16-B).
+
+Three commands, not four: the data dump already carries `auth.users`, so the
+separate `--schema auth` file the earlier version of this document prescribed was
+both redundant *and* mislabelled — without `--data-only` it contains no users at
+all. "Backup semantics" above has the measured breakdown of every variant.
+
 The Free plan provides no automatic backups, so this set is the only rollback.
-What each artefact does and does not recover — and the honest position on whether
-Auth accounts survive a rebuild — is in
-[Cloud & Multi-User Architecture](CLOUD_MULTIUSER_ARCHITECTURE.md) §16-B. The
-short version: the schema's authority is the migration files in this repository,
-not `schema.sql`, and Auth recovery is not promised until the Phase 21 drill has
-demonstrated it.
+The schema's authority is the migration files in this repository, not
+`schema.sql`, and Auth *recovery* is not promised until the Phase 21 drill has
+demonstrated it — see
+[Cloud & Multi-User Architecture](CLOUD_MULTIUSER_ARCHITECTURE.md) §16-B.
 
 ### 2. The client — Tauri desktop builds
 

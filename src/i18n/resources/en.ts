@@ -95,6 +95,37 @@ const en: TranslationResource = {
     snapshotInvalid: 'The stored snapshot could not be read.',
     unexpected: 'Something unexpected went wrong.',
   },
+  cloudError: {
+    offline: 'There is no internet connection. Nothing can be saved until it is restored.',
+    serverUnavailable:
+      'The server cannot be reached. Your data is safe on the server; nothing can be saved until the connection is restored. Please tell your administrator.',
+    serverUnavailableAdmin:
+      'A Free-plan project is paused automatically after about a week without use. Restart it from the Supabase dashboard with "Resume project".',
+    sessionExpired: 'Your session has ended. Please sign in again.',
+    forbidden: 'You are not permitted to do this.',
+    noMembership: 'Your account is not attached to a company. Please contact your administrator.',
+    membershipDeactivated:
+      'Your access to this company has been deactivated. Please contact your administrator.',
+    organizationLocked:
+      'Company data is temporarily read-only for maintenance. Viewing works; saving does not.',
+    notConfigured:
+      'This build was never configured with server details. That is an installation fault; please tell your administrator.',
+    unexpected: 'The request to the server could not be completed.',
+  },
+  cloudAuth: {
+    signInTitle: 'Sign in',
+    emailLabel: 'E-mail',
+    passwordLabel: 'Password',
+    signIn: 'Sign in',
+    signOut: 'Sign out',
+    noSelfServiceReset:
+      'If you have forgotten your password, contact your administrator. This version has no e-mail password reset.',
+    mustChangePasswordTitle: 'Change your password',
+    mustChangePasswordHint:
+      'Your administrator created this account with a temporary password. Choose your own before continuing.',
+    newPasswordLabel: 'New password',
+    changePassword: 'Change password',
+  },
   backupStatus: {
     label: 'External backup',
     never: 'No external backup file has ever been exported.',

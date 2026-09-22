@@ -999,3 +999,70 @@ decisions don't accidentally violate them:
   (Results UI), turning insight codes into text (i18n), and any
   supplier-quality/lead-time/warranty scoring — which this product does not
   and will not compute — remain out of scope for the engine layer entirely.
+
+---
+
+## Phase 10 state — cloud foundation
+
+Canonical design: [Cloud & Multi-User
+Architecture](CLOUD_MULTIUSER_ARCHITECTURE.md), with an implementation report in
+its §28. This section records only what changed in the *module boundaries*.
+
+### Two new source trees, and only one of them is TypeScript
+
+```text
+supabase/                  the server, and it is entirely declarative
+  config.toml              exposed schemas, auth policy — security controls
+  migrations/*.sql         the canonical schema history. Seven files
+  tests/*.test.sql         pgTAP: the catalogue and behavioural assertions
+  functions/               two Edge Functions, the only server-side code
+  seed.sql                 local development fixture. Synthetic, never pushed
+
+src/cloud/                 the client side of the boundary
+  config.ts                build-time configuration, and the key-safety check
+  client.ts                the Supabase client. Schema pinned to `api`
+  gateway.ts               THE ONLY MODULE THAT NAMES A DATABASE SCHEMA
+  errors.ts                PostgREST/PostgreSQL failures → the existing codes
+  boot.ts                  session → reachability → membership
+  security/                the HTTP behavioural suite and its harness
+```
+
+The server-side deployment surface is **the migrations**. There is no
+Node/Express tier: every operation this product performs is either a single-row
+read under a row-level policy or a multi-row transaction, and PostgreSQL already
+executes transactions. A stateless HTTP tier in front of it would add a
+deployment target, a second place to get authorisation wrong, and a hosting
+bill, to re-implement what `BEGIN … COMMIT` does.
+
+### The dependency direction, extended
+
+```text
+  screens → feature services → persistence stores → IndexedDB     (Phase 9, live)
+  screens → feature services → DataGateway → api schema → RLS     (Phase 11)
+```
+
+`src/cloud/gateway.ts` is the seam, and it is one type with a method per
+operation — no repository interface per entity, no unit of work, no DTO layer.
+It earns its place by having three jobs rather than by being an abstraction:
+boundary conversions (decimals as canonical strings, timestamps normalised in
+the view), hiding the read/write asymmetry (a read is a view, every write is a
+typed RPC), and turning server failures into the error vocabulary
+`src/i18n/persistenceText.ts` already translates.
+
+**Nothing in `src/cloud/` is imported by the running application.** The catalog
+still reads IndexedDB. That is the Phase 10/11 boundary: re-pointing some
+entities at PostgreSQL while others stay on the device would be two sources of
+truth, which is the single thing the cloud architecture exists to prevent.
+
+### What the module boundaries now forbid
+
+- **No feature file names a schema, a table or a view.** Reorganising the API
+  surface changes `gateway.ts` and nothing else.
+- **No module outside `src/cloud/` imports `@supabase/supabase-js`.**
+- **No raw server message reaches a screen**, the same rule that already keeps
+  `DOMException` text off the UI, now covering PostgreSQL error text — which
+  varies by server locale and names schemas, columns and constraints that mean
+  nothing to a user and quite a lot to an attacker.
+- **`src/domain`, `src/calculation` and `src/comparison` are untouched.** The
+  engine was storage-agnostic by construction, which is the whole reason this
+  port is a port rather than a rewrite.

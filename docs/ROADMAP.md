@@ -41,8 +41,13 @@ not a wishlist. Each carries the reason it is *not* in the MVP.
 **Moved out of this list — now in the plan**
 
 - ~~Backend migration: `React → API → PostgreSQL`, multi-user, permissions.~~
-  **No longer post-pilot.** Phase 9.5 decided it and Phases 10–11 build it. See
-  [Cloud & Multi-User Architecture](CLOUD_MULTIUSER_ARCHITECTURE.md) and
+  **No longer post-pilot, and no longer only a plan.** Phase 9.5 decided it;
+  **Phase 10 built the foundation** — the three-schema separation, identity and
+  tenancy, row-level security, the provisioning workflow and the application
+  seam, proved against a local Supabase stack — and Phase 11 migrates the
+  catalog onto it. See
+  [Cloud & Multi-User Architecture](CLOUD_MULTIUSER_ARCHITECTURE.md), whose §28
+  reports what is real and what is still design, and
   [Implementation Plan](IMPLEMENTATION_PLAN.md). The data model was shaped so
   this would be a port rather than a redesign
   ([Data Model](DATA_MODEL.md) §13), and it is.

@@ -5,13 +5,20 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && vite build && node scripts/assert-no-secret-key.mjs dist",
     "lint": "oxlint",
     "typecheck": "tsc -b --noEmit",
     "test": "vitest run",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:security": "vitest run --config vitest.security.config.ts",
+    "db:reset": "supabase db reset",
+    "db:test": "supabase test db",
+    "db:lint": "supabase db lint --level warning",
+    "verify:hosted": "node scripts/verify-hosted.mjs",
+    "db:advisors": "supabase db advisors --linked --type security --level warn --fail-on warn"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.117.0",
     "decimal.js": "^10.6.0",
     "i18next": "^26.4.2",
     "react": "^19.2.8",
@@ -29,6 +36,7 @@
     "fake-indexeddb": "^6.2.5",
     "jsdom": "^27.4.0",
     "oxlint": "^1.75.0",
+    "supabase": "2.117.0",
     "typescript": "~6.0.2",
     "vite": "^8.2.0",
     "vitest": "^4.1.10"

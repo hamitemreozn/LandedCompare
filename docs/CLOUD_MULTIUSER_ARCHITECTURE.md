@@ -12,12 +12,18 @@ application runs on once more than one person uses it.
 - The **local pilot** storage architecture this supersedes for shared business
   data → [Local Persistence & Backup](LOCAL_PERSISTENCE_AND_BACKUP.md)
 
-**Status: Phase 9.5 — design only.** Nothing described here is implemented. No
-Supabase project exists, no dependency is installed, and no production code was
-changed to write this document. It is written before implementation for the same
-reason Phase 6.5 was: the modules that would be most expensive to retrofit —
-inventory, reservations, receipts — have not been built yet, and this is the last
-cheap moment to decide where the truth lives.
+**Status: designed in Phase 9.5; the foundation is implemented in Phase 10.**
+This document was written before any of it existed, for the same reason Phase
+6.5 was: the modules that would be most expensive to retrofit — inventory,
+reservations, receipts — had not been built yet, and that was the last cheap
+moment to decide where the truth lives.
+
+What is now real, and what is still design, is recorded in §28 rather than
+scattered through the sections. Nothing in the design was changed to match what
+was convenient to build; the three places where implementation proved a snippet
+here *wrong* are corrected in place and listed in §28, because an architecture
+document that is wrong about a mechanism is wrong in whichever direction the
+mechanism happens to point.
 
 ---
 
@@ -317,11 +323,25 @@ proven to belong to the person, it is being *asserted by an administrator who
 knows them*. That is a stronger guarantee than a click on a link, and the design
 does not pretend otherwise.
 
-**Public sign-up is disabled** (`enable_signup = false`). Without it, anyone could
-create an `auth.users` row. Such a user would have no membership and therefore no
-access to any business row — but they would be an authenticated principal, and an
-architecture that relies on "they can't do anything anyway" is one bug away from
-being wrong. There is no legitimate self-registration in a single-company pilot.
+**Public sign-up is disabled** (`[auth] enable_signup = false`). Without it,
+anyone could create an `auth.users` row. Such a user would have no membership and
+therefore no access to any business row — but they would be an authenticated
+principal, and an architecture that relies on "they can't do anything anyway" is
+one bug away from being wrong. There is no legitimate self-registration in a
+single-company pilot.
+
+**One switch next to it must be left ON, and its name is a trap.**
+`[auth.email] enable_signup` does not mean "allow sign-up by e-mail". The
+Supabase CLI maps it to GoTrue's `GOTRUE_EXTERNAL_EMAIL_ENABLED`, which disables
+the e-mail provider **entirely** — including sign-IN. Setting it to `false`
+produces `422 email_provider_disabled` on every password login, which for a
+product whose only authentication method is e-mail and password means nobody can
+use it at all. `[auth] enable_signup = false` (GoTrue's `DISABLE_SIGNUP`) is the
+one that closes registration while leaving
+`POST /auth/v1/token?grant_type=password` working. Phase 10's behavioural suite
+asserts **both halves** — that `POST /auth/v1/signup` is refused and that the
+password grant still succeeds — because a test for the first alone would call
+the broken configuration a success.
 
 **Session handling.** `supabase-js` persists the session in `localStorage` and
 refreshes the access token automatically. A refresh that fails (revoked token,
@@ -666,10 +686,20 @@ Three details that are not stylistic:
   `SECURITY DEFINER` function in an exposed schema is callable over the Data API
   *with its creator's privileges*. These are not.
 - **`stable`, returning an array, called once per statement.** The policy calls it
-  as `(select app_private.current_org_ids())`, which Postgres evaluates as an
-  `InitPlan` — once for the whole statement, not once per row. A per-row
+  as `(select app_private.current_org_ids())::uuid[]`, which Postgres evaluates
+  as an `InitPlan` — once for the whole statement, not once per row. A per-row
   membership lookup is the classic RLS performance cliff and it is avoided by the
   shape of the call, not by a cache.
+- **The `::uuid[]` cast is load-bearing, and its absence does not compile.**
+  Written as `x = any ((select f()))`, PostgreSQL parses the parenthesised select
+  as the **subquery** form of `ANY` — it expects a *set* of `uuid` and receives
+  one value of type `uuid[]`, so the expression fails with
+  `operator does not exist: uuid = uuid[]` and the migration does not apply. The
+  cast makes the operand an ordinary array expression, selecting the array form
+  of `ANY` while keeping the sub-select that produces the InitPlan. Writing
+  `any (app_private.current_org_ids())` also compiles and silently gives up the
+  once-per-statement evaluation. Every policy and helper in the implementation
+  uses the cast form; Phase 10 discovered this by the migration refusing to run.
 
 And one detail that is **deliberately absent**: this function knows nothing about
 maintenance or restore. An earlier draft filtered out organisations under a
@@ -688,16 +718,16 @@ standing in for all of them:
 ```sql
 create policy products_select on app_data.products
   for select to authenticated
-  using ( organization_id = any ((select app_private.current_org_ids())) );
+  using ( organization_id = any ((select app_private.current_org_ids())::uuid[]) );
 
 create policy products_insert on app_data.products
   for insert to authenticated
-  with check ( organization_id = any ((select app_private.current_org_ids())) );
+  with check ( organization_id = any ((select app_private.current_org_ids())::uuid[]) );
 
 create policy products_update on app_data.products
   for update to authenticated
-  using      ( organization_id = any ((select app_private.current_org_ids())) )
-  with check ( organization_id = any ((select app_private.current_org_ids())) );
+  using      ( organization_id = any ((select app_private.current_org_ids())::uuid[]) )
+  with check ( organization_id = any ((select app_private.current_org_ids())::uuid[]) );
 
 -- DELETE: no policy and no grant. Deletion is not a client capability.
 ```
@@ -2064,26 +2094,48 @@ of truth.
 | # | Artefact | Where the canonical copy lives | How it is produced |
 | --- | --- | --- | --- |
 | B1 | **Schema, functions, triggers, policies, grants** | **the Git repository** — `supabase/migrations/*.sql` | already version-controlled; `supabase db reset` rebuilds it from nothing. This, not a dump, is the authority (§20) |
-| B2 | **Business data, all organisations** | weekly dump | `supabase db dump --db-url … -f data.sql --data-only --use-copy` |
-| B3 | **Schema dump as a cross-check** | weekly dump | `supabase db dump --db-url … -f schema.sql` — compared against B1 to catch drift, **not** used as the source of truth |
-| B4 | **Cluster roles and grants** | weekly dump | `supabase db dump --db-url … -f roles.sql --role-only`. Logical dumps carry no role passwords; a restored custom login role needs its password set again |
-| B5 | **Auth users** | weekly dump, **explicitly targeted** | not included by default. `--schema auth` (or `pg_dump --schema=auth`) is required. See the honest assessment below |
+| B2 | **Business data, all organisations — and the auth users with it** | weekly dump | `supabase db dump --linked -f data.sql --data-only --use-copy`. See the correction under B5: this file **does** contain `auth.users` rows |
+| B3 | **Schema dump as a cross-check** | weekly dump | `supabase db dump --linked -f schema.sql` — schema-only, and it **excludes the Supabase-managed schemas**. Compared against B1 to catch drift, **not** used as the source of truth |
+| B4 | **Cluster roles and grants** | weekly dump | `supabase db dump --linked -f roles.sql --role-only`. Logical dumps carry no role passwords; a restored custom login role needs its password set again |
+| B5 | **Auth users** | **already inside B2**; separately targetable | `supabase db dump --linked -f authdata.sql --data-only --schema auth --use-copy`. See the correction below — an earlier version of this table was wrong about both halves of this row |
 | B6 | **Edge Function source** | **the Git repository** — `supabase/functions/**` | nothing to dump; it is code |
 | B7 | **Secrets** (`sb_secret_…`, any future SMTP credential) | **a password manager, never the repository** | recreated by hand on a new project; they are credentials, not data (§19) |
 | B8 | **Hosted Auth configuration** — sign-up disabled, password policy, JWT expiry, redirect allow-list | **`supabase/config.toml` in the repository**, plus a short written checklist | `config.toml` is the declared form; the checklist exists because not every hosted setting is guaranteed to be pushed from it, and the gap must be closed by a human who knows what to look at |
 | B9 | **The JWT secret** | password manager | if a new project does not reuse it, every existing session is invalidated (users sign in again — acceptable) and **the API keys are regenerated**, which means rebuilding the clients |
 
+#### A correction: what each dump command actually produces
+
+The rows above were checked against the pinned CLI (2.117.0) by running every
+variant and reading the generated `pg_dump` invocation and the resulting file.
+Two claims in the earlier version of this section were **wrong in opposite
+directions**, which is worse than one of them being wrong, because together they
+described a recovery set that omitted the users while appearing to include them.
+
+| Command | What it actually contains |
+| --- | --- |
+| `db dump` (no flags) | `pg_dump --schema-only`, with `--exclude-schema` covering the Supabase-managed schemas. **Schema only. No data. No `auth`.** |
+| `db dump --role-only` | cluster roles |
+| `db dump --data-only --use-copy` | `pg_dump --data-only --schema '*'` with an exclude list that **does not contain `auth`**. So this file carries `COPY "auth"."users"` **and** every business table. Only `auth.schema_migrations`, `storage.migrations` and `supabase_functions.migrations` are excluded |
+| `db dump --schema auth` | `pg_dump --schema-only --schema=auth`. **Table definitions for the `auth` schema and ZERO user rows.** A file produced by this command and filed as "the Auth backup" is an empty promise |
+| `db dump --data-only --schema auth --use-copy` | the `auth` rows on their own — a targeted subset of what the plain data dump already holds |
+
+So: **the users are in the ordinary data dump**, and the command that names
+`auth` in its flags is the one that does *not* contain them. The earlier text
+said the reverse of both.
+
 #### Auth recovery: the honest assessment
 
 Supabase documents that the `auth` schema — including users and their password
 hashes — *can* be copied between projects, and that reusing the original JWT
-secret keeps existing tokens valid. So B5 is possible.
+secret keeps existing tokens valid. So capturing the users is possible, and per
+the correction above it happens by default.
 
-It is also the artefact this architecture is **least willing to promise**, for
-three reasons: it is excluded from the default dump and therefore easy to omit;
-restoring into the `auth` schema of a *managed* service is a project-migration
-procedure rather than a routine restore, and its internals are Supabase's to
-change; and it has never been rehearsed here.
+It is still the artefact this architecture is **least willing to promise**, for
+two reasons that survive the correction: restoring into the `auth` schema of a
+*managed* service is a project-migration procedure rather than a routine
+restore, and its internals are Supabase's to change; and it has never been
+rehearsed here. What changed is that the *capture* is no longer the weak link —
+the *restore* is.
 
 **So the guarantee is stated at the level it has actually been earned:**
 
@@ -2116,7 +2168,11 @@ more.
 Weekly during the pilot, and **before every migration applied to the hosted
 project, without exception** (§20) — that pre-migration dump is the rollback, and
 it is the reason two environments are enough. One person runs it; the artefacts
-live off the machine that runs the application.
+live off the machine that runs the application — and, before that, outside the
+Git repository. `data.sql` carries `auth.users` and will carry the company's
+business records; a backup artefact in version control is company data
+published to every clone, permanently, and `.gitignore` is a safety net rather
+than a control.
 
 **Neither A nor B replaces the other, and the product must say so.** A portable
 organisation export cannot rebuild a Supabase project. A dump set is not something
@@ -2376,7 +2432,7 @@ application code to deploy — the server-side logic is database migrations.
 | React bundle — browser **and Tauri** | project URL, **publishable key** (`sb_publishable_…`) | anything else |
 | Committed `.env` / repository | nothing secret | every secret |
 | Build-time env (`VITE_…`) | project URL, publishable key — these end up in the bundle by definition | secrets |
-| **Edge Function secrets** (`supabase secrets set`) | **secret key** (`sb_secret_…`), SMTP credentials if ever added | — |
+| **Edge Function secrets** (`supabase secrets set`) | SMTP credentials if ever added. **Not the secret key** — the platform injects that itself; see below | — |
 | Developer machine / CI | database connection string for migrations, Supabase access token | — never shipped to a client |
 
 Current key model, verified September 2026: Supabase issues **publishable keys**
@@ -2396,9 +2452,18 @@ it from a bundle, a network trace or a decompiled Tauri binary gives an attacker
 the capabilities of a logged-out visitor.
 
 **A secret key must never be embedded in a React bundle, a browser, or a Tauri
-executable.** It bypasses every policy in this document. It exists in one place:
-Edge Function secrets, set through the CLI, never written to a file in the
-repository.
+executable.** It bypasses every policy in this document.
+
+**And it is not managed by hand at all.** Supabase injects the server credential
+into every Edge Function invocation — `SUPABASE_SECRET_KEYS`, a JSON envelope
+keyed by name, with `SUPABASE_SERVICE_ROLE_KEY` still present on projects using
+the legacy pair. Phase 10 originally required an operator to
+`supabase secrets set` a project-specific copy; that was removed once the
+injected variables were measured, because a duplicated secret is a second copy
+of the most dangerous credential in the system, created and transported by a
+human, which silently diverges from the real one the first time the project's
+keys are rotated. `supabase/functions/_shared/secretKey.ts` resolves it, prefers
+the current key over the deprecated one, and fails closed with a named reason.
 
 ### The test this design must pass
 
@@ -2793,3 +2858,165 @@ Marked **OPTIONAL FUTURE**, none required: Supabase Pro (removes pausing, adds
 automatic backups and PITR), a custom domain, a transactional email provider for
 self-service password reset, and a paid static host with a custom domain for a web
 client.
+
+---
+
+## 28. Implementation status — what Phase 10 built
+
+Recorded here rather than scattered through the sections above, so that the
+design reads as a design and this reads as a report against it.
+
+### Built and proved
+
+| Section | Delivered in Phase 10 |
+| --- | --- |
+| §3, §20 | `supabase/` in the repository — `config.toml`, seven migrations, `seed.sql`, `tests/`, `functions/`. The CLI is a pinned dev dependency (`supabase@2.117.0`), so the version that proves a migration locally is the version that pushes it |
+| §7 | The three schemas, exactly as described. `[api] schemas = ["api"]`, `public` and `graphql_public` both removed from the exposure list, `auto_expose_new_tables = false` |
+| §7 | The helper grants, in the corrected direction: `USAGE` on `app_private` and `EXECUTE` on the three RLS helpers to `authenticated`; trigger helpers granted to nobody; `anon` granted nothing anywhere |
+| §7, §10 | PostgreSQL 17.6 locally. Migration 1 asserts `server_version_num >= 150000` **before any view exists**, so a server without `security_invoker` stops the chain instead of silently accepting an unknown option |
+| §5, §11 | `organizations` (with the three `write_lock*` columns), `memberships`, `profiles`, `provisioning_attempts`, `admin_events`, `counters`. No business table — products, suppliers, customers and customer statuses remain Phase 11 |
+| §7 | RLS enabled **and forced** on all six, the four-policy pattern where a client writes, explicit per-object grants, no `delete` grant and no `DELETE` policy anywhere |
+| §7 | Stamping, tenant-immutability, append-only and write-gate triggers; `stamp_row` overwrites rather than validates |
+| §8 | `api.update_own_profile` and `api.acknowledge_password_change`, both `SECURITY INVOKER`, both requiring `p_expected_version`, both returning `setof api.profiles` — the view, never the table |
+| §4 | `api.begin_provisioning` / `complete_provisioning` / `fail_provisioning` / `begin_password_reset` / `complete_password_reset`, `SECURITY DEFINER`, granted to `service_role` alone |
+| §4 | The `admin-provision-user` and `admin-reset-password` Edge Functions, including the compensating delete that only ever removes an auth user the same attempt created |
+| §16 | The write gate's **enforcement** — columns, `assert_write_allowed`, and the trigger — attached to `counters`, the one organisation-scoped table Phase 10 has that a restore would replace. Phase 11 attaches it with every business table; Phase 21 owns the restore that acquires and releases it |
+| §19 | `npm run build` greps the production bundle for `sb_secret_` and `service_role` and fails on a hit. Verified by planting one |
+| §19 | The Edge Functions read the server credential from the platform-injected `SUPABASE_SECRET_KEYS`. There is **no project secret to set** — see the correction below |
+| §7, §20 | `npm run verify:hosted` — twelve unauthenticated HTTP checks of the hosted exposed-schema list and auth configuration, creating nothing. Proved by pointing it at a deliberately broken configuration |
+| §20 | `supabase/config.toml` declares only what this product governs on the hosted project. Every declared property is pushed, so the file's silence is a control — see the fifth correction below |
+| §24 | `src/cloud/` — config, client, gateway, error vocabulary and boot states. See "the seam is built and not connected" below |
+| §7 | 105 pgTAP assertions and 37 HTTP behavioural assertions. See [Testing](TESTING.md) |
+
+### Three corrections the implementation forced
+
+Each one is fixed in place above rather than listed as an erratum, because a
+reader of §7 should not have to find §28 to learn that a snippet does not
+compile.
+
+1. **`x = any ((select f()))` does not compile** when `f()` returns an array —
+   PostgreSQL parses it as the subquery form of `ANY`. Every policy and helper
+   uses `::uuid[]` (§7).
+2. **`[auth.email] enable_signup = false` disables sign-IN**, not sign-up. The
+   correct switch is `[auth] enable_signup` (§4).
+3. **No policy in this schema calls a helper that reads the table the policy is
+   on.** The canonical text relies on the `SECURITY DEFINER` owner's `BYPASSRLS`
+   to break the recursion cycle, which works and is asserted (pgTAP P17) — but
+   `memberships`, the one table every helper reads, is given a helper-free
+   policy (`user_id = auth.uid()`) so the cycle does not exist to be broken in
+   the first place. That makes 42P17 structurally impossible rather than
+   avoided, and costs nothing: what a client needs from that table is "which
+   companies am I in, as what", which is exactly the caller's own rows. Listing
+   a colleague's role is the Phase 12 administration screen and will reach it
+   through a function that re-proves OWNER/ADMIN, not by widening the policy.
+
+### One addition the design did not specify
+
+**`app_private.managed_table`** — a registry declaring the policy class of every
+table in `app_data`, maintained by the migration that creates the table, with
+pgTAP asserting that the registry and `pg_class` agree **in both directions**.
+
+It exists because §7 names the highest-likelihood failure in this design — an
+object added by a future phase without the posture applied to it — and the three
+controls listed against it all assume somebody remembers to extend them. The
+registry inverts that: a seventh table added to `app_data` without a class
+declaration fails the build immediately, naming the table, and every
+class-conditional assertion is then about it automatically.
+
+### Deferred, honestly
+
+| Item | Where it goes, and why |
+| --- | --- |
+| **The hostile-precision fixture** (`12345678901234567890.0047` asserted as an exact string) | **Phase 11**, as §7 already says — Phase 10 has no financial column, and a fixture table invented to hold one would be the "table whose shape is guessed a phase early" §11 refuses. What Phase 10 establishes instead is the *boundary the fixture lands on*: `app_data` has no HTTP route (proved over HTTP), and pgTAP **P15** fails the build the day an `api` view or RPC exposes a `numeric`, `real`, `double precision` or `money` column without casting it to text. The contract cannot be broken quietly between now and the phase that proves it with a value |
+| **The `INSERT` `with check` tenant guard, on a real business table** | Phase 10 owns no organisation-scoped table a client may write. The **pattern** is proved instead, by a probe table built inside a rolled-back pgTAP transaction carrying the exact four-policy shape and exercised by a real `authenticated` session against the real helpers — because the pattern is fixed now and every later table inherits whatever is wrong with it |
+| **Acquiring and releasing the write gate** | **Phase 21**, with the restore it exists for. Phase 10 built and tested the enforcement, including threat 22 — the lock holder's own second session is refused |
+| **Organisation administration UI** (invite, disable, re-role, reset) | **Phase 12**. The Edge Functions and the `admin_events` behind it exist and are tested; there is no screen |
+| **`api.update_own_profile` reaching a screen** | **Phase 11/12**, with the seam switch |
+| **Realtime, Storage, a second organisation, self-service password reset** | Unchanged: §23, §3, §20 and §4 respectively |
+
+### The seam is built and not connected — deliberately
+
+Nothing in `src/cloud/` is imported by `src/App.tsx`, `src/app/runtime.ts` or any
+feature service. Products, suppliers and customers still read and write
+IndexedDB, exactly as in Phase 9, and the application is unchanged.
+
+That is the Phase 10/11 boundary and it is a decision rather than unfinished
+work. Re-pointing some entities at PostgreSQL while others stay on the device is
+two sources of truth — the single thing this whole document exists to prevent —
+and it would be two sources of truth arranged at their worst: a boot gate that
+refuses to start when the server is unreachable, in front of a catalogue sitting
+on the local disk the entire time. Phase 11 switches the catalog in one move and
+drops the local database with it.
+
+### Four runbook corrections, found in review before anything was deployed
+
+The first draft of the hosted sequence was checked against the pinned CLI's own
+help output and against measured behaviour, not against memory. Four things were
+wrong, and all four would have been discovered during a production deployment —
+which is the worst moment to discover any of them.
+
+1. **`supabase config push` was missing entirely.** `db push` applies migrations
+   and touches neither the exposed-schema list nor the sign-up switch, so a
+   deployment consisting of `db push` alone would have left the hosted project
+   serving `public, graphql_public` with registration open — the factory
+   defaults — while every local test reported the posture as correct. The
+   sequence now pushes the schema first (PostgREST cannot serve a schema that
+   does not exist) and the configuration second, and [Deployment](DEPLOYMENT.md)
+   explains why the gap between them is harmless on an empty project.
+2. **`supabase db remote-version` does not exist.** Passing an unknown
+   subcommand makes the CLI print the parent help and exit successfully, so the
+   step would have *appeared* to pass while checking nothing. Replaced with
+   `supabase db query --linked "SHOW server_version;"`, which goes through the
+   Management API and therefore puts no connection string or password into shell
+   history. Migration 1's own assertion remains the real gate.
+3. **The Auth dump was mislabelled, and the data dump was under-described.**
+   `db dump --schema auth` is schema-only: table definitions, zero users. The
+   ordinary `--data-only` dump, meanwhile, *does* contain `auth.users`. §16-B
+   now records what each variant actually produces, measured by running them.
+4. **The Edge Function secret duplicated a platform credential.** Removed; §19
+   has the reasoning.
+
+### A fifth, found when the first `config diff` ran against the real project
+
+**`config push` writes every property the repository declares**, and
+`supabase init`'s template declares a great many. The first diff against the
+hosted project reported fifteen declared differences: two intended — the
+exposed-schema list and public sign-up — and **thirteen accidents of the
+template**, including a `127.0.0.1` site URL and redirect allow-list, e-mail
+confirmation and OTP behaviour, MFA and Twilio toggles, connection-pooler
+sizing and storage settings.
+
+None of those is a Phase 10 decision. Pushing them would have pointed a
+production authentication service at a developer's laptop as a side effect of
+deploying a security control — and nobody would have connected the two a week
+later.
+
+`supabase/config.toml` is therefore stripped to what this product actually
+governs, and carries a header saying so, because the file's **silence is as
+meaningful as its contents**. The exposure list, public sign-up and the e-mail
+provider switch are declared; everything else is either local-only and never
+compared (verified by flipping each key and re-running the diff) or left to the
+platform.
+
+Where local and hosted must genuinely differ on a governed property — the first
+real case is `auth.site_url` once a web client exists — the supported mechanism
+is a `[remotes.<name>]` override block, confirmed working on the pinned CLI. It
+overrides the base rather than replacing it, so stripping the base stays the
+load-bearing step. [Deployment](DEPLOYMENT.md) has the detail, including the
+one value deliberately *not* pushed and left as its own reviewed decision.
+
+### Hosted project
+
+The hosted Free project is **not yet linked**. `supabase link` requires a CLI
+access token, and the automatic browser flow cannot run in a non-interactive
+environment — so it is a step the operator performs at their own terminal, once.
+[Deployment](DEPLOYMENT.md) has the exact sequence, including the rule that no
+migration reaches the hosted project before the dump set that is its rollback.
+
+Hosted verification is a script rather than a checklist. `npm run verify:hosted`
+makes twelve unauthenticated requests and creates nothing, because the
+exposed-schema list and the sign-up switch are values a dashboard edit can change
+out from under the repository — and a checklist item saying "confirm Exposed
+schemas is api" is read by somebody who already believes the answer. It was
+proved by pointing it at a deliberately broken local configuration and watching
+it go red.

@@ -18,6 +18,7 @@
 import type { BootFailureReason, BootWarningCode } from '../app/bootstrap'
 import type { BackupErrorCode } from '../backup/errors'
 import type { ExternalBackupState } from '../backup/externalBackup'
+import type { CloudErrorCode } from '../cloud/errors'
 import type { PersistenceErrorCode } from '../persistence/errors'
 
 /**
@@ -58,6 +59,41 @@ export const BACKUP_ERROR_TRANSLATION_KEY: Partial<Record<BackupErrorCode, strin
   CRYPTO_UNAVAILABLE: 'dataError.cryptoUnavailable',
   SNAPSHOT_FAILED: 'dataError.snapshotFailed',
   SNAPSHOT_INVALID: 'dataError.snapshotInvalid',
+}
+
+/**
+ * The cloud layer's codes, mapped by the same rule as everything above.
+ *
+ * This table is an EXTENSION and not a replacement, which is the point
+ * [Cloud & Multi-User Architecture](../../docs/CLOUD_MULTIUSER_ARCHITECTURE.md)
+ * §24 makes about the gateway: the four codes this shares with the persistence
+ * layer — `STALE_WRITE`, `DUPLICATE_KEY`, `RECORD_NOT_FOUND`, `RECORD_INVALID`
+ * — resolve to the SAME sentences they already resolve to. "Bu kayıt başka bir
+ * yerde değiştirildi" was written for two tabs on one machine and is, if
+ * anything, more true for two people on two machines, so the user-facing
+ * contract for a concurrent edit does not change at all when the data moves to
+ * a server.
+ *
+ * What is new is the six states that only exist once the data lives elsewhere,
+ * and each one needs its own sentence because treating them alike is how a user
+ * is told the wrong thing. `ORGANIZATION_LOCKED` in particular is the only one
+ * of them in which READING STILL WORKS, and its wording has to carry that:
+ * telling someone the system is down while they can still look things up is
+ * both wrong and needlessly alarming.
+ */
+export const CLOUD_ERROR_TRANSLATION_KEY: Record<CloudErrorCode, string> = {
+  OFFLINE: 'cloudError.offline',
+  SERVER_UNAVAILABLE: 'cloudError.serverUnavailable',
+  SESSION_EXPIRED: 'cloudError.sessionExpired',
+  FORBIDDEN: 'cloudError.forbidden',
+  NO_MEMBERSHIP: 'cloudError.noMembership',
+  ORGANIZATION_LOCKED: 'cloudError.organizationLocked',
+  NOT_CONFIGURED: 'cloudError.notConfigured',
+  STALE_WRITE: 'dataError.staleWrite',
+  DUPLICATE_KEY: 'dataError.duplicateKey',
+  RECORD_NOT_FOUND: 'dataError.recordNotFound',
+  RECORD_INVALID: 'dataError.recordInvalid',
+  UNEXPECTED: 'cloudError.unexpected',
 }
 
 export const BOOT_FAILURE_TRANSLATION_KEY: Record<BootFailureReason, string> = {
