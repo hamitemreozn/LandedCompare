@@ -176,42 +176,177 @@ are not started until the current phase is accepted.
   [Product Scope](PRODUCT_SCOPE.md), [Data Model](DATA_MODEL.md),
   [Local Persistence & Backup](LOCAL_PERSISTENCE_AND_BACKUP.md).
 
-## Revised roadmap — Phase 7 onward
+- **Phase 9.5 — Cloud & Multi-User Architecture Checkpoint** (done):
+  **documentation only — no production code changed.** The pilot's central
+  platform assumption — one computer, no server, IndexedDB as the truth — was
+  replaced after the company's real requirement became clear: the owner working
+  from more than one machine, office personnel on the same company data, and
+  eventually Windows and macOS desktop clients. The checkpoint decided that
+  **PostgreSQL, hosted by Supabase, is the single source of truth for shared
+  business data**, and settled tenancy (organisations + memberships), email and
+  password authentication with administrator-provisioned accounts, a three-role
+  model, the row-level-security pattern for every client-accessible table, the
+  client/server classification (single-row CRUD direct, multi-row invariants
+  through database functions), version-based optimistic concurrency with
+  server-owned timestamps, the product-row lock that makes the inventory
+  invariants hold under concurrent users, the `numeric`-stored /
+  decimal-string-on-the-wire money rule, IndexedDB's retirement as a business
+  database, the refusal of dual-master sync and its resulting product
+  limitation, the split between portable organisation backup and infrastructure
+  database backup, and a nineteen-entry threat model. The financial engine was
+  not touched and its contract is unchanged. See
+  [Cloud & Multi-User Architecture](CLOUD_MULTIUSER_ARCHITECTURE.md).
 
-The original Phase 7–14 plan (persistence, five UI phases, data exchange,
-hardening) was written for the comparison-only product and no longer covers the
-work. It is replaced by the phases below. Phases 0–6 above are complete and are
-not revisited.
+  *Why it happened between Phase 9 and Phase 10:* the invariant that decides the
+  architecture — a reservation may not push available stock below zero — is a
+  statement about the whole company, and two disconnected databases can each
+  satisfy it while jointly violating it. A single serialisation point is a
+  functional requirement of the inventory model. Deciding that after the ledger,
+  receipts and reservations were built would have meant rewriting them.
+
+  **One correction round followed, still documentation only.** Review found five
+  architecture gaps and confirmed two new product requirements, and all seven
+  were closed before implementation: read **views** must be `security_invoker`
+  or they bypass the RLS the whole design rests on; **function `EXECUTE`** is
+  granted to `PUBLIC` by default and must be revoked before it is granted;
+  **stale-write protection was a client-side predicate** and became a typed
+  server RPC; **user provisioning spans the Auth API and the database** and
+  cannot be one transaction, so it became an idempotent workflow with five named
+  failure cases; the **restore write gate** exempted the OWNER and was invisible
+  until it committed, and became three committed transactions with a
+  trigger-enforced drain barrier; the **infrastructure backup claim was
+  overclaimed** — the default CLI dump is schema-only and excludes `auth` — and
+  became an explicit nine-artefact recovery set with an honest position on Auth
+  accounts. The two requirements: an organisation-configurable **customer
+  classification** (never an enum), and an **external system code** on both
+  parties, kept deliberately opaque until real spreadsheets are analysed. Open
+  decisions C1, C2 and C3 were closed.
+
+  **A second, final correction round closed two more**, both of the same shape —
+  a control that was documented but not actually enforced. First, the claim that
+  an RLS policy can call a private helper **without** the caller holding
+  `EXECUTE` is false: PostgreSQL evaluates policy expressions with the querying
+  user's rights, so the helper needs `EXECUTE` and the schema needs `USAGE`
+  granted to `authenticated` — without them every authenticated query fails
+  shut. Second, and more serious: the canonical tables were in `public`, which
+  **is an exposed schema**, so `GET /rest/v1/products` was a live route that
+  returned `numeric` columns as JSON numbers and walked past every text-casting
+  view the exact-decimal contract depends on. The resolution is a **three-schema
+  separation** — `api` (the only exposed business schema: `security_invoker`
+  views and typed RPCs), `app_data` (canonical tables, no route), `app_private`
+  (helpers, no route) — which makes "no canonical table is addressable" and
+  "every exact decimal crosses as canonical text" server invariants rather than
+  client conventions. Creates joined updates as typed RPCs, since with no table
+  route there is no direct `INSERT` to keep.
+
+## Revised roadmap — Phase 10 onward
+
+The Phase 7–18 plan below was written for a local-first, single-machine product.
+Phases 7, 8 and 9 shipped and are not revisited; **Phase 10 onward is replaced**
+by the phases that follow, which build the same product on a shared server.
+Phases 0–6 are complete and are not revisited either.
 
 Difficulty is a 1–10 estimate of implementation risk, not of hours.
 
 ### Ordering rationale
 
-Persistence and backup come first because nothing else is safe to enter real
-data into, and retrofitting a schema-versioned store under existing screens is
-strictly worse than building on one. Catalog follows because both the analysis
-screens and every operational document reference products. The analysis UI comes
-next because it is the product that already exists in the engine and it produces
-the purchase decisions the operational chain consumes. The inventory ledger is
-built **before** purchasing and receiving, standalone, with only opening
-balances and manual adjustments as inputs — the most correctness-critical module
-in the system gets built and tested against the simplest possible inputs, before
+Three constraints decide the order.
+
+**The cloud foundation comes before anything that writes shared data**, because
+tenancy and row-level security are not retrofittable: a table that existed for a
+phase without a policy is a table someone has already queried. The catalog
+migrates immediately after, because it is the only module with screens already
+built, which makes it the cheapest possible proof that the whole stack works
+end to end on two machines.
+
+**Portable backup comes before bulk data entry**, and this is a correction of a
+mistake the previous roadmap made. Phase 9 shipped data entry with no export
+path and had to record that as an honest limitation. Repeating it on a Free-plan
+database that has *no automatic backups* would be worse, so organisation export
+lands in Phase 12, before the analysis and operational modules start producing
+data worth losing.
+
+**The inventory ledger is still built before purchasing and receiving**,
+standalone, with only opening balances and manual adjustments as inputs — the
+most correctness-critical module in the system gets built and tested against the
+simplest possible inputs, and now also against two concurrent sessions, before
 documents start posting into it.
 
 | # | Phase | Difficulty |
 | --- | --- | --- |
 | 7 | Local Persistence & Schema Foundation | 8 |
 | 8 | Backup, Snapshots & Restore | 8 |
-| 9 | Catalog & Parties | 4 |
-| 10 | Projects, Requirements, Suppliers & Quotes UI | 7 |
-| 11 | Quote Matrix, Costs & FX UI | 7 |
-| 12 | Comparison Results UI | 6 |
-| 13 | Inventory Ledger Core | 9 |
-| 14 | Purchasing | 6 |
-| 15 | Inbound Logistics & Receiving | 8 |
-| 16 | Reservations & Outbound | 7 |
-| 17 | Reconciliation, Reporting & Data Exchange | 6 |
-| 18 | Pilot Hardening & Final QA | 7 |
+| 9 | Application Boot, Catalog & Parties | 4 |
+| — | **9.5 — Cloud & Multi-User Architecture Checkpoint** (docs only) | — |
+| 10 | Cloud Foundation | 8 |
+| 11 | Catalog Cloud Migration | 7 |
+| — | **AUDIT CHECKPOINT A — tenancy, RLS, keys, concurrency** | — |
+| 12 | Organisation Administration & Portable Backup | 6 |
+| 13 | Projects, Requirements, Suppliers & Quotes UI | 7 |
+| 14 | Quote Matrix, Costs & FX UI | 7 |
+| 15 | Comparison Results UI | 6 |
+| 16 | Inventory Ledger Core (server-authoritative) | 9 |
+| — | **AUDIT CHECKPOINT B — the ledger under concurrency** | — |
+| 17 | Purchasing | 6 |
+| 18 | Inbound Logistics & Receiving | 8 |
+| 19 | Reservations & Outbound | 8 |
+| — | **AUDIT CHECKPOINT C — the full operational chain** | — |
+| 20 | Reconciliation, Reporting & Data Exchange | 6 |
+| 21 | Cloud Restore & Recovery Drill | 8 |
+| 22 | Pilot Hardening, Packaging & Final QA | 7 |
+
+### Audit checkpoints
+
+Three points where an **independent adversarial audit** is run before the next
+phase starts, chosen because each is the last cheap moment to find a class of
+defect:
+
+- **A, after Phase 11** — the first moment shared company data exists. Scope:
+  tenant isolation, every RLS policy across all four commands, key handling and
+  bundle contents, the stale-write contract, and the exact-decimal round trip
+  through PostgreSQL. A finding here costs one module; the same finding after
+  Phase 19 costs ten.
+- **B, after Phase 16** — the ledger is the correctness core and every later
+  phase writes into it. Scope: invariants I1–I13 under concurrent sessions, the
+  product-row lock, the append-only guarantees, reversal rules, and the
+  permission model that makes the ledger unwritable except through the three
+  posting functions.
+- **C, after Phase 19** — the whole chain, under two users acting at once.
+  Scope: cross-document invariants (I5, I6, I8, I12, I14–I17), lifecycle
+  transitions, and the operational races the pilot will actually produce.
+
+Checkpoint A's scope was widened by the Phase 9.5 correction rounds and now
+explicitly includes: **the schema separation itself** — that `app_data` and
+`app_private` have no Data API route and `api` holds no base tables; every `api`
+view proven to respect tenant RLS (not only every table); the **function
+privilege posture**, in both directions — nothing granted to `anon`, and the RLS
+helpers granted to `authenticated` as policy evaluation requires; the
+**server-side** stale-write guarantee — that a hand-crafted `PATCH` against a
+catalog table has no route rather than merely being discouraged; and the
+**exact-decimal contract** proven over HTTP with a fixture that would visibly
+fail a float64 round trip.
+
+The engine's own checkpoints (Checkpoint 1 and its four remediation rounds) are
+complete and are not reopened.
+
+### A scheduled analysis, which is not an audit
+
+**BUSINESS EXCEL CODE SCHEME ANALYSIS** — triggered by an event rather than a
+phase: the owner providing real spreadsheets of customer and supplier records.
+
+Until it runs, the external system code (`120-34-00-11-001` and its supplier
+equivalent) is stored as an **opaque string** and nothing interprets it
+(Data Model §4; Product Scope, Open Decision 20). The analysis settles prefix
+consistency, the province and district segments, the still-unknown `11-001`,
+actual uniqueness in the real data, whether the company ever assigns codes or
+only receives them, how foreign parties are coded, and whether the scheme
+originates in Logo Tiger — in which case LandedCompare mirrors it and never
+generates it.
+
+It blocks nothing. Phase 11 stores the codes; every capability the analysis might
+unlock — a format check, a unique index, parsed segments, a generator — is an
+additive change to a column that already holds the complete value. Which is
+precisely why guessing now would be the expensive option.
 
 ---
 
@@ -433,131 +568,292 @@ documents start posting into it.
   master's product surface — CRUD, deactivation, and the `active` flag — not a
   schema move.
 
-- **Phase 10 — Projects, Requirements, Suppliers & Quotes UI** (difficulty 7).
-  *Objective:* the existing engine becomes usable.
-  *Deliverables:* project list and editor, requirement entry with optional
-  product linking, supplier selection from the master, quote and quote-item
-  entry with MOQ/pack fields, validation surfaced through `engineText.ts`
-  translation keys, autosave integration.
-  *Dependencies:* Phases 7, 9.
-  *Risk:* first real UI phase — form/validation/i18n patterns get set here and
-  everything later copies them.
+- **Phase 10 — Cloud Foundation** (difficulty 8).
+  *Objective:* a shared, secured, version-controlled database exists, and a user
+  can sign in to it — with no business data in it yet.
+  *Deliverables:* the `supabase/` directory in the repository (config,
+  migrations, seed, functions) and the local Docker stack; **the three-schema
+  separation** — `api` as the only exposed business schema, `app_data` and
+  `app_private` unexposed, declared in `config.toml` and matched on the hosted
+  project; **an asserted PostgreSQL version of 15 or later**, before any view
+  exists, because `security_invoker` requires it; the identity and tenancy
+  tables in `app_data` — `organizations` (with the `write_lock*` gate columns),
+  `memberships`, `profiles`, `provisioning_attempts`, `admin_events`,
+  `counters`; the `app_private` helpers **with `USAGE` on the schema and
+  `EXECUTE` on the RLS helpers granted to `authenticated`**, since policy
+  evaluation requires them, and trigger helpers granted to nobody; the shared
+  stamping / tenant-immutability / write-gate triggers; the **four-policy RLS
+  pattern plus default-deny grants** on every table that exists; the **function
+  privilege posture** — `revoke execute … from public, anon` before any grant;
+  email-and-password auth with public sign-up disabled; the **idempotent**
+  `admin-provision-user` Edge Function with its `request_id` claim, transactional
+  link RPC and compensating deletion, plus `admin-reset-password` and the forced
+  first-password-change flow; `api.update_own_profile`; the boot gate rebuilt
+  around session → reachability → membership, with its explicit failure states;
+  the `DataGateway` type — the one module that names the `api` schema — and the
+  error-code mapping into the existing `persistenceText.ts` vocabulary; the
+  hosted Free project linked; and the build-time assertion that no secret key
+  reaches the bundle.
+  *Tests:* the **fourteen-item pgTAP catalogue suite** of
+  [Cloud & Multi-User Architecture](CLOUD_MULTIUSER_ARCHITECTURE.md) §7 — RLS
+  enabled *and* forced, a policy per granted command, `with_check` on every
+  UPDATE policy, no `delete` anywhere, `anon` holding nothing including schema
+  `USAGE`, `security_invoker=on` on every `api` view, `EXECUTE` revoked from
+  `PUBLIC` on every function, `search_path` pinned on every definer, RLS helpers
+  granted to `authenticated` and nothing granted to `anon`, `api` holding no base
+  tables — **plus the behavioural suite B1–B9, six of which require a real HTTP
+  client** because routing and JSON serialisation are invisible from inside the
+  database: that `app_data` and `app_private` have no route, that the RLS helper
+  is simultaneously executable and uncallable, and that `anon` reaches nothing.
+  And the provisioning workflow exercised through each of its five failure cases.
+  These are the phase's real deliverable.
+  *Dependencies:* Phase 9.5.
+  *Risk:* the RLS pattern and the schema separation are set here and every later
+  object copies them. A defect in the helper grants, the exposure list or the
+  grant posture is a defect in every phase after this one.
 
-- **Phase 11 — Quote Matrix, Costs & FX UI** (difficulty 7).
-  *Objective:* enter the comparison inputs the engine already accepts.
-  *Deliverables:* the side-by-side quote matrix, per-supplier additional costs
-  across the nine categories with discounts and surcharges, the
-  `alreadyIncludedInQuote` / `includeInComparison` distinction made
-  comprehensible, manual exchange-rate table entry, minor-unit overrides.
+- **Phase 11 — Catalog Cloud Migration** (difficulty 7).
+  *Objective:* the three screens that already exist run on shared data, on two
+  machines, correctly.
+  *Deliverables:* `app_data.products`, `app_data.suppliers` and
+  `app_data.customers` under the Phase 10 pattern, with
+  `unique (organization_id, lower(btrim(sku)))` replacing the
+  transaction-scoped SKU scan; **`app_data.customer_statuses`** as an
+  organisation-configurable classification with `customers.customer_status_id`,
+  and **`suppliers.external_ref`** as an opaque optional string beside the one
+  `customers` already has (Data Model §4); the four `api` **`security_invoker`
+  read views** with their decimal and timestamp casts and their grants; the
+  **twelve typed mutation RPCs** — `api.create_*`, `api.update_*`,
+  `api.set_*_active` for each of the four entities — each returning the `api`
+  view rather than the table, each re-proving membership, each taking
+  `p_expected_version` where a prior state exists; the feature services
+  re-pointed from `Database` to `DataGateway`, with `save` splitting into
+  `create` and `update`; **version-based optimistic concurrency** replacing the
+  `updatedAt` token, with the user-facing stale-write message unchanged; the
+  local→cloud import path (client-side validation and preview reusing the Phase 8
+  pipeline, server-side re-validation and a single transaction); and the
+  retirement of the local IndexedDB database, with device preferences moved to
+  `localStorage`.
+  *Tests:* the cloud sibling of `persistence/engineIsolation.test.ts` —
+  `compareSuppliers()` before and after a round trip through PostgreSQL must
+  produce identical results; **the hostile-precision fixture**
+  (`12345678901234567890.0047`) asserted as an exact string against the raw
+  response body, with a matching assertion that no JSON-number route exists for
+  the same field; **a test asserting that `GET`/`PATCH /rest/v1/products` has no
+  route**, which is what makes both the decimal contract and the stale-write
+  guarantee server properties rather than client conventions; the
+  Turkish-character SKU-collision fixture proving the database expression and
+  `normaliseSku` agree; the isolation suite extended to every new view; and a
+  genuine two-machine verification.
   *Dependencies:* Phase 10.
-  *Risk:* this is where a UI can quietly misrepresent an engine concept. The
-  cost model's stage/base rules must be expressed, not simplified.
+  *Risk:* the exact-decimal round trip. PostgREST serialises `numeric` as a JSON
+  number and JavaScript parses it as a float — a silent, plausible-looking
+  corruption of the one thing this product must never get wrong. Close behind it:
+  the read views, which are the shortest path from a correct RLS design to a
+  total leak if `security_invoker` is ever omitted.
 
-- **Phase 12 — Comparison Results UI** (difficulty 6).
+  *Local master data is treated as test data* (closed decision C3). The import
+  path is built and proven, but the phase does not design around preserving a
+  large production catalogue — the real catalogue is entered after this phase,
+  into the cloud.
+
+  **→ AUDIT CHECKPOINT A** — the first moment shared company data exists.
+
+- **Phase 12 — Organisation Administration & Portable Backup** (difficulty 6).
+  *Objective:* an administrator can manage who has access, and can get the
+  company's data out of the cloud.
+  *Deliverables:* the user-management screen (provision, disable, re-enable,
+  change role, reset password) with `admin_events` behind it; the profile and
+  password-change screen; **organisation export** — the read-only RPC, the
+  bumped `backupFormatVersion`, and the existing envelope/canonical-JSON/checksum
+  modules re-pointed at a cloud payload; the **`members` manifest** inside that
+  export (e-mail, display name, role, status — and no credential of any kind),
+  which is what makes access recoverable if Auth accounts ever have to be rebuilt
+  ([Cloud & Multi-User Architecture](CLOUD_MULTIUSER_ARCHITECTURE.md) §16-B); the
+  download path plus the Tauri file-save path; the 7-day staleness reminder; and
+  the documented operator procedure for the **infrastructure dump set** — roles,
+  schema, data and an explicitly targeted `auth` dump, because one command
+  produces none of the last three — labelled unmistakably as a different thing.
+  *Dependencies:* Phase 11.
+  *Risk:* low technically, high in wording. The product must never let a portable
+  export be mistaken for an infrastructure backup, or the reverse, and the
+  documentation must not promise an Auth recovery that has not been rehearsed.
+
+- **Phase 13 — Projects, Requirements, Suppliers & Quotes UI** (difficulty 7).
+  *Objective:* the existing engine becomes usable.
+  *Deliverables:* `projects`, `requirement_items`, `quotes`, `quote_items` and
+  `project_suppliers` as tables; the aggregate-save RPC (R5: one project and its
+  children, one transaction); project list and editor, requirement entry with
+  optional product linking, supplier selection from the master, quote and
+  quote-item entry with MOQ/pack fields, validation surfaced through
+  `engineText.ts` translation keys.
+  *Dependencies:* Phases 11, 12.
+  *Risk:* first multi-row aggregate through an RPC — the transaction pattern set
+  here is what receipts and dispatches will copy.
+
+- **Phase 14 — Quote Matrix, Costs & FX UI** (difficulty 7).
+  *Objective:* enter the comparison inputs the engine already accepts.
+  *Deliverables:* `additional_costs` and `exchange_rates` tables; the
+  side-by-side quote matrix, per-supplier additional costs across the nine
+  categories with discounts and surcharges, the `alreadyIncludedInQuote` /
+  `includeInComparison` distinction made comprehensible, manual exchange-rate
+  table entry, minor-unit overrides.
+  *Dependencies:* Phase 13.
+  *Risk:* this is where a UI can quietly misrepresent an engine concept. The cost
+  model's stage/base rules must be expressed, not simplified.
+
+- **Phase 15 — Comparison Results UI** (difficulty 6).
   *Objective:* render the comparison result faithfully.
   *Deliverables:* ranking, the authoritative settled total, cost breakdown, the
   per-line trace with MOQ/pack/excess, allocation display with the
   `ALLOCATION_UNAVAILABLE` warning shown as non-blocking, `INCOMPLETE`/`INVALID`
   supplier states, insight codes rendered through i18n, and the "select this
-  supplier" action that feeds Phase 14.
-  *Dependencies:* Phase 11.
+  supplier" action that feeds Phase 17.
+  *Dependencies:* Phase 14.
   *Risk:* the product never names a "best supplier"; the UI must not imply one.
 
-- **Phase 13 — Inventory Ledger Core** (difficulty 9).
-  *Objective:* the stock truth, built and proven in isolation.
-  *Deliverables:* `InventoryMovement` append-only store, the seven movement
-  types, magnitude+direction, reversal rules (I9, I10), opening balances,
-  manual adjustments with reasons, the derived stock functions
-  (physical/reserved/available and the overlap-aware incoming buckets), the
-  per-product movement ledger view, and invariants I1–I13 under test.
-  *Dependencies:* Phases 7, 9.
+- **Phase 16 — Inventory Ledger Core, server-authoritative** (difficulty 9).
+  *Objective:* the stock truth, built and proven in isolation — and under two
+  users at once.
+  *Deliverables:* the `inventory_movements` table with **no update or delete
+  grant, no update or delete policy, and a trigger that refuses both**, so I7 and
+  I9 are permissions rather than conventions; the seven movement types,
+  magnitude + direction, the `unique (reversal_of_movement_id)` half of I10;
+  `posted_by` attribution; the three `SECURITY DEFINER` posting functions, each
+  re-proving membership and each taking the **product-row `FOR UPDATE` lock**
+  before it derives anything; opening balances and manual adjustments with
+  reasons; the derived stock functions (physical / reserved / available and the
+  overlap-aware incoming buckets, which never sum); and the per-product ledger
+  view.
+  *Tests:* invariants I1–I13, and **concurrency tests with two simultaneous
+  database sessions** — the test that would have been impossible to write against
+  IndexedDB and is the reason Phase 9.5 happened.
+  *Dependencies:* Phases 11, 12.
   *Risk:* the highest in the roadmap. Every later operational phase writes into
   this ledger, and a wrong rule here is discovered late and corrected
   expensively. It is deliberately built with no document dependencies so it can
   be tested exhaustively.
 
-- **Phase 14 — Purchasing** (difficulty 6).
+  **→ AUDIT CHECKPOINT B** — the correctness core, before documents write into it.
+
+- **Phase 17 — Purchasing** (difficulty 6).
   *Objective:* a decision becomes an order.
-  *Deliverables:* `PurchaseOrder` + lines, the `DRAFT → ORDERED → CLOSED |
-  CANCELLED` lifecycle with code allocation, the `analysisRef` snapshot taken
-  from the Phase 12 selection, manual (non-analysis) orders, derived
-  shipment/receipt progress, the on-order quantity, and invariants I5, I14, I17.
-  *Dependencies:* Phases 12, 13.
+  *Deliverables:* `purchase_orders` + `purchase_order_lines` as parent/child
+  tables with the composite tenant foreign key; the `DRAFT → ORDERED → CLOSED |
+  CANCELLED` lifecycle as an RPC that allocates the code from a locked counter
+  row and freezes the commercial fields in one transaction; the `analysisRef`
+  snapshot taken from the Phase 15 selection; manual (non-analysis) orders;
+  derived shipment/receipt progress; the on-order quantity; and invariants I5,
+  I14, I17.
+  *Dependencies:* Phases 15, 16.
   *Risk:* the snapshot boundary. Nothing in this phase may read live quote data.
 
-- **Phase 15 — Inbound Logistics & Receiving** (difficulty 8).
+- **Phase 18 — Inbound Logistics & Receiving** (difficulty 8).
   *Objective:* close the loop from order to stock.
-  *Deliverables:* `InboundShipment` + lines with the six-state lifecycle and the
-  same-purchase-order validation rule, transit/customs/arrival tracking,
-  `WarehouseReceipt` + lines posted atomically with their `PURCHASE_RECEIPT`
-  movements, partial receipt and discrepancy reasons, reversing receipts, and
-  invariants I6, I7, I8, I13, I15, I16.
-  *Dependencies:* Phases 13, 14.
+  *Deliverables:* `inbound_shipments` + lines with the six-state lifecycle and
+  the same-purchase-order validation rule, transit/customs/arrival tracking,
+  `warehouse_receipts` + lines posted atomically with their `PURCHASE_RECEIPT`
+  movements inside one server transaction, partial receipt and discrepancy
+  reasons, reversing receipts, and invariants I6, I7, I8, I13, I15, I16.
+  *Dependencies:* Phases 16, 17.
   *Risk:* the receipt-posting transaction is the first place documents and the
-  ledger must move together.
+  ledger must move together under concurrent users.
 
-- **Phase 16 — Reservations & Outbound** (difficulty 7).
+- **Phase 19 — Reservations & Outbound** (difficulty 8).
   *Objective:* committed stock and goods going out.
-  *Deliverables:* `InventoryReservation` with `ACTIVE | CLOSED | CANCELLED` and
-  derived remaining/fulfilment, the available-stock block (I4),
-  `OutboundShipment` + lines with `DRAFT → DISPATCHED → DELIVERED | CANCELLED`,
-  dispatch posting `CUSTOMER_DISPATCH` movements atomically, partial dispatch
-  against a reservation, customer returns, and the negative-physical-stock
-  confirmation path.
-  *Dependencies:* Phases 13, 9.
-  *Risk:* reserved-vs-available arithmetic is the part users get wrong if the
-  UI is ambiguous.
+  *Deliverables:* `inventory_reservations` with `ACTIVE | CLOSED | CANCELLED`
+  and derived remaining/fulfilment; **the available-stock block (I4) enforced
+  inside the reservation RPC behind the product lock** — the race this whole
+  architecture exists for; `outbound_shipments` + lines with `DRAFT → DISPATCHED
+  → DELIVERED | CANCELLED`; dispatch posting `CUSTOMER_DISPATCH` movements
+  atomically; partial dispatch against a reservation; customer returns; and the
+  negative-physical-stock confirmation path (Open Decision 7).
+  *Dependencies:* Phase 16.
+  *Risk:* reserved-vs-available arithmetic is the part users get wrong if the UI
+  is ambiguous — and the part the *system* gets wrong if the lock is missing.
 
-- **Phase 17 — Reconciliation, Reporting & Data Exchange** (difficulty 6).
+  **→ AUDIT CHECKPOINT C** — the full operational chain under two users.
+
+- **Phase 20 — Reconciliation, Reporting & Data Exchange** (difficulty 6).
   *Objective:* make the parallel run with Logo Tiger workable.
-  *Deliverables:* the stock-count adjustment workflow, the stock overview
-  showing all buckets as a decomposition that never sums, per-product movement
-  history with document drill-through, open-order and expected-incoming views,
-  CSV export of stock and movements for manual comparison, and the previously
-  planned quotation-entry conveniences (clipboard paste, controlled CSV/XLSX
-  import) if time allows.
-  *Dependencies:* Phases 15, 16.
+  *Deliverables:* the stock-count adjustment workflow, the stock overview showing
+  all buckets as a decomposition that never sums, per-product movement history
+  with document drill-through, open-order and expected-incoming views, CSV export
+  of stock and movements for manual comparison, and the previously planned
+  quotation-entry conveniences (clipboard paste, controlled CSV/XLSX import) if
+  time allows.
+  *Dependencies:* Phases 18, 19.
   *Risk:* low. The import conveniences are the droppable part.
 
-- **Phase 18 — Pilot Hardening & Final QA** (difficulty 7).
-  *Objective:* hand it to the pilot user.
-  *Deliverables:* end-to-end scenario tests across the whole chain
-  (quote → order → shipment → receipt → reservation → dispatch) with ledger
-  verification, a full backup → wipe → restore drill, migration tests against
-  realistic fixtures of every earlier version, empty/error/loading states,
-  Turkish copy review with the pilot user's vocabulary, accessibility and
-  keyboard flow for data-entry screens, performance at realistic ledger volume,
-  and the pilot operating notes (daily backup routine, what to do when something
-  looks wrong).
-  *Dependencies:* Phases 7–17.
+- **Phase 21 — Cloud Restore & Recovery Drill** (difficulty 8).
+  *Objective:* the company's data can be destroyed and brought back, and someone
+  has actually done it.
+  *Deliverables:* the OWNER-only restore RPC — tenant-scoped from the caller's
+  proven membership, payload organisation ids ignored, pre-restore archive
+  written in the same transaction, verification inside that transaction so a
+  failed restore is a no-op, and an `admin_events` row; the **three-transaction
+  write gate** — acquire and commit, drain via `FOR UPDATE` against the shared
+  locks every writer takes, replace, release — which blocks **every** session
+  including another OWNER's, with the explicit release path for a stuck gate and
+  the `ORGANIZATION_LOCKED` read-only UI state; the confirmation screen that
+  shows what will be replaced; a **full product drill** — export, destroy,
+  restore, verify; and a **full infrastructure drill** — restore the dump set
+  into a *fresh* project and **record what actually happened to Auth users**,
+  which converts §16-B's honest assessment into a fact and, if the answer is
+  "they did not survive", proves the `members`-manifest re-provisioning fallback
+  end to end.
+  *Dependencies:* Phases 12, 20.
+  *Risk:* the most dangerous operation in the system, which is why it is late.
+  A restore capability shipped before anyone has needed a backup is a loaded
+  weapon with no safety drill behind it.
+
+- **Phase 22 — Pilot Hardening, Packaging & Final QA** (difficulty 7).
+  *Objective:* hand it to the pilot users.
+  *Deliverables:* Tauri packaging for Windows and macOS from the same build;
+  end-to-end scenario tests across the whole chain (quote → order → shipment →
+  receipt → reservation → dispatch) with ledger verification, run from **two
+  machines**; migration tests replaying the whole chain from empty;
+  empty/error/loading states and the three unavailability states of
+  [Cloud & Multi-User Architecture](CLOUD_MULTIUSER_ARCHITECTURE.md) §17; Turkish
+  copy review with the pilot users' vocabulary; accessibility and keyboard flow
+  for data-entry screens; performance at realistic ledger volume; and the pilot
+  operating notes — who runs the weekly `db dump`, what to do when the server is
+  unreachable, and what to do when something looks wrong.
+  *Dependencies:* Phases 10–21.
   *Risk:* this is where the honest answer to "is the pilot ready?" is produced.
 
 ---
 
 Phases 0–5 are implemented — **Checkpoint 1: engine complete.** Phase 6
-(i18n) is implemented. Phase 6.5 is an architecture/product checkpoint with no
-production code. Phase 7 (local persistence), Phase 8 (backup, snapshots and
-restore) and Phase 9 (application boot, catalog and parties) are implemented.
-Phase 10 onward is not started.
+(i18n) is implemented. Phase 6.5 and Phase 9.5 are architecture/product
+checkpoints with no production code. Phase 7 (local persistence), Phase 8
+(backup, snapshots and restore) and Phase 9 (application boot, catalog and
+parties) are implemented. Phase 10 onward is not started.
 
-**On entering pilot data.** The wiring Phase 8 named as Phase 9's first
-responsibility is done: `runSnapshotMaintenance()` runs on startup,
-`ensurePreMigrationSnapshot()` is called before any upgrade and blocks the
-upgrade if it fails, and the staleness state is on the first screen the user
-sees. Master data — products, suppliers, customers — can now be entered through
-the application, and what is entered is snapshotted daily and covered by the
-backup payload.
+**On entering pilot data — revised by Phase 9.5.** The Phase 9 wiring is done:
+`runSnapshotMaintenance()` runs on startup, `ensurePreMigrationSnapshot()` is
+called before any upgrade and blocks it on failure, and the staleness state is on
+the first screen the user sees. Master data can be entered and is snapshotted
+daily.
 
-The honest limits, which are narrower than "ready":
+But the advice that followed from it has changed, and the honest limits are now
+these:
 
-- **There is still no way to press "export a backup".** The freshness warning
-  is truthful and will stay loud, because nothing can make it go away yet. The
-  Settings screen that exports and restores is a later phase, and until it
-  exists the only disaster-recovery layer is unreachable from the UI. Data
-  entered now survives a browser crash and a bad migration; it does not survive
-  a dead disk.
+- **The local database is not where the company's data will live.** Phase 11
+  migrates products, suppliers and customers to PostgreSQL and retires the local
+  stores. The migration path is designed
+  ([Cloud & Multi-User Architecture](CLOUD_MULTIUSER_ARCHITECTURE.md) §15) and
+  small amounts of data will move cleanly — but **bulk entry of the company's
+  real catalogue is better done after Phase 11 than before it.**
+- **There is still no way to press "export a backup".** The freshness warning is
+  truthful and stays loud. Locally that has not changed; in the cloud, export
+  arrives in Phase 12, deliberately before the modules that produce data worth
+  losing.
 - **Nothing operational exists.** No projects, quotes, comparisons, orders,
   shipments or stock. Master data entered now is exactly that — master data.
+- **Nothing multi-user exists.** One browser profile on one machine is still the
+  whole system.
 
-So: entering the company's real product, supplier and customer lists is now a
-reasonable thing to do. Running the pilot on it is not.
+So: entering a handful of real records to exercise the screens is reasonable.
+Loading the company's full catalogue, and running the pilot on it, are not — and
+the first of those is now worth waiting for Phase 11 rather than doing twice.

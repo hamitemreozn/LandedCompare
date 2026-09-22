@@ -1,11 +1,44 @@
 # Local Persistence & Backup
 
+> ## ⚠ Superseded for shared business data — Phase 9.5
+>
+> This document describes the **local, single-machine pilot** architecture:
+> IndexedDB as the working database, internal snapshots as undo, and external
+> backup files as the only disaster recovery. It is implemented, audited, and
+> accurate about what was built.
+>
+> **It is no longer the architecture for shared company data.** Phase 9.5 made
+> PostgreSQL, hosted by Supabase, the single source of truth, because the
+> product's central invariant — a reservation may not push available stock below
+> zero — is a statement about the whole company that two disconnected databases
+> can each satisfy while jointly violating. The canonical source for tenancy,
+> authentication, row-level security, concurrency and cloud backup is
+> **[Cloud & Multi-User Architecture](CLOUD_MULTIUSER_ARCHITECTURE.md)**.
+>
+> **Read this document for:** what the running application does today (Phase 9);
+> the portable backup format, canonical serialisation, checksum scope, limits
+> and untrusted-input rules, all of which are kept and re-pointed at a cloud
+> payload; and the historical record of why the local design is shaped as it is.
+>
+> **Do not read this document as:** a statement that a local database protects
+> the company's data. After Phase 11 it will not, because the company's data will
+> not be in it. §25 of the cloud document classifies exactly what is kept,
+> adapted and retired.
+>
+> **Forward references to "Phase 9" below are stale.** Three pieces of UI this
+> document assigns to Phase 9 were not built there: the backup export screen and
+> its translated strings (now Phase 12), the restore confirmation (now Phase 21),
+> and the optional File System Access directory handle (now Phase 12, beside the
+> Tauri file-save path). Phase 9.5 also renumbered everything from 10 onward —
+> see [Implementation Plan](IMPLEMENTATION_PLAN.md).
+
 **Canonical source** for how LandedCompare stores data locally, how the schema
 is versioned and migrated, how autosave behaves, and how backup, snapshots and
 restore work.
 
 - What the data *is* → [Data Model](DATA_MODEL.md)
-- Why the pilot is local-only → [Product Scope](PRODUCT_SCOPE.md)
+- Where shared business data actually lives → [Cloud & Multi-User Architecture](CLOUD_MULTIUSER_ARCHITECTURE.md)
+- Why the pilot *was* local-only, and what replaced that → [Product Scope](PRODUCT_SCOPE.md)
 - Layering → [Architecture](ARCHITECTURE.md)
 
 **Implementation status.** §2 (the working database), §3 (persisted vs runtime
@@ -22,9 +55,28 @@ they appear: the optional File System Access directory handle in §7, which
 needs a picker and therefore a UI, and every user-facing string in §10, which
 belongs to Phase 9 ([Implementation Plan](IMPLEMENTATION_PLAN.md)).
 
+**Planned fate, per section** — the full table is in
+[Cloud & Multi-User Architecture](CLOUD_MULTIUSER_ARCHITECTURE.md) §25:
+
+| Section | After Phase 11 |
+| --- | --- |
+| §1 the three-layer stance, §2 the working database, §3 persisted vs runtime shape, §4 schema versioning | **retired** — the local database is dropped; device preferences move to `localStorage` |
+| §5 autosave, and the `BroadcastChannel` advisory | **retired** — explicit Save is already what the master-data screens use, and two tabs stop being a data-loss vector once the server arbitrates |
+| §6 internal snapshots and retention | **retired** — an undo layer over a non-authoritative cache protects nothing; the one snapshot that mattered becomes a server-side pre-restore archive |
+| §7 the portable backup envelope, canonical JSON, checksum and its honest limits | **kept**, re-pointed at an organisation-scoped cloud payload, with `backupFormatVersion` bumped |
+| §8 the prepare/apply split and *failed restore = no-op* | **kept as design** — `prepare` stays client-side, `apply` becomes one server transaction |
+| §9 backup security — limits, prototype-key rejection, re-validation of every record | **kept**, and now run **twice**: client-side for the preview, server-side as the control |
+| §10 what the user must be told | **kept in spirit**, with new content: the browser origin stops mattering for data and starts mattering only for the session |
+
 ---
 
 ## 1. The stance
+
+*Historical — this was the premise through Phase 9, and Phase 9.5 replaced it.
+It is preserved because the reasoning below still explains why the code is
+shaped as it is, and because one of its conclusions survives the move to a
+server unchanged: on the Supabase Free plan there is still no nightly database
+dump unless someone takes one.*
 
 The pilot runs on one computer, in a browser, with no server. That makes the
 storage design carry a responsibility it would not carry in a hosted product:
@@ -398,6 +450,13 @@ While a save is failing:
 - quota errors get the distinct message from §2.
 
 ### Concurrency
+
+*The premise below — "single-user, but two tabs" — is what Phase 9.5 replaced.
+The **mechanism** survives and is the thing worth reading: detect the conflict,
+refuse the write, never merge. Against a server the token becomes an integer
+`version` rather than `updatedAt`, for reasons in
+[Cloud & Multi-User Architecture](CLOUD_MULTIUSER_ARCHITECTURE.md) §9, and the
+user-facing behaviour is identical.*
 
 The pilot is single-user, but **two browser tabs on the same machine is a real
 and likely accident**, and it is the one way this design can lose data silently.

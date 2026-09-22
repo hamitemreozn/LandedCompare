@@ -4,7 +4,8 @@
 accounting model, and the invariants that hold across them.
 
 - Why these areas exist and what is out of scope → [Product Scope](PRODUCT_SCOPE.md)
-- How any of it is stored, versioned, backed up → [Local Persistence & Backup](LOCAL_PERSISTENCE_AND_BACKUP.md)
+- Where this data lives, who may read it, and how it is protected → [Cloud & Multi-User Architecture](CLOUD_MULTIUSER_ARCHITECTURE.md)
+- How the **local pilot** stored it — historical → [Local Persistence & Backup](LOCAL_PERSISTENCE_AND_BACKUP.md)
 - Financial arithmetic rules → [Calculation Rules](CALCULATION_RULES.md)
 
 This document is a **conceptual model**, written before implementation. It
@@ -14,15 +15,23 @@ TypeScript declarations — those arrive with the phases that build them
 TypeScript-like notation only because it is precise, not because the files
 exist.
 
-**Implementation status after Phase 7.** The *storage* for this model exists —
-stores, indexes, identity, time and mutability conventions, the append-only
-write path for the ledger — but almost none of the *behaviour* does. Persisted
-record shapes and validators exist for `Project` (with its requirements and
-quotes), `Supplier`, `InventoryMovement`, settings, counters and database
-metadata. Products, customers, purchase orders, shipments, receipts and
-reservations have stores and no records yet. No stock arithmetic, no lifecycle
-transition and no invariant from §11 beyond I18 is enforced in code; those
-arrive with Phases 9 and 13–16.
+**The model below is storage-neutral and survives Phase 9.5 unchanged.** Entities,
+relationships, lifecycles and the twenty-one invariants mean exactly what they
+meant when the target was a single browser database. What Phase 9.5 changed is
+*where they are enforced* and *who may see them* — every record now belongs to an
+organisation, timestamps and attribution are server-owned, and several invariants
+become database permissions rather than application rules. Those consequences are
+collected in §13; the rest of this document is unaffected, and where a section
+says "the persistence layer" it should now be read as "the storage layer,
+whichever it currently is".
+
+**Implementation status after Phase 9.** Products, suppliers and customers have
+record shapes, validators, typed stores and screens; `Project` (with its
+requirements and quotes), `InventoryMovement`, settings, counters and database
+metadata have record shapes and validators. Purchase orders, shipments, receipts
+and reservations have stores and no records yet. No stock arithmetic, no lifecycle
+transition and no invariant from §11 beyond I18 is enforced in code; those arrive
+with Phase 16 onward, against PostgreSQL.
 
 ---
 
@@ -102,11 +111,19 @@ happened — the business fact) and `recordedAt` (when the row was written — t
 system fact). They differ whenever anything is entered late, which in a real
 warehouse is often, and reconciliation needs both.
 
+**Who is allowed to state a time, after Phase 9.5.** With several machines, that
+distinction stops being descriptive and becomes the rule: the **server** owns
+every instant that answers *"when did the system learn this"* — `createdAt`,
+`updatedAt`, `recordedAt`, `postedAt` — and a client-supplied value is discarded,
+not validated. The **user** owns every value that answers *"when did it
+happen"* — `occurredAt` and every business date. See
+[Cloud & Multi-User Architecture](CLOUD_MULTIUSER_ARCHITECTURE.md) §9.
+
 ### Mutability classes
 
 | Class | Records | Rules |
 | --- | --- | --- |
-| **Editable** | `Product`, `Supplier`, `Customer`, `Project` (+ requirements, quotes), `PurchaseOrder` while `DRAFT`, `InboundShipment`, `InventoryReservation` while `ACTIVE`, `OutboundShipment` while `DRAFT` | carry `createdAt` + `updatedAt`; last write wins under the stale-write check in [Local Persistence & Backup](LOCAL_PERSISTENCE_AND_BACKUP.md) |
+| **Editable** | `Product`, `Supplier`, `Customer`, `Project` (+ requirements, quotes), `PurchaseOrder` while `DRAFT`, `InboundShipment`, `InventoryReservation` while `ACTIVE`, `OutboundShipment` while `DRAFT` | carry `createdAt` + `updatedAt`; a write states the version it replaces and is **refused** on a mismatch — never merged. The token is `version` after Phase 9.5 ([Cloud & Multi-User Architecture](CLOUD_MULTIUSER_ARCHITECTURE.md) §9) and was `updatedAt` in the local pilot ([Local Persistence & Backup](LOCAL_PERSISTENCE_AND_BACKUP.md) §5) |
 | **Frozen-on-commit** | `PurchaseOrder` commercial fields once it leaves `DRAFT`; `OutboundShipment` lines once `DISPATCHED` | header metadata (notes, dates, tracking) stays editable; quantities, prices and lines do not |
 | **Append-only** | `InventoryMovement`, `WarehouseReceipt` (after posting), recovery snapshots | no `updatedAt` — there is no update. Corrections are new linked rows |
 
@@ -207,10 +224,10 @@ Consequently `stockUnit` is **immutable once at least one movement exists for
 the product** (Product Scope, Open Decision 14; invariant I11).
 
 *Implementation note.* Phase 9 builds the product master but does **not**
-enforce that rule, because at Phase 9 no movement can exist — `inventoryMovements`
-has no producer until Phase 13 builds the ledger. The enforcement belongs to
-the phase that can prove the precondition; the catalogue form states the rule
-to the user in the meantime.
+enforce that rule, because at Phase 9 no movement can exist — the ledger has no
+producer until Phase 16 builds it. The enforcement belongs to the phase that can
+prove the precondition; the catalogue form states the rule to the user in the
+meantime.
 
 **What a unit value is.** `stockUnit` and `defaultPurchaseUnit` are `string`,
 and a value is one of two things:
@@ -244,7 +261,9 @@ order, shipment or reservation is never hard-deleted (§10).
 
 The existing `src/domain/supplier/Supplier.ts` shape (`id`, `displayName`)
 becomes a **company-wide master** rather than a per-project list, and gains
-`active`, `note`, `createdAt`, `updatedAt`.
+`active`, `note`, `createdAt`, `updatedAt` — plus, in Phase 11, the optional
+`externalRef` described below, so a supplier can carry its code in the company's
+existing system exactly as a customer already can.
 
 This is the one structural finding of Phase 6.5 about existing code. Today
 `Project` holds `readonly suppliers: readonly Supplier[]`, so in practice
@@ -267,7 +286,8 @@ shape".
 
 ```text
 Customer
-  id, displayName, externalRef?, active, note?, createdAt, updatedAt
+  id, displayName, externalRef?, customerStatusId?, active, note?,
+  createdAt, updatedAt
 ```
 
 Deliberately the same minimal shape as `Supplier` — not a CRM record: no
@@ -275,6 +295,91 @@ addresses, contacts, terms, credit limits or history. It exists so reservations
 aggregate reliably. Product Scope, Open Decision 1 explains the alternative that
 was rejected. Outbound shipments additionally carry a free-text `recipientNote`
 for one-off deliveries that do not deserve a customer record.
+
+### CustomerStatus — a configurable classification, not an enum
+
+The pilot company grades its customers `C`, `A`, `A+`, `A++`. The product must
+support that **without knowing those values.**
+
+```text
+CustomerStatus
+  id           UUID
+  code         string   'C', 'A', 'A+', 'A++', or whatever the company uses
+  sortOrder    integer  explicit display order
+  active       boolean
+  createdAt, updatedAt
+```
+
+```text
+Customer.customerStatusId?  →  CustomerStatus     zero or one, never many
+```
+
+Four rules, and each one is the reason a field exists:
+
+- **The list belongs to the company, not to the product.** A PostgreSQL enum or
+  a TypeScript union would make adding `B` a schema migration and a release, and
+  would be wrong for the next company by construction. The classification is
+  configuration, so it is a table.
+- **A customer has zero or one current status.** A nullable reference, not a join
+  table. Status *history* is out of scope: this answers "what grade is this
+  customer now", and a history table is a CRM concept the product does not have.
+- **A deactivated status stays valid for the customers already carrying it.**
+  `active: false` removes it from the picker for new assignments; nobody is
+  silently reclassified and nothing displays differently. This is `active`
+  meaning what it means everywhere else in this model (§2, §10) — and it is why
+  the customer references the status *row* rather than copying its code.
+- **Display order is deterministic** — `sortOrder`, then case-folded `code` as a
+  stable tiebreak. `A+` and `A++` do not sort usefully under any natural rule,
+  and a list whose order changes between two screens is a list nobody trusts.
+
+Deliberately **not** on it: colour, discount percentage, credit limit, payment
+terms, or any behaviour at all. A status is a label the company sorts and filters
+by. The moment it drives a price or gates a reservation it has become a pricing
+model, which is CRM (Product Scope §6).
+
+Implemented in Phase 11, with the catalog, because it is a `customers` column:
+adding it then costs one table and one nullable reference, and adding it later
+costs a migration over live company data. See
+[Cloud & Multi-User Architecture](CLOUD_MULTIUSER_ARCHITECTURE.md) §11 for the
+PostgreSQL form and its organisation scoping.
+
+### `externalRef` — the external system code, and why it stays opaque
+
+`Customer` already carries `externalRef?`. **`Supplier` gains the same field**
+in Phase 11, for the same reason and with the same rules.
+
+The pilot company identifies both with codes from an existing system:
+
+```text
+customer   120-34-00-11-001
+supplier   320-…
+```
+
+A partial reading is known: `120` marks a customer and `320` a supplier, `34` is
+a Turkish province plate code, `00` and `01` distinguish the Anatolian and
+European sides of Istanbul — and `11-001` is **currently unknown.**
+
+**None of that is in the model, and that is the decision.** `externalRef` is one
+optional string, stored exactly as typed. No split into prefix / province / side
+/ sequence, no format validation, no uniqueness, no generation, no parsing
+anywhere.
+
+The interpretation is partial and unverified, and a model that encodes
+`34 = province` rejects the first foreign supplier and has to be migrated the
+moment the real rule turns out to be something else — which, with a segment still
+unknown, it may well be. Storing the complete value verbatim loses no
+information, so every later capability (a format check, a unique index, a parsed
+breakdown, a generator) remains an additive change to a column that already holds
+the data.
+
+The UI labels it **"Dış Sistem Kodu" / "External System Code"**; the field keeps
+the name `externalRef`, which already means "this record's identifier in some
+other system" and should not be renamed to match one company's vocabulary.
+
+A **BUSINESS EXCEL CODE SCHEME ANALYSIS** checkpoint is scheduled for when real
+spreadsheets arrive — see
+[Cloud & Multi-User Architecture](CLOUD_MULTIUSER_ARCHITECTURE.md) §26. Nothing
+interprets the code before it.
 
 ### The RequirementItem → Product link
 
@@ -875,40 +980,114 @@ hopes.
 | --- | --- | --- |
 | ~~`RequirementItem.productId` (Phase 9)~~ | **done** — added at `schemaVersion` 3; existing requirements keep the key absent | no |
 | ~~Supplier master normalisation (Phase 9)~~ | **no longer needed** — `suppliers` + `supplierIds` ship in `schemaVersion` 1 (Phase 7), and no persisted project data can predate it | n/a |
+| `CustomerStatus` + `Customer.customerStatusId` (Phase 11) | new table, one nullable reference; existing customers keep it absent, which means "not graded" and is a truthful value rather than a guess | no |
+| `Supplier.externalRef` (Phase 11) | additive optional field; existing suppliers keep the key absent | no |
 | Multi-warehouse (future) | seed one `Location`; add required `locationId` to movements, receipts and dispatches; backfill every existing row with the seeded id | no — constant backfill, no information loss |
 | Lot tracking (future) | add `Lot` store; add optional `lotRef` to movements and receipt/dispatch lines; existing rows get `null` = "pre-lot-tracking" | no |
+| `externalRef` format rules — uniqueness, validation, parsed segments (future) | additive only: a unique index and/or derived columns over a column that already holds the complete value. **Blocked on the BUSINESS EXCEL CODE SCHEME ANALYSIS** (§4) — nothing is designed before real spreadsheets are examined | no |
 | Stock balance cache (future) | add a rebuildable cache store; build it from the ledger on first run | no — derived, droppable |
 
-Each runs as a numbered `schemaVersion` step under the rules in
-[Local Persistence & Backup](LOCAL_PERSISTENCE_AND_BACKUP.md).
+The first two ran as numbered `schemaVersion` steps under the rules in
+[Local Persistence & Backup](LOCAL_PERSISTENCE_AND_BACKUP.md). **From Phase 10
+onward a migration is a numbered SQL file in `supabase/migrations/`**, proven
+from empty locally before it reaches the hosted project
+([Cloud & Multi-User Architecture](CLOUD_MULTIUSER_ARCHITECTURE.md) §20). The
+discipline is unchanged — ordered, numbered, never inferred from the data, frozen
+once released, and tested against a realistic fixture of the previous state.
 
 ---
 
-## 13. Future backend migration
+## 13. The backend migration — now planned, not hypothetical
 
-The pilot is local-only and the roadmap builds no backend. But the model above is
-already shaped so that a later `React → API → PostgreSQL` architecture is a port
-rather than a redesign:
+This section was written when the pilot was local-only and a backend was a
+possibility. **Phase 9.5 decided it: PostgreSQL, hosted by Supabase, becomes the
+single source of truth for shared business data.** The canonical document is
+[Cloud & Multi-User Architecture](CLOUD_MULTIUSER_ARCHITECTURE.md); what follows
+is only what the *model* above gains, changes and keeps.
 
-- **UUID primary keys** map directly to `uuid` columns and survive the export /
-  import round trip without renumbering.
+### What made it a port rather than a redesign
+
+The shaping decisions recorded here before anything was built are the ones that
+paid off:
+
+- **UUID primary keys** map directly to `uuid` columns and survive the
+  export/import round trip without renumbering. They are still generated by the
+  client (`crypto.randomUUID()`), which is safe under a primary key constraint
+  and lets a client assemble a whole aggregate before sending it.
 - **Append-only ledger** is exactly how an inventory table should look in a
-  relational database, and derived stock is a `SUM` query or a materialised view.
+  relational database, and derived stock is a `sum()` query.
 - **Aggregates with embedded lines** map to parent/child tables with a foreign
-  key; the aggregate boundary is already the transaction boundary.
+  key; the aggregate boundary is already the transaction boundary. Lines were
+  embedded in IndexedDB because IndexedDB has no joins and no foreign keys — in
+  PostgreSQL they become child tables, and R5 is preserved by the thing that
+  always enforced it, the transaction.
 - **ISO timestamps and `YYYY-MM-DD` business dates** map to `timestamptz` and
   `date` with no ambiguity.
 - **Money and Quantity** already serialise to exact decimal strings via the
-  existing `toJSON()`/`fromJSON()` contract, and map to `numeric`. No float ever
-  enters the model.
+  existing `toJSON()`/`fromJSON()` contract, and map to `numeric` **with no
+  precision or scale**. No float ever enters the model — and the decimal string
+  remains the wire format, because PostgREST serialises `numeric` as a JSON
+  number and JavaScript parses that as a float. That is enforced by the schema
+  separation rather than by convention: the table carrying the `numeric` has no
+  API route at all, so the casting projection is the *only* way the value can
+  reach a client.
 
-What is deliberately **not** being built now: repository interfaces, a unit-of-work
-abstraction, a DTO layer, or a sync protocol. A persistence module with
-explicit functions is enough for a single local database, and speculative
-indirection for a backend that may never exist is a cost paid today for a
-benefit that is not owed.
+### What the model gains
 
-The one real coupling to accept and watch: the persistence layer is the single
-place that knows about IndexedDB. As long as that stays true (see
-[Architecture](ARCHITECTURE.md)), replacing it with an HTTP client is a
-contained change.
+- **A tenant.** Every business record belongs to exactly one organisation, and
+  carries `organization_id` as a column — not derived through a join. Child rows
+  are held to their parent's organisation by a composite foreign key, so a
+  cross-tenant line is structurally impossible.
+- **An actor.** `created_by` / `updated_by` on editable records, `posted_by` on
+  the append-only ones. Attribution on an immutable row is permanent by
+  construction.
+- **A place, and a separate published surface.** Every entity in this document
+  becomes a table in the **`app_data`** schema, which the Data API does not
+  serve. What a client sees is a projection of it in the **`api`** schema — a
+  `security_invoker` view for reads and typed functions for writes. The
+  conceptual model is unchanged by that; what changes is that "a client can read
+  a product" means "a client can read `api.products`", and the decimal columns
+  arrive as canonical strings because the projection casts them.
+
+### What changes in §2's conventions
+
+- **Time is server-owned where it is a system fact.** `createdAt`, `updatedAt`,
+  `recordedAt` and `postedAt` are set by the database, never by a client clock.
+  `occurredAt` and every business date stay client-supplied, because those are
+  facts the *user* states — which is precisely the distinction §2 already draws
+  between "when it physically happened" and "when the row was written", now
+  load-bearing rather than descriptive.
+- **The concurrency token becomes `version`, an integer, not `updatedAt`.** The
+  behaviour is identical — a write states the version it is replacing and is
+  refused on a mismatch — but a counter cannot collide (two updates in one
+  transaction share `now()`) and cannot be mistaken for an ordering across
+  devices. `updatedAt` remains on the record as display metadata.
+
+### What does not change
+
+The entities, the relationships, the lifecycles, the seven movement types,
+magnitude-plus-direction, the derived-not-stored rule (R1, I19), the snapshot
+boundary between analysis and purchasing (R4), and **invariants I1–I18** are
+unchanged in meaning. What changes is where they are enforced: I7 (only three
+actions write the ledger) and I9 (a posted movement is never updated or deleted)
+become *permissions* — `authenticated` has no insert, update or delete grant on
+the movement table — rather than rules the application must remember.
+
+I19–I21 are restated for the new platform in
+[Cloud & Multi-User Architecture](CLOUD_MULTIUSER_ARCHITECTURE.md) §16: a restore
+is still atomic from the user's perspective, and *failed restore = no-op* still
+holds — in PostgreSQL it is free, because a rolled-back transaction changed
+nothing.
+
+### What is still deliberately not being built
+
+No repository interface per entity, no unit-of-work abstraction, no DTO layer,
+and **no sync protocol** — dual-master synchronisation is explicitly rejected,
+not deferred (see
+[Cloud & Multi-User Architecture](CLOUD_MULTIUSER_ARCHITECTURE.md) §14). One
+`DataGateway` with a method per operation the features actually call is enough,
+for the same reason the local persistence module was a set of explicit functions.
+
+The coupling this section told us to watch held: the persistence layer was the
+single place that knew about IndexedDB, and that is exactly what makes replacing
+it a contained change.

@@ -4,26 +4,39 @@
 MVP includes and excludes, and which product decisions are still open.
 
 - Entity shapes, relationships, lifecycles and invariants → [Data Model](DATA_MODEL.md)
-- Storage, backup, restore, migrations → [Local Persistence & Backup](LOCAL_PERSISTENCE_AND_BACKUP.md)
+- Tenancy, accounts, permissions, where the data lives → [Cloud & Multi-User Architecture](CLOUD_MULTIUSER_ARCHITECTURE.md)
+- Local-pilot storage, backup format, restore — historical → [Local Persistence & Backup](LOCAL_PERSISTENCE_AND_BACKUP.md)
 - Build order and phase sizing → [Implementation Plan](IMPLEMENTATION_PLAN.md)
 - Layering and module boundaries → [Architecture](ARCHITECTURE.md)
 - Financial rules → [Calculation Rules](CALCULATION_RULES.md)
 
-Status as of Phase 6.5: the calculation/comparison engine (Phases 0–5) and the
-i18n foundation (Phase 6) are implemented. Nothing described below as
-"operational" exists in code yet.
+Status as of Phase 9.5: the calculation/comparison engine (Phases 0–5), the i18n
+foundation (Phase 6), local persistence and backup (Phases 7–8) and the first
+screens — application boot, products, suppliers, customers (Phase 9) — are
+implemented. Nothing described below as "operational" exists in code yet, and
+nothing multi-user does either: the cloud architecture is designed (Phase 9.5)
+and built from Phase 10 onward.
 
 ---
 
 ## 1. What LandedCompare is
 
-LandedCompare is a local-first, single-machine web application that carries one
-importing company's purchasing chain from *"which supplier quotation is actually
-cheapest once every landed cost is counted?"* through to *"what do we physically
-have in the warehouse, what is promised to a customer, and what is still on the
-water?"* — built around an audited, deterministic landed-cost engine and an
-append-only inventory movement ledger, with no backend, no accounts, and no
-cloud dependency.
+LandedCompare is a web application — delivered as a Windows and macOS desktop
+client — that carries one importing company's purchasing chain from *"which
+supplier quotation is actually cheapest once every landed cost is counted?"*
+through to *"what do we physically have in the warehouse, what is promised to a
+customer, and what is still on the water?"* — built around an audited,
+deterministic landed-cost engine and an append-only inventory movement ledger,
+shared by the handful of people in one company who need to see the same numbers.
+
+**It was, through Phase 9, a local-first single-machine application with no
+backend, no accounts and no cloud dependency.** Phase 9.5 changed that, and the
+reason is in the model rather than in the infrastructure: the product's central
+invariant — a reservation may not push available stock below zero — is a
+statement about the whole company, and two disconnected databases can each
+satisfy it while jointly violating it. Shared operational truth needs a single
+serialisation point. See
+[Cloud & Multi-User Architecture](CLOUD_MULTIUSER_ARCHITECTURE.md).
 
 ## 2. What changed in Phase 6.5, and why
 
@@ -31,8 +44,8 @@ The original scope stopped at quotation comparison. That is a decision-support
 tool: it is used a few times per purchasing cycle and then closed. It cannot be
 evaluated by a pilot user, because there is no daily work in it.
 
-LandedCompare will first be used inside a real company as a **local pilot**, and
-the pilot must survive contact with daily operations. So the product scope now
+LandedCompare will first be used inside a real company as a **pilot**, and the
+pilot must survive contact with daily operations. So the product scope now
 covers one focused operational chain:
 
 ```text
@@ -62,18 +75,62 @@ fail that test and are listed as out of scope in §6.
 
 ## 3. Pilot operating model
 
-### Local-only, single machine
+### Shared, server-authoritative, and still free to run
 
-The pilot runs in a browser on **one computer** at the company. There is no
-server, no API, no DNS, no hosting, no login, and no synchronisation. All data
-lives in that machine's IndexedDB (see
-[Local Persistence & Backup](LOCAL_PERSISTENCE_AND_BACKUP.md)).
+The pilot runs on **several computers** at the company — the owner's machine,
+the office, the warehouse — as a desktop application on Windows and macOS, with a
+browser as the development client. All shared business data lives in one hosted
+PostgreSQL database, which is the single source of truth. No device holds an
+authoritative copy of anything. See
+[Cloud & Multi-User Architecture](CLOUD_MULTIUSER_ARCHITECTURE.md).
 
-This is a deliberate constraint, not a temporary shortcut that infrastructure
-work will quietly undo. It means the pilot can be started immediately and costs
-nothing to operate — and it means **disk loss equals total data loss unless
-external backups exist**, which is why backup/restore is a first-class MVP
-feature and not a "Phase 13 data exchange" afterthought.
+It still costs **$0/month** to operate: one Supabase Free project, no domain, no
+paid hosting, no email provider, no paid plan of any kind. Nothing in the
+architecture requires one.
+
+Three consequences follow, and all three are binding:
+
+1. **Internet access is required to read or change business data.** This is an
+   accepted product limitation, not a gap to be closed later by a sync engine —
+   see §7, Open Decision 16.
+2. **A Free-plan project is paused after about a week of inactivity**, and an
+   administrator must resume it from the Supabase dashboard. The application says
+   so honestly rather than pretending to work; ordinary users see a plain
+   unavailable message and administrators see what to do about it.
+3. **There are still no automatic database backups.** The Free plan does not
+   provide them. Two different protections exist instead, and the product never
+   lets one be mistaken for the other: an organisation-scoped **portable export**
+   that an administrator can download, and an **infrastructure dump set** — more
+   than one command, because the default dump is schema-only and excludes the
+   managed `auth` schema — that the project's operator runs weekly and before
+   every migration. What each one does and does not recover, including the honest
+   position on Auth accounts, is in
+   [Cloud & Multi-User Architecture](CLOUD_MULTIUSER_ARCHITECTURE.md) §16.
+
+*Historical, through Phase 9:* the pilot was designed to run in a browser on one
+computer, with no server, no login and no synchronisation, and all data in that
+machine's IndexedDB. That constraint was deliberate rather than a shortcut, and
+it produced the persistence and backup work in Phases 7–8 — most of whose
+*discipline* survives even though its storage does not
+([Cloud & Multi-User Architecture](CLOUD_MULTIUSER_ARCHITECTURE.md) §25). What
+retired it was not ambition but the requirement that several people see the same
+stock.
+
+### Accounts, and who can do what
+
+Three roles, and no more: **OWNER**, **ADMIN**, **MEMBER**. Everyone can do the
+day-to-day work; administrators additionally manage who has access and can export
+the company's data; only the owner can restore over it. Accounts are created by
+an administrator, who hands the new user a temporary password — there is no
+self-registration, and no email is involved anywhere in the flow.
+
+**Everyone who posts stock movements, receipts or dispatches has their own
+account.** A shared warehouse login is not the operating model, and the reason is
+the ledger: it is append-only, so the person recorded against a movement is
+recorded permanently, and attribution that was never captured cannot be
+recovered. A shared account would still *work* — nothing in the model forbids it
+— it would simply make "who booked this in?" unanswerable for every row it ever
+wrote.
 
 ### Parallel run with Logo Tiger
 
@@ -101,15 +158,24 @@ Two consequences follow, and both are binding:
    pilot is a human activity, supported by a stock-count adjustment workflow
    (§5) that records the correction as a normal, traceable ledger movement.
 
-### The pilot user
+### The pilot users
 
 The primary pilot user is the owner's father — an experienced operator, not a
 software tester. What he will surface is *missing workflow and friction*, not
 bug reports. The product therefore has to be usable end-to-end with real data
 before feedback is meaningful, which is what drives the roadmap order in
-[Implementation Plan](IMPLEMENTATION_PLAN.md): persistence and backup first
-(nothing else is safe to enter data into), then the analysis screens, then the
-operational chain.
+[Implementation Plan](IMPLEMENTATION_PLAN.md): the shared foundation and backup
+first (nothing else is safe to enter data into), then the analysis screens, then
+the operational chain.
+
+Beside him are office and warehouse personnel — two to five people in total, none
+of them technical. Two design constraints follow from that number and that
+profile. **Signing in must be as simple as an email address and a password**,
+which is one of the two reasons no other authentication method is offered. And
+**the application must never explain its infrastructure to them**: when the
+server is unreachable an ordinary user is told that saving is unavailable and to
+tell their administrator, and only an administrator is shown what actually needs
+doing.
 
 The company handles medical-device-related products. That does **not** pull lot
 / serial / expiry tracking into the MVP (see §7, Open Decision 4), but it does
@@ -150,8 +216,8 @@ Five bounded areas, with one hard rule between them.
 └────────────────────────────────────────────────────────────┘│
                                                               │
 ┌─────────────────────────────────────────────────────────────┘
-│ PLATFORM   persistence · schema migration · snapshots ·
-│            backup/restore · i18n
+│ PLATFORM   identity · tenancy · access control ·
+│            data access · schema migration · backup/restore · i18n
 └──────────────────────────────────────────────────────────────
 ```
 
@@ -162,10 +228,17 @@ inventory can call back into the comparison engine, and editing a quote next
 month can never change what a purchase order says was ordered. See
 [Data Model](DATA_MODEL.md), "Quote → Purchase Order".
 
+**A second hard rule, added in Phase 9.5: every business record belongs to
+exactly one organisation, and that boundary is enforced by the database, not by
+the interface.** Products, suppliers, customers, projects, quotes, orders,
+shipments, receipts, movements, reservations and outbound shipments all carry
+their organisation, and a row outside the caller's organisation does not exist as
+far as any query is concerned.
+
 The procurement-analysis area keeps its existing property of being pure,
 React-free and storage-free. The operational areas get the same treatment: the
-domain rules live in plain TypeScript modules, and IndexedDB is a detail the
-platform layer owns.
+domain rules live in plain TypeScript modules, and the storage technology —
+whichever it currently is — is a detail the platform layer owns.
 
 ---
 
@@ -190,8 +263,16 @@ Everything below must exist before the pilot is considered feature-complete.
   optional purchase unit + pack factor, and an active/inactive flag.
 - **Supplier master** shared by analysis and purchasing (one supplier record,
   not one per project).
-- **Customer master** — minimal: name, optional reference, active flag. Not a
-  CRM record (Open Decision 1).
+- **Customer master** — minimal: name, optional external system code, optional
+  classification, active flag. Not a CRM record (Open Decision 1).
+- **Customer classification**, configured by the company rather than fixed by the
+  product. The pilot company grades customers `C`, `A`, `A+`, `A++`; another
+  company would use something else, so the list is data, not an enum. A customer
+  carries zero or one current grade, the order is explicit, and retiring a grade
+  never reclassifies the customers already holding it (Open Decision 19).
+- **External system code** on customers *and* suppliers — the identifier the
+  company already uses in its existing system, stored and shown exactly as typed.
+  Nothing parses, validates, generates or de-duplicates it yet (Open Decision 20).
 
 ### 5.3 Purchasing
 
@@ -236,15 +317,33 @@ Everything below must exist before the pilot is considered feature-complete.
 - Outbound shipments; dispatching posts the stock-out movements.
 - Partial dispatch against a reservation.
 
-### 5.8 Platform
+### 5.8 Accounts and access
 
-- IndexedDB persistence with explicit aggregate/transaction boundaries.
-- Autosave with visible save state and failure handling.
-- Explicit `schemaVersion` with versioned, snapshot-protected migrations.
-- Internal recovery snapshots (undo-grade).
-- External portable backup export (disaster-recovery-grade).
-- Validated, atomic restore that cannot destroy the working database on failure.
-- Backup-freshness reminder.
+- One company (organisation); every business record belongs to it.
+- Sign-in with email and password. Accounts are created by an administrator, who
+  hands over a temporary password the user must change on first sign-in. No
+  self-registration, no email delivery in the loop.
+- Three roles — OWNER, ADMIN, MEMBER — with administrators managing membership
+  and only the owner able to restore over company data.
+- A user can be disabled, which takes effect on their next request. Membership is
+  never deleted, so attribution on past stock movements keeps resolving.
+- Every posted movement, receipt and dispatch records who posted it.
+
+### 5.9 Platform
+
+- PostgreSQL as the single source of truth, with row-level security scoping every
+  row to its organisation.
+- Multi-row business operations as server-side transactions, so an invariant can
+  never depend on a sequence of independent client requests.
+- Optimistic concurrency: a write states the version it replaces and is refused,
+  never merged, on a mismatch.
+- Version-controlled schema migrations as the canonical schema history.
+- Organisation-scoped portable backup export, in a versioned, checksummed,
+  fully-validated format, with a freshness reminder.
+- Validated, atomic restore that cannot leave the database half-replaced.
+- Honest offline and server-unavailable states: no write is ever reported as
+  succeeded, and no stale data is presented as current.
+- Windows and macOS desktop clients built from the same application code.
 
 ---
 
@@ -274,15 +373,26 @@ Not in the pilot MVP, and not partially started "to make it easier later".
 - Barcode scanners, handheld terminals, warehouse bin locations, pick paths.
 - Demand forecasting, reorder-point automation, MRP.
 
-**Because the pilot is local and single-user**
+**Because the pilot is one company, a handful of users, and $0/month**
 
-- Backend, API, PostgreSQL, hosting, DNS, HTTPS deployment.
-- Authentication, user accounts, roles/permissions (RBAC), audit-by-user.
-- Multi-user collaboration, real-time sync, conflict merging.
-- Multi-company / multi-tenant.
+- **Offline editing of shared business records, and any form of two-way sync or
+  conflict merging.** Explicitly rejected rather than deferred — Open Decision 16.
+- **Real-time push updates.** Correctness comes from database transactions, not
+  from message delivery; a refresh-after-mutation model is correct for this many
+  users ([Cloud & Multi-User Architecture](CLOUD_MULTIUSER_ARCHITECTURE.md) §23).
+- Self-service registration, self-service password reset, email invitations,
+  Google/Microsoft sign-in, SSO/SAML, multi-factor authentication.
+- Fine-grained permissions beyond the three roles — no per-module rights, no
+  groups, no delegation, no permission matrix.
+- Multi-company operation *in the interface*. The data model supports a user
+  belonging to several organisations; the pilot UI assumes one and does not offer
+  a picker.
+- A traditional Node/Express API tier, a custom domain, or paid hosting of any
+  kind.
 - **Multi-warehouse / multi-location** (Open Decision 5).
-- Native mobile or desktop application; offline-installable PWA packaging.
+- Native mobile applications; offline-installable PWA packaging.
 - Telemetry, analytics, crash reporting.
+- File attachments, document uploads and photos.
 
 **Deferred with a known reason**
 
@@ -295,7 +405,7 @@ Not in the pilot MVP, and not partially started "to make it easier later".
 - Merge-mode restore (Open Decision 10).
 - CSV/XLSX and clipboard import of quotation grids — useful, but it is a data
   *entry* convenience, and the pilot's first job is to prove the workflow.
-  Scheduled late (Phase 17), droppable without breaking the chain.
+  Scheduled late (Phase 20), droppable without breaking the chain.
 
 ---
 
@@ -405,11 +515,12 @@ happens often.
 
 **Default: not in the MVP. Post-pilot.**
 
-*Why:* the backup files are company operational data on company hardware in a
-single-machine pilot; the realistic threat is *losing* them, not someone reading
-them. A password-based scheme adds a permanent, irreversible failure mode — a
-forgotten password destroys the only disaster-recovery copy — which is a worse
-risk than the one it removes.
+*Why:* the backup files are company operational data, downloaded by an
+administrator onto company hardware; the realistic threat is *losing* them, not
+someone reading them. A password-based scheme adds a permanent, irreversible
+failure mode — a forgotten password destroys a disaster-recovery copy — which is
+a worse risk than the one it removes. The data at rest in the database is a
+separate question and is answered by access control, not by file encryption.
 *Extension:* Web Crypto AES-GCM with PBKDF2 key derivation, added as a
 `backupFormatVersion` bump with the unencrypted format still readable. See
 [Local Persistence & Backup](LOCAL_PERSISTENCE_AND_BACKUP.md), "Backup
@@ -421,8 +532,14 @@ security".
 
 *Why:* merging two divergent ledgers requires answering "which of these two
 edits to the same purchase order wins?", and there is no correct generic answer.
-In a single-machine pilot a merge has no legitimate use case — the backup is
-always either a restore point or a machine move.
+A backup is always either a restore point or a move to new infrastructure, and
+neither needs a merge. This reasoning is what Decision 16 then applies to offline
+editing, where it is stronger still.
+*Consequence against shared data:* restore is **owner-only**, scoped to one
+organisation, refuses to import into an organisation that already holds business
+data, and locks every other member out for its duration. Destroying one person's
+copy was already the most dangerous operation in the product; destroying
+everyone's needs more than a confirmation dialog.
 *Extension:* selective/partial restore (e.g. "catalog only") is a plausible
 later addition and is safer than a true merge.
 
@@ -482,6 +599,111 @@ answer "what did we agree to?" — the one question an order exists to answer.
 *Extension:* a "re-analyse this order against today's quotes" read-only view is
 possible, and would produce a *new* comparison, not mutate the order.
 
+### 16 — Can people work offline?
+
+**Default: no. Internet access is required to read or change business data, and
+this is an accepted product limitation.**
+
+*Why:* the alternative is not "keep working" — it is "keep working and find out
+later that the stock figure was wrong". Available stock, reservation totals and
+unique order codes are statements about the whole company; two offline devices
+can each satisfy them and jointly violate them, and a merge performed afterwards
+can only pick a loser after both users already told a customer yes. This is the
+same reasoning Decision 10 uses to refuse merge-mode restore, applied to a case
+where it is stronger rather than weaker.
+*What this does not mean:* a failed save never discards what the user typed. The
+form keeps its contents and offers a retry. That is a UI requirement, not a sync
+mechanism — nothing is queued and nothing is retried automatically.
+*Extension:* narrowly-scoped offline *drafts* for a screen that genuinely needs
+them — never for anything that touches stock. Full offline operation is rejected,
+not deferred.
+
+### 17 — Individual accounts, or a shared warehouse login?
+
+**Default: individual accounts for everyone who posts stock movements.**
+
+*Why:* every posted movement, receipt and dispatch records who posted it, and
+that attribution is permanent — the ledger is append-only. A shared login
+produces a record that is true and useless. The model supports a shared account
+without any change, but it cannot recover attribution that was never captured.
+*Extension:* none needed in either direction; this is an operating decision the
+company makes, not a schema one.
+
+### 18 — What happens when the free project is paused?
+
+**Default: the application says so honestly and refuses to write. An
+administrator resumes it from the Supabase dashboard.**
+
+*Why:* a Free-plan project pauses after about a week of inactivity. Manufacturing
+synthetic traffic to evade that is refused as a design — it works against the
+plan's intent and creates a false signal about whether the product is being used.
+A pilot in daily use will not pause; a pilot that sat idle for a week can be
+resumed in under a minute.
+*Consequence to state plainly:* an application that can be unavailable until an
+administrator clicks "Resume" is acceptable for an evaluation and is **not**
+acceptable as a company's daily operational system.
+*Extension:* a paid plan, which cannot be paused and adds automatic backups. It
+is a billing decision and changes nothing in the architecture.
+
+### 19 — How are customers classified?
+
+**Default: an organisation-configurable list, seeded with the company's own
+grades (`C`, `A`, `A+`, `A++`). Never a fixed enum.**
+
+*Why:* the grades are the company's, not the product's. A `create type … as enum`
+or a TypeScript union would make adding `B` a schema migration and a release, and
+would be wrong for the next company by construction. A customer carries zero or
+one current grade — this answers "what grade is this customer now", and grade
+*history* is a CRM concept the product does not have. A retired grade stays valid
+for every customer already holding it: deactivation removes it from the picker,
+never reclassifies anyone.
+*What it deliberately does not do:* nothing. A grade is a label the company sorts
+and filters by. It carries no discount percentage, credit limit or payment terms,
+because the moment it drives a price it has become a pricing model, which is CRM
+and is out of scope (§6).
+*Extension:* if a grade ever must mean something, that meaning attaches to the
+status row as new fields — the customers already point at it.
+
+In the model this is `CustomerStatus` plus `Customer.customerStatusId`; see
+[Data Model](DATA_MODEL.md) §4. Implemented in Phase 11, with the catalog,
+because it is a `customers` column and adding it later costs a migration over
+live company data.
+
+### 20 — What is the external system code, and what does the product do with it?
+
+**Default: an opaque optional string on both customers and suppliers. Stored and
+displayed verbatim. Nothing parses it, validates it, generates it, or requires it
+to be unique.**
+
+The company's codes look like `120-34-00-11-001` for a customer and `320-…` for a
+supplier. A partial reading is known — `120`/`320` are the party-type prefixes,
+`34` is a Turkish province plate code, `00`/`01` separate the Anatolian and
+European sides of Istanbul — and `11-001` is **currently unknown.**
+
+*Why not encode the pattern:* the interpretation is partial and unverified. A
+schema that treats `34` as a province rejects the first foreign supplier and has
+to be migrated the moment the real rule turns out to be different — which, with a
+whole segment still unknown, it may well be. Uniqueness is likewise unproven: the
+real data may contain duplicates, blanks or historical variants, and a unique
+index added before anyone has looked turns the first import into a debugging
+session.
+*Why storing it is still worth doing now:* the complete value is retained, so
+every later capability is **additive** — a format check, a unique index, parsed
+segments for filtering, a generator — over a column that already holds the data.
+
+In the model this is the optional `externalRef` field, which `Customer` already
+has and `Supplier` gains in Phase 11; see [Data Model](DATA_MODEL.md) §4. The
+field keeps that name — it already means "this record's identifier in some other
+system" — while the interface labels it *Dış Sistem Kodu*.
+*Extension, and it has a trigger:* a **BUSINESS EXCEL CODE SCHEME ANALYSIS**
+runs when the owner provides real spreadsheets. It must settle prefix
+consistency, the province and district segments, the unknown `11-001`, actual
+uniqueness, whether the company ever *assigns* codes or only receives them, how
+foreign parties are coded, and whether the scheme originates in Logo Tiger — in
+which case LandedCompare mirrors it and must never generate it. Only after that
+may parsing or generation be designed. See
+[Cloud & Multi-User Architecture](CLOUD_MULTIUSER_ARCHITECTURE.md) §26.
+
 ---
 
 ## 8. Success criteria for the pilot
@@ -493,6 +715,9 @@ The pilot is judged on whether the chain holds, not on feature count:
 2. The stock figure it shows can be explained, movement by movement, back to the
    documents that created it.
 3. A discrepancy against Logo Tiger can be found, corrected and traced.
-4. The database can be destroyed and fully restored from an external backup file
-   without silent data loss.
+4. The database can be destroyed and fully restored without silent data loss.
 5. The pilot user can complete a normal day without needing the developer.
+6. **Two people working at once see the same numbers**, and when they collide the
+   application says so instead of silently picking a winner.
+7. **No one can see or change another company's data**, proven by test rather
+   than by the interface not offering a way.

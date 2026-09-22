@@ -584,9 +584,11 @@ prototype-polluting keys.
 ### What Phase 7 deliberately did not build
 
 No snapshots, no backup file, no restore (Phase 8); no catalog, purchasing,
-logistics or inventory behaviour (Phases 9, 13–16); no UI (Phase 9+). The
-`inventoryMovements` store exists with its append-only write path and no update
-or delete operation at all, but no stock arithmetic — Phase 13 owns that.
+logistics or inventory behaviour (Phase 9, and Phases 16–19 under the roadmap as
+revised by Phase 9.5); no UI (Phase 9+). The `inventoryMovements` store exists
+with its append-only write path and no update or delete operation at all, but no
+stock arithmetic — the ledger phase owns that, and it is now built against
+PostgreSQL rather than this store.
 
 **The limitation Phase 7 recorded here — that the `PRE_MIGRATION` snapshot rule
 could not hold — is resolved by Phase 8 below.**
@@ -857,10 +859,125 @@ No backup export or restore UI — the dashboard states backup freshness
 truthfully and says the export screen arrives later, which is a smaller claim
 than a button that does not exist. No enforcement of Data Model I11
 (`stockUnit` immutable once movements exist): at Phase 9 no movement can exist,
-the ledger has no producer until Phase 13, and widening every product save into
-a cross-store transaction against a provably empty store is Phase 13's rule to
-implement where it can be proven. No hard delete anywhere. No project,
-requirement, quote or comparison screens (Phases 10–12).
+the ledger has no producer, and widening every product save into a cross-store
+transaction against a provably empty store belongs to the phase that can prove
+the precondition. No hard delete anywhere. No project, requirement, quote or
+comparison screens.
+
+*A note on the phase numbers in this section and in the source comments.*
+Phase 9 was written against the roadmap current at the time, in which the ledger
+was Phase 13 and the analysis screens were Phases 10–12. Phase 9.5 renumbered
+everything from 10 onward (see [Implementation Plan](IMPLEMENTATION_PLAN.md)):
+the ledger is now Phase 16 and the analysis screens are Phases 13–15. Comments
+inside `src/` still carry the old numbers, deliberately — Phase 9.5 changed no
+production code — and are corrected by whichever phase next edits the file. Where
+a number and a description disagree, **the description is the intent**: "the
+phase that builds the ledger" is unambiguous in a way "Phase 13" no longer is.
+
+## Phase 9.5 — cloud & multi-user architecture checkpoint
+
+Phase 9.5 changed no production code. It replaced the pilot's central platform
+assumption — *one computer, no server, IndexedDB is the truth* — after the
+company's real requirement became clear: the owner working from more than one
+machine, office personnel on the same company data, and eventually Windows and
+macOS desktop clients.
+
+**The canonical document is
+[Cloud & Multi-User Architecture](CLOUD_MULTIUSER_ARCHITECTURE.md).** Only the
+architectural consequences are recorded here; the detail — tenancy, RLS policy
+patterns, the client/server classification, concurrency, cloud backup, the
+threat model — lives there and is not duplicated.
+
+### The authority model changed; the layering did not
+
+```text
+   features / operations
+            ↓
+     data gateway            ← NEW: the one module that knows Supabase exists
+            ↓                        and the only one that names a schema
+   Supabase → PostgreSQL     ← the single source of truth
+```
+
+That is the same shape as `features → persistence → IndexedDB`, with one module
+replaced. The rule it enforces is also the same one: **exactly one module knows
+what the storage technology is**, and screens reach it through feature services.
+Phase 7 named this "the one real coupling to accept and watch"; it is now being
+exchanged, and the exchange is contained because the coupling stayed where it
+was put.
+
+### The server-side layering is three schemas, and only one is an API
+
+```text
+   api          ← the ONLY schema the Data API serves.
+                  security_invoker read views + typed RPCs. Nothing else.
+        ↓
+   app_data     ← canonical business tables. No route. RLS enabled and forced.
+        ↓
+   app_private  ← security and trigger helpers. No route.
+```
+
+This is the database's equivalent of the module boundary above, and it exists for
+a reason the local architecture never had to face: **a client can address
+anything the Data API exposes.** Putting canonical tables in `public` — which
+Supabase exposes by default — would mean `GET /rest/v1/products` returning
+`numeric` columns as JSON numbers, past every projection the exact-decimal
+contract depends on. Two invariants follow, and both are enforced by routing
+rather than by convention:
+
+- no canonical business table is directly addressable;
+- every client-visible exact decimal is returned only through an `api`
+  projection that serialises it as canonical text.
+
+The distinction that makes it work, and that is easy to get backwards:
+**a database privilege is not an API route.** `authenticated` holds `SELECT` on
+`app_data` tables (a `security_invoker` view needs it) and `EXECUTE` on the RLS
+helpers (policy evaluation needs it), and neither grants any reachability,
+because reachability is decided by the exposed-schema list. See
+[Cloud & Multi-User Architecture](CLOUD_MULTIUSER_ARCHITECTURE.md) §7.
+
+### Why it had to happen before Phase 16
+
+The product's central invariant — Data Model I4, *a reservation may not push
+available stock below zero* — is a statement about the whole company, not about
+one record. Two disconnected databases can each satisfy it and jointly violate
+it, and no merge performed afterwards can un-promise stock to a customer. A
+single serialisation point is therefore a **functional requirement of the
+inventory model**, not an infrastructure preference, and a database transaction
+is the only mechanism that provides one. Deciding this after the ledger,
+receipts and reservations were built would have meant rewriting them.
+
+### What this does not touch
+
+- **The engine.** `domain`, `calculation` and `comparison` gain no import, no
+  field and no behavioural change. They were storage-agnostic before and remain
+  so, which is the entire reason the port is a port. The settlement model, the
+  precision envelope and the authoritative-total rule are unchanged.
+- **The Logo Tiger boundary.** Logo Tiger remains the system of record for
+  accounting, valuation and official stock; no integration enters scope
+  ([Product Scope](PRODUCT_SCOPE.md) §3).
+- **The inventory model.** Physical / reserved / available, magnitude plus
+  direction, append-only with reversal corrections, and invariants I1–I13 are
+  unchanged in meaning. What changes is *where* they are enforced: the ledger
+  becomes a table that `authenticated` has no insert grant on, writable only by
+  three posting functions, so I7 and I9 become permissions rather than
+  conventions.
+- **Phase 9's screens.** Products, suppliers and customers are reused. The seam
+  is the feature service, which already takes an opaque data handle from
+  `AppRuntime` — see
+  [Cloud & Multi-User Architecture](CLOUD_MULTIUSER_ARCHITECTURE.md) §24.
+
+### The three ideas from Phases 7–9 that transfer, and one that does not
+
+Transferring: **the transaction is the unit of correctness** (now a PostgreSQL
+transaction rather than an IndexedDB one); **stored data is untrusted** (now
+applied to imports and re-applied server-side); and **the boot gate** — no
+business data renders until a working data source is confirmed, which against a
+shared server matters more than it did locally.
+
+Not transferring: **IndexedDB as the canonical business database**, and with it
+the snapshot/retention/pre-migration machinery that existed to protect it. A
+full classification of what is kept, adapted and retired is in
+[Cloud & Multi-User Architecture](CLOUD_MULTIUSER_ARCHITECTURE.md) §25.
 
 ## Forward-looking principles (not yet implemented)
 
@@ -870,11 +987,14 @@ decisions don't accidentally violate them:
 - Order multiple (a Phase 3 "should have"), weight/volume allocation, and
   item-level costs remain deferred — see
   [Calculation Rules](CALCULATION_RULES.md).
-- The pilot has no backend. All computation and storage happens client-side.
-  Entity boundaries and UUID identity are chosen so a later `React → API →
-  PostgreSQL` architecture is a port rather than a redesign — but no repository
-  interface, unit-of-work abstraction or DTO layer is built for a backend that
-  may never exist (see [Data Model](DATA_MODEL.md), "Future backend migration").
+- **The backend is now planned, not hypothetical.** Phases 0–9 ran with no
+  server, and the entity boundaries and UUID identity chosen then are what make
+  the move a port rather than a redesign. What is still refused is speculative
+  indirection: no repository interface per entity, no unit-of-work abstraction
+  and no DTO layer. One `DataGateway` type with a method per operation the
+  features actually call — the same explicit-functions philosophy
+  `src/persistence/index.ts` already follows. See
+  [Cloud & Multi-User Architecture](CLOUD_MULTIUSER_ARCHITECTURE.md) §24.
 - Phase 5 produces a machine-readable comparison result only. Rendering it
   (Results UI), turning insight codes into text (i18n), and any
   supplier-quality/lead-time/warranty scoring — which this product does not

@@ -38,12 +38,42 @@ not a wishlist. Each carries the reason it is *not* in the MVP.
 - Item-level additional costs, weight/volume allocation, order-multiple
   resolution. See [Calculation Rules](CALCULATION_RULES.md).
 
+**Moved out of this list — now in the plan**
+
+- ~~Backend migration: `React → API → PostgreSQL`, multi-user, permissions.~~
+  **No longer post-pilot.** Phase 9.5 decided it and Phases 10–11 build it. See
+  [Cloud & Multi-User Architecture](CLOUD_MULTIUSER_ARCHITECTURE.md) and
+  [Implementation Plan](IMPLEMENTATION_PLAN.md). The data model was shaped so
+  this would be a port rather than a redesign
+  ([Data Model](DATA_MODEL.md) §13), and it is.
+
 **Only if the pilot succeeds**
 
 - Automatic FX rate lookup.
 - Scenario analysis ("what if freight rises 20%?").
 - Quotation history / versioning over time.
 - Selective (partial) restore, e.g. catalog-only.
-- Backend migration: `React → API → PostgreSQL`, multi-user, permissions. The
-  data model is shaped so this is a port rather than a redesign
-  ([Data Model](DATA_MODEL.md) §13), but nothing is being built for it now.
+- **Realtime updates as a refresh hint.** Deliberately not in the MVP:
+  correctness comes from database transactions, not from message delivery, and a
+  refresh-after-mutation model is correct for a handful of users. If it is added,
+  it is a *"yeni veri var — yenile"* affordance, never a data channel
+  ([Cloud & Multi-User Architecture](CLOUD_MULTIUSER_ARCHITECTURE.md) §23).
+- **A local read cache**, for list acceleration only — with a visible age marker,
+  visually distinguishable from live data, and never a write target. The MVP has
+  none on purpose: a cache reintroduces the question *"is this current?"* that the
+  server-authoritative model exists to remove.
+- **Custom SMTP**, enabling real email invitations and self-service password
+  reset. Changes the *delivery* of an invitation, not the model.
+- **Finer-grained roles** — `PURCHASING`, `WAREHOUSE`, `READ_ONLY`. One migration
+  extending an enum plus new policy predicates; no structural change. Worth doing
+  when someone is genuinely given access they should not have, and not before.
+- **Supabase Pro**, which removes inactivity pausing and adds automatic backups
+  and point-in-time recovery. A billing decision, not an architectural one.
+
+**Rejected, not deferred**
+
+- **Offline editing of shared business records, and any two-way sync or conflict
+  merge.** The product's central invariants are statements about the whole
+  company, not mergeable per-record state; a merge can only pick a loser after
+  both users acted on the answer. See
+  [Product Scope](PRODUCT_SCOPE.md), Open Decision 16.

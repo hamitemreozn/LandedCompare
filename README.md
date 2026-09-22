@@ -1,11 +1,11 @@
 # LandedCompare
 
-Local-first web app that carries one importing company's purchasing chain from
-*"which supplier quotation is actually cheapest once every landed cost is
-counted?"* through to *"what is in the warehouse, what is promised to a
-customer, and what is still on the water?"* — built around an audited,
-deterministic landed-cost engine and an append-only inventory movement ledger,
-with no backend and no cloud dependency.
+App that carries one importing company's purchasing chain from *"which supplier
+quotation is actually cheapest once every landed cost is counted?"* through to
+*"what is in the warehouse, what is promised to a customer, and what is still on
+the water?"* — built around an audited, deterministic landed-cost engine and an
+append-only inventory movement ledger, shared by the handful of people in one
+company who need to see the same numbers.
 
 **Status.** The calculation and comparison engine (Phases 0–5), the
 Turkish/English i18n foundation (Phase 6), the local persistence layer (Phase 7
@@ -19,11 +19,33 @@ Phase 9 is the point at which the application starts: a boot sequence takes the
 `PRE_MIGRATION` snapshot before any schema upgrade, opens the database, runs
 snapshot maintenance, reads external-backup freshness, and only then renders —
 and refuses to render business data at all if any of that fails. Phase 6.5
-expanded the product scope to a local operational pilot (purchasing, inbound
+expanded the product scope to an operational pilot (purchasing, inbound
 logistics, inventory, reservations, outbound goods); those modules appear in the
 navigation as explicitly unavailable and are **not built yet.**
 
-### Recovery, in one paragraph
+### Where this is going — Phase 9.5
+
+Everything above runs on **one computer**, with no server and no accounts. That
+is no longer the architecture. Phase 9.5 — an architecture checkpoint with no
+production code — decided that **PostgreSQL, hosted by Supabase, becomes the
+single source of truth for shared company data**, because the product's central
+invariant (a reservation may not push available stock below zero) is a statement
+about the whole company that two disconnected databases can each satisfy while
+jointly violating.
+
+From Phase 10 the application is multi-user: one organisation, email-and-password
+accounts created by an administrator, three roles, row-level security scoping
+every row to its company, and multi-row business operations as server-side
+transactions. It runs at **$0/month** on the Supabase free plan. Offline editing
+of shared records is explicitly rejected, not deferred — internet access is
+required to read or change business data, which is a recorded product
+limitation.
+
+The canonical design is
+**[Cloud & Multi-User Architecture](docs/CLOUD_MULTIUSER_ARCHITECTURE.md)**.
+Nothing in it is implemented yet.
+
+### Recovery, in one paragraph — as it works today (local, Phase 9)
 
 Three layers, and the difference between them is deliberate.
 **IndexedDB** holds the working data. **Internal snapshots** are undo at the
@@ -40,7 +62,10 @@ secret, so anyone who edits a backup can recompute it. And an exported file is
 download went.
 
 See [Local Persistence & Backup](docs/LOCAL_PERSISTENCE_AND_BACKUP.md) for the
-format, the retention policy and the restore flow.
+format, the retention policy and the restore flow — and
+[Cloud & Multi-User Architecture](docs/CLOUD_MULTIUSER_ARCHITECTURE.md) §16 for
+what replaces this once the data lives on a server, where the portable export
+survives and the snapshot layer does not.
 
 ### Starting up, in one paragraph
 
@@ -109,9 +134,13 @@ Each topic has exactly one canonical document.
   operating model, MVP scope, out of scope, open product decisions
 - [Data Model](docs/DATA_MODEL.md) — entities, relationships, lifecycles, the
   inventory ledger, invariants
-- [Local Persistence & Backup](docs/LOCAL_PERSISTENCE_AND_BACKUP.md) —
-  IndexedDB, schema versioning and migrations, autosave, snapshots, backup
-  format, restore
+- [Cloud & Multi-User Architecture](docs/CLOUD_MULTIUSER_ARCHITECTURE.md) —
+  tenancy, authentication, row-level security, the client/server boundary,
+  concurrency, cloud backup, the threat model
+- [Local Persistence & Backup](docs/LOCAL_PERSISTENCE_AND_BACKUP.md) — the
+  local pilot's IndexedDB, schema versioning and migrations, autosave,
+  snapshots, backup format, restore. **Superseded for shared business data** by
+  the document above; the backup format and its untrusted-input rules are kept
 - [Calculation Rules](docs/CALCULATION_RULES.md) — the financial rules of the
   landed-cost engine
 - [Architecture](docs/ARCHITECTURE.md) — module boundaries and layering
