@@ -20,14 +20,11 @@
  * different remedies, and "your account is not attached to a company" is not a
  * fault at all.
  *
- * ## Not wired into the running application, and that is the phase boundary
+ * ## Phase 11 runtime boundary
  *
- * Phase 10 builds this and proves it. Phase 11 switches the application onto it
- * together with the catalog migration, in one move. Wiring a cloud boot gate in
- * front of screens whose data still lives in IndexedDB would produce an
- * application that refuses to start when the server is down and then reads its
- * products from the local database anyway — two sources of truth, arranged so
- * that the failure of one lies about the other.
+ * The running application now passes this gate before rendering catalogue
+ * screens. A failed reachability, session, membership or write-lock check is an
+ * explicit state; it never falls back to legacy IndexedDB business data.
  */
 
 import { CloudError, isCloudError } from './errors'

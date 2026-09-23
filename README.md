@@ -7,7 +7,20 @@ the water?"* — built around an audited, deterministic landed-cost engine and a
 append-only inventory movement ledger, shared by the handful of people in one
 company who need to see the same numbers.
 
-**Status.** The calculation and comparison engine (Phases 0–5), the
+**Status.** Phase 11 is implemented in the working tree. The running client now
+boots through Supabase Auth, resolves live organisation membership, and reads
+and mutates products, suppliers, customers and configurable customer statuses
+through `DataGateway`. PostgreSQL is the sole authoritative catalogue after the
+one-time cutover; IndexedDB is opened only to validate, back up and import a
+legacy Phase 9 catalogue, then it is deleted. There is no offline business-data
+fallback or write queue.
+
+The four Phase 11 migrations are also deployed to the linked hosted project;
+local and remote history match 11/11, the hosted advisor WARN gate is clean and
+the anonymous HTTP posture verification passes 18/18. No real pilot account,
+organisation or business data has been created.
+
+The calculation and comparison engine (Phases 0–5), the
 Turkish/English i18n foundation (Phase 6), the local persistence layer (Phase 7
 — a versioned IndexedDB database with migrations, transactions and autosave, in
 `src/persistence/`), the recovery layer (Phase 8 — snapshots, portable backup
@@ -15,7 +28,7 @@ files and validated restore, in `src/backup/`) and the first product UI
 (Phase 9 — application startup, the shell, and the product, supplier and
 customer masters) are implemented.
 
-Phase 9 is the point at which the application starts: a boot sequence takes the
+Historically, Phase 9 was the point at which the local application started: a boot sequence took the
 `PRE_MIGRATION` snapshot before any schema upgrade, opens the database, runs
 snapshot maintenance, reads external-backup freshness, and only then renders —
 and refuses to render business data at all if any of that fails. Phase 6.5
@@ -23,9 +36,9 @@ expanded the product scope to an operational pilot (purchasing, inbound
 logistics, inventory, reservations, outbound goods); those modules appear in the
 navigation as explicitly unavailable and are **not built yet.**
 
-### Where this is going — Phase 9.5
+### Cloud architecture and the Phase 11 cutover
 
-Everything above runs on **one computer**, with no server and no accounts. That
+Everything in the Phase 7–9 history ran on **one computer**, with no server and no accounts. That
 is no longer the architecture. Phase 9.5 — an architecture checkpoint with no
 production code — decided that **PostgreSQL, hosted by Supabase, becomes the
 single source of truth for shared company data**, because the product's central
@@ -44,24 +57,19 @@ limitation.
 The canonical design is
 **[Cloud & Multi-User Architecture](docs/CLOUD_MULTIUSER_ARCHITECTURE.md)**.
 
-**Phase 10 built its foundation**, against a local Supabase stack: the
+**Phase 10 built the foundation and Phase 11 activates it**: the
 three-schema separation in which `api` is the only schema the Data API serves,
 the identity and tenancy tables, row-level security enabled *and forced*
-everywhere, the idempotent user-provisioning workflow, and 142 security
-assertions across pgTAP and real HTTP requests. The hosted project is not yet
-linked — that needs one operator action, described in
-[Deployment](docs/DEPLOYMENT.md).
+everywhere, the idempotent user-provisioning workflow, and 191 security
+assertions across pgTAP and real HTTP requests. Phase 11 adds four canonical
+catalogue tables, four read projections, twelve typed mutation RPCs and the
+idempotent OWNER-only legacy import. Feature services no longer accept a local
+`Database`; they accept the cloud gateway and selected organisation.
 
-**The application you run today is still the local Phase 9 one.** Products,
-suppliers and customers read and write IndexedDB, unchanged. Phase 11 moves them
-to PostgreSQL in a single step and retires the local database — deliberately in
-one step, because a half-migration is two sources of truth, which is exactly
-what the cloud architecture exists to prevent.
+### Recovery history — local Phase 9
 
-### Recovery, in one paragraph — as it works today (local, Phase 9)
-
-Three layers, and the difference between them is deliberate.
-**IndexedDB** holds the working data. **Internal snapshots** are undo at the
+The local design had three layers, and the difference between them was deliberate.
+**IndexedDB** held the working data. **Internal snapshots** were undo at the
 database level — fast, automatic, and *lost with the disk, the browser profile
 or the origin*. **External backup files** are the only disaster recovery: a
 single checksummed JSON document that has left the machine. A restore is
@@ -77,21 +85,19 @@ download went.
 See [Local Persistence & Backup](docs/LOCAL_PERSISTENCE_AND_BACKUP.md) for the
 format, the retention policy and the restore flow — and
 [Cloud & Multi-User Architecture](docs/CLOUD_MULTIUSER_ARCHITECTURE.md) §16 for
-what replaces this once the data lives on a server, where the portable export
+what replaced this once the data moved to the server, where the portable export
 survives and the snapshot layer does not.
 
-### Starting up, in one paragraph
+### Starting up now
 
-The order is not arbitrary. `src/app/bootstrap.ts` asks for durable storage
-(best effort, never fatal), then calls `ensurePreMigrationSnapshot()` **before**
-opening the database — a snapshot written inside IndexedDB's `upgradeneeded`
-transaction would roll back together with the migration it exists to survive —
-then opens, which is where a migration actually runs, then takes the daily
-snapshot and enforces retention, then reads backup freshness. A failure in the
-first three stops the application with a translated explanation and a retry;
-there is no "reset the database" button anywhere near it. A failure in the last
-two is a warning banner, because housekeeping is not a reason to refuse to
-start.
+`src/app/useApplicationBoot.ts` constructs the configured cloud gateway, checks
+the session, proves server reachability, reads the profile and live membership,
+and deterministically selects the pilot organisation. Only then does it inspect
+for a legacy local catalogue. A non-empty legacy catalogue stops at an explicit
+OWNER migration screen; a complete checksummed file is delivered before the
+single server import transaction, cloud counts are read back, and only then is
+the local database retired. Signed-out, unavailable, no-membership and
+write-locked states never masquerade as an empty catalogue.
 
 ## Stack
 

@@ -16,8 +16,8 @@
 import { useMemo, useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useAppRuntime } from '../../app/runtime'
+import type { DataGateway } from '../../cloud'
 import type { SupportedLocale } from '../../i18n'
-import type { Database } from '../../persistence'
 import { ConfirmDialog } from '../../ui/ConfirmDialog'
 import { Banner, EmptyState, StatusBadge } from '../../ui/Feedback'
 import { compareText, compareUpdatedAtDescending } from '../shared/masterData'
@@ -45,11 +45,20 @@ export interface PartyScreenProps<T extends PartyRecordShape> {
   readonly footnote?: string
   readonly sortByNameLabel: string
   readonly sortByUpdatedLabel: string
-  readonly load: (database: Database) => Promise<T[]>
+  readonly load: (gateway: DataGateway, organizationId: string) => Promise<readonly T[]>
   readonly searchFields: (record: T) => readonly (string | undefined)[]
-  readonly setActive: (database: Database, record: T, active: boolean) => Promise<unknown>
+  readonly setActive: (
+    gateway: DataGateway,
+    organizationId: string,
+    record: T,
+    active: boolean,
+  ) => Promise<unknown>
   /** An optional second column, e.g. the customer's external reference. */
   readonly secondaryColumn?: {
+    readonly header: string
+    readonly render: (record: T) => ReactNode
+  }
+  readonly tertiaryColumn?: {
     readonly header: string
     readonly render: (record: T) => ReactNode
   }
@@ -64,7 +73,7 @@ type View<T> = { mode: 'LIST' } | { mode: 'CREATE' } | { mode: 'EDIT'; record: T
 
 export function PartyScreen<T extends PartyRecordShape>(props: PartyScreenProps<T>) {
   const { t } = useTranslation()
-  const { database } = useAppRuntime()
+  const { gateway, organization, organizationLocked } = useAppRuntime()
   const describeError = useDataErrorMessage()
 
   const [view, setView] = useState<View<T>>({ mode: 'LIST' })
@@ -102,7 +111,7 @@ export function PartyScreen<T extends PartyRecordShape>(props: PartyScreenProps<
     }
     setBusy(true)
     try {
-      await props.setActive(database, pending, !pending.active)
+      await props.setActive(gateway, organization.id, pending, !pending.active)
       setActionError(undefined)
       setPending(undefined)
       await list.reload()
@@ -138,6 +147,7 @@ export function PartyScreen<T extends PartyRecordShape>(props: PartyScreenProps<
       type="button"
       className="button button--primary"
       onClick={() => setView({ mode: 'CREATE' })}
+      disabled={organizationLocked}
     >
       {props.newLabel}
     </button>
@@ -212,6 +222,9 @@ export function PartyScreen<T extends PartyRecordShape>(props: PartyScreenProps<
                       {props.secondaryColumn !== undefined ? (
                         <th scope="col">{props.secondaryColumn.header}</th>
                       ) : null}
+                      {props.tertiaryColumn !== undefined ? (
+                        <th scope="col">{props.tertiaryColumn.header}</th>
+                      ) : null}
                       <th scope="col">{t('common.notes')}</th>
                       <th scope="col">{t('common.status')}</th>
                       <th scope="col">{t('common.actions')}</th>
@@ -225,6 +238,9 @@ export function PartyScreen<T extends PartyRecordShape>(props: PartyScreenProps<
                         </td>
                         {props.secondaryColumn !== undefined ? (
                           <td className="table__mono">{props.secondaryColumn.render(record)}</td>
+                        ) : null}
+                        {props.tertiaryColumn !== undefined ? (
+                          <td>{props.tertiaryColumn.render(record)}</td>
                         ) : null}
                         <td className="text-muted">{record.note ?? '—'}</td>
                         <td>

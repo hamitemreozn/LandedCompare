@@ -54,11 +54,10 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useAppRuntime } from '../../app/runtime'
-import type { ProductRecord } from '../../persistence'
+import type { ProductRecord } from '../../cloud'
 import { formatInstant } from '../../i18n/format'
 import { getLocale, type SupportedLocale } from '../../i18n'
 import {
-  CheckboxField,
   FormSection,
   TextAreaField,
   TextField,
@@ -96,7 +95,7 @@ export function ProductForm({
   readonly onSaved: () => void
 }) {
   const { t } = useTranslation()
-  const { database } = useAppRuntime()
+  const { gateway, organization, organizationLocked } = useAppRuntime()
   const describeError = useDataErrorMessage()
 
   const [record, setRecord] = useState(existing)
@@ -200,9 +199,9 @@ export function ProductForm({
     setBusy(true)
     try {
       if (record === undefined) {
-        await createProduct(database, draft, { locale })
+        await createProduct(gateway, organization.id, draft, { locale })
       } else {
-        await updateProduct(database, record, draft, { locale })
+        await updateProduct(gateway, organization.id, record, draft, { locale })
       }
       // Only now — the transaction has committed.
       onSaved()
@@ -226,7 +225,7 @@ export function ProductForm({
     }
     setBusy(true)
     try {
-      const fresh = await loadProduct(database, record.id)
+      const fresh = await loadProduct(gateway, organization.id, record.id)
       setRecord(fresh)
       setDraft(productDraftFrom(fresh, locale))
       setFailure(undefined)
@@ -392,20 +391,7 @@ export function ProductForm({
           />
         </FormSection>
 
-        {/*
-          The Active control appears only when editing. A product being created
-          is active — nobody adds one to the catalogue in order to have it
-          hidden — and a checkbox whose answer is always the same is a question
-          that should not be asked. Deactivation stays available from the list.
-        */}
-        {record !== undefined ? (
-          <CheckboxField
-            label={t('common.active')}
-            hint={t('lifecycle.notADeletion')}
-            checked={draft.active}
-            onChange={(checked) => set('active', checked)}
-          />
-        ) : null}
+        {record !== undefined ? <p className="field__hint">{t('lifecycle.changeFromList')}</p> : null}
 
         <p className="field__hint">{t('product.noStockHere')}</p>
       </div>
@@ -415,7 +401,7 @@ export function ProductForm({
         <button type="button" className="button" onClick={onCancel} disabled={busy}>
           {t('common.cancel')}
         </button>
-        <button type="submit" className="button button--primary" disabled={busy}>
+        <button type="submit" className="button button--primary" disabled={busy || organizationLocked}>
           {busy ? t('common.saving') : t('common.save')}
         </button>
       </div>

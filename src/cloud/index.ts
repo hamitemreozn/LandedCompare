@@ -1,28 +1,13 @@
 /**
- * The cloud boundary — Phase 10's application-side deliverable.
+ * The cloud boundary — foundation from Phase 10, activated in Phase 11.
  *
  * Canonical design: docs/CLOUD_MULTIUSER_ARCHITECTURE.md §24.
  *
- * ## Status: built, proved, and deliberately not connected
+ * ## Status: connected and authoritative
  *
- * Nothing in this folder is imported by `src/App.tsx`, `src/app/runtime.ts` or
- * any feature service. That is the Phase 10/11 boundary, and it is a design
- * decision rather than unfinished work:
- *
- * - Products, suppliers and customers still read and write IndexedDB, exactly
- *   as they did in Phase 9. The application is unchanged and unbroken.
- * - Phase 11 moves the catalog to PostgreSQL and re-points the feature services
- *   at this gateway **in one move**, then drops the local database.
- *
- * A half-migration would put some entities in the cloud and some on the device,
- * which is two sources of truth — the single thing the whole cloud architecture
- * exists to prevent. Worse, it would be two sources of truth arranged so that
- * the boot gate refuses to start when the server is unreachable while the
- * product catalogue is sitting on the local disk the whole time.
- *
- * So what Phase 10 ships here is the *seam*, with its conversions, its error
- * vocabulary and its boot states written and tested against a real PostgreSQL
- * instance — which is what makes Phase 11 a re-pointing rather than a design.
+ * `App.tsx`, the runtime and every catalogue feature service use this boundary.
+ * PostgreSQL is the only catalogue source after the one-time legacy cutover;
+ * there is no offline queue, stale local read path or dual-master mode.
  */
 
 export {
@@ -55,13 +40,25 @@ export {
 
 export {
   createDataGateway,
+  type CatalogGateway,
+  type CatalogImportInput,
+  type CatalogImportResult,
+  type CloudRecord,
+  type CustomerInput,
+  type CustomerRecord,
+  type CustomerStatusInput,
+  type CustomerStatusRecord,
   type DataGateway,
   type IdentityGateway,
   type Membership,
   type MembershipRole,
   type MembershipStatus,
   type Organization,
+  type ProductInput,
+  type ProductRecord,
   type Profile,
+  type SupplierInput,
+  type SupplierRecord,
 } from './gateway'
 
 export {
@@ -71,3 +68,14 @@ export {
   type CloudBootResult,
   type CloudBootStopped,
 } from './boot'
+
+export {
+  CATALOG_CUTOVER_MARKER_KEY,
+  CATALOG_IMPORT_ATTEMPT_KEY,
+  inspectLegacyCatalog,
+  migrateLegacyCatalog,
+  retireEmptyLegacyDatabase,
+  type LegacyCatalogCounts,
+  type LegacyCatalogInspection,
+  type LegacyMigrationOptions,
+} from './legacyMigration'

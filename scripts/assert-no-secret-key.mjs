@@ -19,7 +19,9 @@
  *
  * ## What it looks for
  *
- * - `sb_secret_` — the current secret key prefix.
+ * - a current secret credential beginning with `sb_secret_` (the Supabase
+ *   client library itself contains the public format marker, so a bare marker
+ *   is not evidence that a credential was embedded).
  * - `service_role` — the legacy key's role claim. Supabase is deprecating the
  *   legacy anon/service_role JWT pair by the end of 2026, but a legacy secret
  *   in a bundle is exactly as dangerous as a new one, and a build that only
@@ -43,8 +45,16 @@ import { join, relative } from 'node:path'
 import process from 'node:process'
 
 const FORBIDDEN = [
-  { marker: 'sb_secret_', what: 'a Supabase secret key' },
-  { marker: 'service_role', what: 'a legacy service-role key or claim' },
+  {
+    marker: 'sb_secret_',
+    pattern: /sb_secret_[A-Za-z0-9_-]{8,}/,
+    what: 'a Supabase secret key',
+  },
+  {
+    marker: 'service_role',
+    pattern: /service_role/,
+    what: 'a legacy service-role key or claim',
+  },
 ]
 
 /** Text-bearing output. A font or an image cannot contain a pasted key. */
@@ -79,8 +89,8 @@ for (const path of walk(root)) {
   }
   scanned += 1
   const content = readFileSync(path, 'utf8')
-  for (const { marker, what } of FORBIDDEN) {
-    if (content.includes(marker)) {
+  for (const { marker, pattern, what } of FORBIDDEN) {
+    if (pattern.test(content)) {
       hits.push({ path: relative(process.cwd(), path), marker, what })
     }
   }

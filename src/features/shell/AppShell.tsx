@@ -18,16 +18,14 @@
 import type { ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import { hrefFor, type RouteId } from '../../app/routes'
-import { useAppRuntime } from '../../app/runtime'
-import { BOOT_WARNING_TRANSLATION_KEY } from '../../i18n/persistenceText'
 import { setLocale, SUPPORTED_LOCALES, type SupportedLocale } from '../../i18n'
-import { Banner } from '../../ui/Feedback'
 
 const PRIMARY_ROUTES: readonly { id: RouteId; labelKey: string }[] = [
   { id: 'dashboard', labelKey: 'nav.dashboard' },
   { id: 'products', labelKey: 'nav.products' },
   { id: 'suppliers', labelKey: 'nav.suppliers' },
   { id: 'customers', labelKey: 'nav.customers' },
+  { id: 'customer-statuses', labelKey: 'nav.customerStatuses' },
 ]
 
 const FUTURE_SECTIONS: readonly string[] = [
@@ -41,14 +39,15 @@ const FUTURE_SECTIONS: readonly string[] = [
 export function AppShell({
   route,
   locale,
+  onSignOut,
   children,
 }: {
   readonly route: RouteId
   readonly locale: SupportedLocale
+  readonly onSignOut: () => Promise<void>
   readonly children: ReactNode
 }) {
   const { t } = useTranslation()
-  const runtime = useAppRuntime()
 
   return (
     <div className="shell">
@@ -112,26 +111,13 @@ export function AppShell({
               </button>
             ))}
           </div>
+          <button type="button" className="button button--small" onClick={() => void onSignOut()}>
+            {t('cloudAuth.signOut')}
+          </button>
         </div>
       </aside>
 
       <main className="shell__main">
-        {(runtime.multipleTabs || runtime.warnings.length > 0) && (
-          <div className="advisory-strip">
-            <div className="banner-stack">
-              {runtime.multipleTabs ? (
-                <Banner tone="warning" label={t('common.warning')} note={t('tabAdvisory.body')}>
-                  {t('tabAdvisory.title')}
-                </Banner>
-              ) : null}
-              {runtime.warnings.map((warning) => (
-                <Banner key={warning.code} tone="warning" label={t('common.warning')}>
-                  {t(BOOT_WARNING_TRANSLATION_KEY[warning.code])}
-                </Banner>
-              ))}
-            </div>
-          </div>
-        )}
         {children}
       </main>
     </div>

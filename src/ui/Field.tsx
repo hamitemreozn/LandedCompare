@@ -80,6 +80,7 @@ interface TextFieldProps {
   readonly placeholder?: string
   readonly autoFocus?: boolean
   readonly inputMode?: 'text' | 'decimal'
+  readonly type?: 'text' | 'email' | 'password'
   /** Rendered between the control and its error/hint. */
   readonly extra?: ReactNode
 }
@@ -95,6 +96,7 @@ export function TextField({
   placeholder,
   autoFocus,
   inputMode,
+  type = 'text',
   extra,
 }: TextFieldProps) {
   return (
@@ -110,7 +112,7 @@ export function TextField({
         <input
           className="input"
           id={id}
-          type="text"
+          type={type}
           inputMode={inputMode}
           value={value}
           placeholder={placeholder}
@@ -162,6 +164,52 @@ export function TextAreaField({
           aria-describedby={describedBy}
           onChange={(event: ChangeEvent<HTMLTextAreaElement>) => onChange(event.target.value)}
         />
+      )}
+    </FieldShell>
+  )
+}
+
+export interface SelectOption {
+  readonly value: string
+  readonly label: string
+  readonly disabled?: boolean
+}
+
+export function SelectField({
+  label,
+  value,
+  onChange,
+  options,
+  hint,
+  error,
+  required,
+}: {
+  readonly label: string
+  readonly value: string
+  readonly onChange: (value: string) => void
+  readonly options: readonly SelectOption[]
+  readonly hint?: string
+  readonly error?: string
+  readonly required?: boolean
+}) {
+  return (
+    <FieldShell label={label} hint={hint} error={error} required={required}>
+      {({ id, describedBy }) => (
+        <select
+          className="select"
+          id={id}
+          value={value}
+          aria-required={required === true ? true : undefined}
+          aria-invalid={error !== undefined ? true : undefined}
+          aria-describedby={describedBy}
+          onChange={(event: ChangeEvent<HTMLSelectElement>) => onChange(event.target.value)}
+        >
+          {options.map((option) => (
+            <option key={option.value} value={option.value} disabled={option.disabled}>
+              {option.label}
+            </option>
+          ))}
+        </select>
       )}
     </FieldShell>
   )

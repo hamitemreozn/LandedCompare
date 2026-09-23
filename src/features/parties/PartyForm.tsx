@@ -7,13 +7,13 @@
  * every behaviour and differ only in which fields they render.
  */
 
-import { useState, type FormEvent, type ReactNode } from 'react'
+import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useAppRuntime } from '../../app/runtime'
-import type { CustomerRecord, SupplierRecord } from '../../persistence'
+import type { CustomerRecord, CustomerStatusRecord, SupplierRecord } from '../../cloud'
 import { formatInstant } from '../../i18n/format'
 import { getLocale } from '../../i18n'
-import { CheckboxField, TextAreaField, TextField } from '../../ui/Field'
+import { SelectField, TextAreaField, TextField } from '../../ui/Field'
 import { Banner } from '../../ui/Feedback'
 import { isFormValidationError } from '../shared/formError'
 import { errorCodeOf, isStaleWrite, useDataErrorMessage } from '../shared/useDataErrorMessage'
@@ -31,6 +31,7 @@ import {
   type CustomerDraft,
   type SupplierDraft,
 } from './partyService'
+import { listCustomerStatuses } from './customerStatusService'
 
 interface PartyFormShellProps<TRecord, TDraft> {
   readonly existing?: TRecord
@@ -65,6 +66,7 @@ function PartyFormShell<TRecord, TDraft>({
   updatedAt,
 }: PartyFormShellProps<TRecord, TDraft>) {
   const { t } = useTranslation()
+  const { organizationLocked } = useAppRuntime()
   const describeError = useDataErrorMessage()
 
   const [record, setRecord] = useState(existing)
@@ -173,7 +175,7 @@ function PartyFormShell<TRecord, TDraft>({
         <button type="button" className="button" onClick={onCancel} disabled={busy}>
           {t('common.cancel')}
         </button>
-        <button type="submit" className="button button--primary" disabled={busy}>
+        <button type="submit" className="button button--primary" disabled={busy || organizationLocked}>
           {busy ? t('common.saving') : t('common.save')}
         </button>
       </div>
@@ -193,7 +195,7 @@ export function SupplierForm({
   readonly onSaved: () => void
 }) {
   const { t } = useTranslation()
-  const { database } = useAppRuntime()
+  const { gateway, organization } = useAppRuntime()
   const [draft, setDraft] = useState<SupplierDraft>(
     existing === undefined ? EMPTY_SUPPLIER_DRAFT : supplierDraftFrom(existing),
   )
@@ -212,11 +214,11 @@ export function SupplierForm({
       }
       save={(record, value) =>
         record === undefined
-          ? createSupplierRecord(database, value)
-          : updateSupplierRecord(database, record, value)
+          ? createSupplierRecord(gateway, organization.id, value)
+          : updateSupplierRecord(gateway, organization.id, record, value)
       }
       reload={async (record) => {
-        const fresh = await loadSupplier(database, record.id)
+        const fresh = await loadSupplier(gateway, organization.id, record.id)
         return { record: fresh, draft: supplierDraftFrom(fresh) }
       }}
       onCancel={onCancel}
@@ -234,6 +236,12 @@ export function SupplierForm({
               clearError('displayName')
             }}
           />
+          <TextField
+            label={t('supplier.externalRef')}
+            hint={t('supplier.externalRefHint')}
+            value={draft.externalRef}
+            onChange={(value) => setDraft({ ...draft, externalRef: value })}
+          />
           <TextAreaField
             label={t('common.notes')}
             value={draft.note}
@@ -241,14 +249,7 @@ export function SupplierForm({
             wide
             onChange={(value) => setDraft({ ...draft, note: value })}
           />
-          {isEditing ? (
-            <CheckboxField
-              label={t('common.active')}
-              hint={t('lifecycle.notADeletion')}
-              checked={draft.active}
-              onChange={(checked) => setDraft({ ...draft, active: checked })}
-            />
-          ) : null}
+          {isEditing ? <p className="field__hint">{t('lifecycle.changeFromList')}</p> : null}
         </>
       )}
     />
@@ -267,10 +268,29 @@ export function CustomerForm({
   readonly onSaved: () => void
 }) {
   const { t } = useTranslation()
-  const { database } = useAppRuntime()
+  const { gateway, organization } = useAppRuntime()
   const [draft, setDraft] = useState<CustomerDraft>(
     existing === undefined ? EMPTY_CUSTOMER_DRAFT : customerDraftFrom(existing),
   )
+  const [statuses, setStatuses] = useState<readonly CustomerStatusRecord[]>([])
+  const [statusFailure, setStatusFailure] = useState<unknown>(undefined)
+
+  useEffect(() => {
+    let cancelled = false
+    void listCustomerStatuses(gateway, organization.id)
+      .then((rows) => {
+        if (!cancelled) {
+          setStatuses(rows)
+          setStatusFailure(undefined)
+        }
+      })
+      .catch((cause: unknown) => {
+        if (!cancelled) setStatusFailure(cause)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [gateway, organization.id])
 
   return (
     <PartyFormShell<CustomerRecord, CustomerDraft>
@@ -286,11 +306,11 @@ export function CustomerForm({
       }
       save={(record, value) =>
         record === undefined
-          ? createCustomerRecord(database, value)
-          : updateCustomerRecord(database, record, value)
+          ? createCustomerRecord(gateway, organization.id, value)
+          : updateCustomerRecord(gateway, organization.id, record, value)
       }
       reload={async (record) => {
-        const fresh = await loadCustomer(database, record.id)
+        const fresh = await loadCustomer(gateway, organization.id, record.id)
         return { record: fresh, draft: customerDraftFrom(fresh) }
       }}
       onCancel={onCancel}
@@ -314,6 +334,21 @@ export function CustomerForm({
             value={draft.externalRef}
             onChange={(value) => setDraft({ ...draft, externalRef: value })}
           />
+          <SelectField
+            label={t('customer.status')}
+            hint={statusFailure === undefined ? t('customer.statusHint') : t('customer.statusUnavailable')}
+            value={draft.customerStatusId}
+            onChange={(value) => setDraft({ ...draft, customerStatusId: value })}
+            options={[
+              { value: '', label: t('customer.noStatus') },
+              ...statuses
+                .filter((status) => status.active || status.id === draft.customerStatusId)
+                .map((status) => ({
+                  value: status.id,
+                  label: status.active ? status.code : `${status.code} (${t('common.inactive')})`,
+                })),
+            ]}
+          />
           <TextAreaField
             label={t('common.notes')}
             value={draft.note}
@@ -321,14 +356,7 @@ export function CustomerForm({
             wide
             onChange={(value) => setDraft({ ...draft, note: value })}
           />
-          {isEditing ? (
-            <CheckboxField
-              label={t('common.active')}
-              hint={t('lifecycle.notADeletion')}
-              checked={draft.active}
-              onChange={(checked) => setDraft({ ...draft, active: checked })}
-            />
-          ) : null}
+          {isEditing ? <p className="field__hint">{t('lifecycle.changeFromList')}</p> : null}
           <p className="field__hint form-grid__wide">{t('customer.notACrm')}</p>
         </>
       )}

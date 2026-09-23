@@ -2,19 +2,17 @@
 
 ## Current status
 
-Phase 10 built the database, its security posture, its two Edge Functions and
-the application-side seam. They run against the **local** Supabase stack and are
-proved there — 105 pgTAP assertions and 37 HTTP behavioural assertions, with
-every migration replayed from an empty database on each run.
+Phase 10 is deployed to the linked hosted Supabase project: all seven foundation
+migrations, the `api`-only exposure posture, disabled public signup, both Edge
+Functions, the advisor WARN gate and the current eighteen anonymous hosted checks are
+verified. The project contains no real pilot organisation, user or business
+data.
 
-**The hosted project is not yet linked**, and connecting it is an operator
-action rather than something a build can do: it needs a CLI access token
-obtained through a browser. The sequence is below, and it has one rule attached
-that is not optional.
-
-The client is still the Phase 9 application reading IndexedDB, so there is no
-desktop build to distribute yet either. Phase 11 moves the catalog to PostgreSQL
-and switches the application onto the cloud seam in one move.
+Phase 11 connects the running client to that foundation. Products, suppliers,
+customers and configurable customer statuses are canonical in PostgreSQL;
+IndexedDB participates only in the explicit one-time legacy cutover. All three
+Phase 11 migrations are deployed; local and remote history match 11/11, the
+hosted advisor WARN gate is clean and anonymous HTTP verification passes 18/18.
 
 ---
 
@@ -47,7 +45,48 @@ hosted push depends on.
 
 ---
 
-## Connecting the hosted project — the operator sequence
+## Phase 11 catalogue deployment
+
+Only run this sequence after `db reset`, `db:test`, `test:security`, the full
+application suite, lint, typecheck and build all pass. Dumps must be written to
+a durable user-owned directory outside the repository, never a temporary path.
+Phase 11 changes no governed Supabase
+configuration, so there is deliberately no `config push`.
+
+```bash
+npx supabase migration list --linked
+
+# Keep the established three-file rollback dump set outside the repository;
+# use the exact dump commands and semantics documented in "Backup semantics".
+
+npx supabase db push --linked --dry-run
+# Review that only these are pending for a fresh Phase 10 project:
+#   20260923120000_catalog_cloud_migration.sql
+#   20260923121000_customer_status_defaults.sql
+#   20260923122000_catalog_import_invoker.sql
+#   20260923130000_remove_customer_status_defaults.sql
+
+npx supabase db push --linked
+npx supabase migration list --linked
+npm run db:advisors
+npm run verify:hosted
+```
+
+These checks are intentionally anonymous and structural. They do not create the
+first real user or organisation. Authenticated hosted catalogue verification
+starts only after the operator uses the existing bootstrap path with a real
+email address supplied by the user.
+
+The actual Phase 11 pre-deployment `roles.sql`, `schema.sql` and `data.sql`
+files are retained at
+`~/Documents/LandedCompare_Backups/phase11-predeploy-2026-09-23/`. They were
+copied byte-for-byte from the still-existing original temporary files after
+deployment and their SHA-256 checksums were verified equal; they were not
+recreated and relabelled after the fact.
+
+---
+
+## Initial hosted connection — historical operator sequence
 
 Run these in **your own terminal**. Two of them involve credentials, and neither
 should be typed anywhere except into the prompt that asks for it.
@@ -116,7 +155,7 @@ npx supabase db query --linked "SHOW server_version;"
 #    WRITE THESE OUTSIDE THE REPOSITORY — they are company data, not source.
 #    Stay in the working tree so the CLI finds supabase/, and give -f an
 #    absolute path that points somewhere else.
-BACKUP_DIR=~/landedcompare-backups/$(date +%Y-%m-%d)
+BACKUP_DIR=~/Documents/LandedCompare_Backups/predeploy-$(date +%Y-%m-%d)
 mkdir -p "$BACKUP_DIR"
 
 npx supabase db dump --linked -f "$BACKUP_DIR/roles.sql"  --role-only
@@ -166,12 +205,13 @@ exposed-schema list from `pgrst.db_schemas` on the `authenticator` role — a
 value a dashboard edit changes out from under the repository — so the list is
 **asked of the server** rather than read back from the file that was pushed.
 
-`scripts/verify-hosted.mjs` makes twelve unauthenticated requests and creates
+`scripts/verify-hosted.mjs` makes eighteen unauthenticated requests and creates
 nothing: it confirms that `app_data`, `app_private` and `public` all answer
 `PGRST106` with the allow-list quoted back, that `anon` is refused at the schema
-before any object is consulted, that the private helper and the provisioning
-RPCs have no reachable route, that a crafted `PATCH` against a canonical table
-is refused, that sign-up is closed, and that the password grant still works.
+before any object is consulted, that all four Phase 11 catalogue views exist but
+are unreadable to anon, that the private helper and provisioning RPCs have no
+reachable route, that crafted canonical catalogue `POST` and `PATCH` requests
+are refused, that sign-up is closed, and that the password grant still works.
 
 Two details of that script are deliberate. It **refuses to run if handed a
 secret key**, because `service_role` bypasses the posture the checks exist to
@@ -444,7 +484,9 @@ source code, and it does not belong in version control under any circumstances.
 one here by accident, but a gitignored file is one `git add -f` or one tooling
 change away from being committed permanently, and a secret or a customer list
 committed once is committed in every clone forever. Use a directory outside the
-working tree, such as `~/landedcompare-backups/<date>/`, and move the artefacts
+working tree, such as
+`~/Documents/LandedCompare_Backups/<phase>-predeploy-<date>/`. Do not use
+`/tmp`, `/private/tmp` or another automatically cleaned temporary location; move the artefacts
 off the machine (§16-B).
 
 Three commands, not four: the data dump already carries `auth.users`, so the

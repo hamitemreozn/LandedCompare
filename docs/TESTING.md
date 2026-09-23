@@ -658,3 +658,39 @@ the hosted step is an enforceable gate rather than a report somebody reads.
 check of this kind that has never been seen to fail is a check nobody knows
 works. It prints the marker and never the value, because moving a key from a
 build artefact into a CI log is not an improvement.
+
+---
+
+## Phase 11 — catalogue cloud cutover
+
+The application suite now runs the cloud-backed UI against an in-memory gateway
+at the React boundary while keeping the real cross-device and security claims in
+the HTTP suite. Current result: **77 files, 1,139 tests, all passing**. Phase 11
+adds login/logout and boot-state coverage; product create/update/stale/deactivate;
+opaque supplier and customer codes; configurable and inactive customer-status
+behaviour; Turkish comma and English dot decimal input; and four one-time
+migration cases in `src/cloud/legacyMigration.test.ts` (success, confirmed
+retirement, lost-response retry, and corrupt-row refusal).
+
+`npm run db:reset` replays **all eleven migrations** from empty before synthetic
+seed data. `npm run db:test` now runs **139 pgTAP assertions in seven files**;
+`070_catalog_cloud.test.sql` covers the four tables/views, RLS and grants,
+tenant-safe status FK, exact numeric storage/text projection, versioned
+mutations, SKU uniqueness, an empty initial status list and explicit user-created
+status examples. `npm run db:lint` reports no
+schema errors.
+
+`npm run test:security` now runs **52 tests in five files** against real GoTrue
+and PostgREST. `catalog.security.test.ts` proves all four catalogue views are
+tenant-isolated; canonical tables and writable views have no bypass; typed
+mutations require current versions; independent sessions share committed state;
+and the OWNER import is idempotent. Its release-blocking fixture creates and
+reads `12345678901234567890.0047`, asserts exact raw and parsed string equality
+plus `typeof === "string"`, and proves the numeric canonical route is absent.
+
+The hosted gate is also executable: local/remote migration history matches
+11/11, the Supabase security advisor reports no WARN findings, and the eighteen
+anonymous HTTP posture checks pass. Functional browser smoke covered Turkish
+and English boot/login/logout, products create/edit/deactivate, opaque external
+codes, user-created customer statuses, an inactive status retained on its customer,
+and a real stopped-server `SERVER_UNAVAILABLE` state.

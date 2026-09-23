@@ -23,6 +23,22 @@ import {
 } from '../../i18n/persistenceText'
 import { isPersistenceError } from '../../persistence'
 import { isFormValidationError } from './formError'
+import { isCloudError, type CloudErrorCode } from '../../cloud'
+
+const CLOUD_ERROR_TRANSLATION_KEY: Record<CloudErrorCode, string> = {
+  OFFLINE: 'cloudError.offline',
+  SERVER_UNAVAILABLE: 'cloudError.serverUnavailable',
+  SESSION_EXPIRED: 'cloudError.sessionExpired',
+  FORBIDDEN: 'cloudError.forbidden',
+  NO_MEMBERSHIP: 'cloudError.noMembership',
+  ORGANIZATION_LOCKED: 'cloudError.organizationLocked',
+  NOT_CONFIGURED: 'cloudError.notConfigured',
+  STALE_WRITE: 'dataError.staleWrite',
+  DUPLICATE_KEY: 'dataError.duplicateKey',
+  RECORD_NOT_FOUND: 'dataError.recordNotFound',
+  RECORD_INVALID: 'dataError.recordInvalid',
+  UNEXPECTED: 'cloudError.unexpected',
+}
 
 export function useDataErrorMessage(): (error: unknown) => string {
   const { t } = useTranslation()
@@ -39,6 +55,9 @@ export function useDataErrorMessage(): (error: unknown) => string {
         const key = BACKUP_ERROR_TRANSLATION_KEY[error.code]
         return key === undefined ? t('dataError.unexpected') : t(key)
       }
+      if (isCloudError(error)) {
+        return t(CLOUD_ERROR_TRANSLATION_KEY[error.code])
+      }
       return t('dataError.unexpected')
     },
     [t],
@@ -47,7 +66,7 @@ export function useDataErrorMessage(): (error: unknown) => string {
 
 /** The machine-readable code, shown alongside the message for support. */
 export function errorCodeOf(error: unknown): string | undefined {
-  if (isPersistenceError(error) || isBackupError(error)) {
+  if (isPersistenceError(error) || isBackupError(error) || isCloudError(error)) {
     return error.code
   }
   return undefined
@@ -55,10 +74,10 @@ export function errorCodeOf(error: unknown): string | undefined {
 
 /** True when the failure is the concurrent-edit refusal, which has its own remedy. */
 export function isStaleWrite(error: unknown): boolean {
-  return isPersistenceError(error) && error.code === 'STALE_WRITE'
+  return (isPersistenceError(error) || isCloudError(error)) && error.code === 'STALE_WRITE'
 }
 
 /** True when a unique-key constraint refused the write (a duplicate SKU). */
 export function isDuplicateKey(error: unknown): boolean {
-  return isPersistenceError(error) && error.code === 'DUPLICATE_KEY'
+  return (isPersistenceError(error) || isCloudError(error)) && error.code === 'DUPLICATE_KEY'
 }

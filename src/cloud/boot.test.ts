@@ -43,6 +43,7 @@ function fakeGateway(state: FakeState = {}): DataGateway {
     state.failWith ? Promise.reject(state.failWith) : Promise.reject(new Error('unexpected call'))
 
   return {
+    catalog: {} as DataGateway['catalog'],
     currentUserId: async () => {
       if (state.failWith) {
         throw state.failWith

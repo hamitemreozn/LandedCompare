@@ -2883,7 +2883,7 @@ design reads as a design and this reads as a report against it.
 | §16 | The write gate's **enforcement** — columns, `assert_write_allowed`, and the trigger — attached to `counters`, the one organisation-scoped table Phase 10 has that a restore would replace. Phase 11 attaches it with every business table; Phase 21 owns the restore that acquires and releases it |
 | §19 | `npm run build` greps the production bundle for `sb_secret_` and `service_role` and fails on a hit. Verified by planting one |
 | §19 | The Edge Functions read the server credential from the platform-injected `SUPABASE_SECRET_KEYS`. There is **no project secret to set** — see the correction below |
-| §7, §20 | `npm run verify:hosted` — twelve unauthenticated HTTP checks of the hosted exposed-schema list and auth configuration, creating nothing. Proved by pointing it at a deliberately broken configuration |
+| §7, §20 | `npm run verify:hosted` — eighteen unauthenticated HTTP checks of the hosted exposed-schema list, Phase 11 catalogue posture and auth configuration, creating nothing. Proved by pointing it at a deliberately broken configuration |
 | §20 | `supabase/config.toml` declares only what this product governs on the hosted project. Every declared property is pushed, so the file's silence is a control — see the fifth correction below |
 | §24 | `src/cloud/` — config, client, gateway, error vocabulary and boot states. See "the seam is built and not connected" below |
 | §7 | 105 pgTAP assertions and 37 HTTP behavioural assertions. See [Testing](TESTING.md) |
@@ -3007,16 +3007,70 @@ one value deliberately *not* pushed and left as its own reviewed decision.
 
 ### Hosted project
 
-The hosted Free project is **not yet linked**. `supabase link` requires a CLI
-access token, and the automatic browser flow cannot run in a non-interactive
-environment — so it is a step the operator performs at their own terminal, once.
-[Deployment](DEPLOYMENT.md) has the exact sequence, including the rule that no
-migration reaches the hosted project before the dump set that is its rollback.
+The hosted Free project is linked and Phase 10 is deployed: seven migrations,
+both Edge Functions, `api` as the only exposed business schema, disabled public
+signup, a clean advisor WARN gate and eighteen anonymous HTTP checks. It contains
+no real pilot organisation, user or business data. Phase 11 uses the same
+reviewed migration and rollback sequence; it does not push unrelated config.
 
 Hosted verification is a script rather than a checklist. `npm run verify:hosted`
-makes twelve unauthenticated requests and creates nothing, because the
+makes eighteen unauthenticated requests and creates nothing, because the
 exposed-schema list and the sign-up switch are values a dashboard edit can change
 out from under the repository — and a checklist item saying "confirm Exposed
 schemas is api" is read by somebody who already believes the answer. It was
 proved by pointing it at a deliberately broken local configuration and watching
 it go red.
+
+---
+
+## 29. Phase 11 implementation status — catalogue cutover
+
+Phase 11 activates the seam reported in §28 without weakening any Phase 10
+control. `app_data.products`, `suppliers`, `customers` and `customer_statuses`
+are the canonical catalogue. Every table is registered as `TENANT_EDITABLE`,
+has RLS enabled and forced, uses live membership policies, has no client DELETE,
+and carries server-owned audit columns plus integer `version`. The customer to
+status reference is a composite `(id, organization_id)` foreign key. Product
+SKU uniqueness is organisation-scoped and case-folded. Product conversion
+quantities are unbounded `numeric` in `app_data` and text in `api`.
+
+The read surface is four `security_invoker` views. The write surface is twelve
+typed invoker RPCs (`create_*`, `update_*`, `set_*_active`) plus one narrowly
+scoped OWNER-only, idempotent catalogue-import invoker. Its append-only audit
+event has a strict OWNER insert policy and no direct API route; this keeps the
+hosted security-advisor WARN gate clean without bypassing RLS. Updates and lifecycle
+changes require `expected_version`; no overload omits it. Customer and supplier
+external system codes remain opaque optional text. Customer statuses are tenant
+configuration, never an enum; a new organisation starts with none. Labels such
+as the pilot company's `C`, `A`, `A+`, `A++` are created through the same typed
+customer-status mechanism as any other business-owned classification.
+
+The application now boots session → reachability → live membership → selected
+organisation → write-lock state and then renders the cloud-backed catalogue.
+Signed-out, unavailable, expired-session, no-membership and locked states are
+explicit. Feature services depend on `DataGateway`, not a local `Database`, and
+the gateway is the only module that names PostgREST views and RPCs.
+
+`src/cloud/legacyMigration.ts` is the sole supported IndexedDB business-data
+path. It detects a legacy database without creating one, reuses the Phase 8
+validator, takes the required snapshot and delivers a complete checksummed
+backup, reuses a persisted request id for retry, invokes one server transaction,
+verifies cloud counts, and only then deletes the local database and writes the
+completion marker. A corrupt row or an unconfirmed import leaves local data in
+place. There is no read fallback, write queue, cache authority or dual-master
+mode after cutover.
+
+The release-blocking precision proof uses
+`12345678901234567890.0047`: the real HTTP suite creates it through the typed
+RPC, reads it from the `api.products` view, asserts exact raw and parsed string
+equality and `typeof === "string"`, and proves that neither a canonical-table
+route nor a writable-view bypass exists. Separate signed-in sessions for the
+same organisation prove shared authoritative state and stale-version refusal.
+
+Phase 12 administration and portable cloud export, every operational module,
+realtime hints, restore and granular roles remain deferred exactly as planned.
+
+All four Phase 11 migrations are deployed to the linked hosted project. Local
+and remote history match 11/11; no configuration push was needed, the hosted
+security advisor reports no WARN findings, and the eighteen anonymous HTTP posture
+checks pass. No real user, organisation or business row was created.

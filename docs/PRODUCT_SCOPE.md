@@ -647,10 +647,12 @@ is a billing decision and changes nothing in the architecture.
 
 ### 19 — How are customers classified?
 
-**Default: an organisation-configurable list, seeded with the company's own
-grades (`C`, `A`, `A+`, `A++`). Never a fixed enum.**
+**Default: an organisation-configurable list that starts empty. Never a fixed
+enum and never populated with product-owned defaults.**
 
-*Why:* the grades are the company's, not the product's. A `create type … as enum`
+*Why:* the grades are the company's, not the product's. The pilot company may
+create `C`, `A`, `A+`, `A++` through the ordinary status UI, but those values are
+business data rather than bootstrap behaviour. A `create type … as enum`
 or a TypeScript union would make adding `B` a schema migration and a release, and
 would be wrong for the next company by construction. A customer carries zero or
 one current grade — this answers "what grade is this customer now", and grade

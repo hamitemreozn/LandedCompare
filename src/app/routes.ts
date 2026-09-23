@@ -22,12 +22,11 @@
  * somewhere else.
  *
  * The hash never reaches a server, so `#/products` reloads into the products
- * screen from any host, including `file://`. Nothing about a reload touches
- * the database: the route is read from the URL, the data is read from
- * IndexedDB, and neither knows about the other.
+ * screen from any host, including `file://`. Routing remains independent of
+ * the cloud boot and catalogue gateway.
  */
 
-export const ROUTE_IDS = ['dashboard', 'products', 'suppliers', 'customers'] as const
+export const ROUTE_IDS = ['dashboard', 'products', 'suppliers', 'customers', 'customer-statuses'] as const
 
 export type RouteId = (typeof ROUTE_IDS)[number]
 

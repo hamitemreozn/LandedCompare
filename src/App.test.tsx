@@ -13,9 +13,9 @@ import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import App from './App'
 import i18n, { setLocale } from './i18n'
-import { deleteDatabase, SCHEMA_VERSION } from './persistence'
-import { createTestDatabaseName } from './persistence/testSupport'
 import { goTo, renderApp, type AppHarness } from './test/appHarness'
+import { createMemoryCloudGateway } from './test/memoryCloud'
+import { CloudError } from './cloud'
 
 let harness: AppHarness | undefined
 
@@ -25,51 +25,33 @@ afterEach(async () => {
   await setLocale('tr')
 })
 
-/** A database written by a build from the future. This one must refuse it. */
-async function createFutureDatabase(name: string): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const request = indexedDB.open(name, SCHEMA_VERSION + 5)
-    request.onupgradeneeded = () => request.result.createObjectStore('meta', { keyPath: 'key' })
-    request.onsuccess = () => {
-      request.result.close()
-      resolve()
-    }
-    request.onerror = () => reject(request.error)
-  })
-}
-
 describe('the boot gate', () => {
-  it('shows an initialising state and no business data while the database opens', async () => {
+  it('shows an initialising state and no business data while the cloud session resolves', async () => {
     await setLocale('tr')
-    const databaseName = createTestDatabaseName('boot-gate')
-    const view = render(<App options={{ databaseName, requestStorage: false }} />)
+    const view = render(<App options={{ gateway: createMemoryCloudGateway(), inspectLegacy: false }} />)
 
     // Synchronously after the first render: the sequence has not finished.
-    expect(screen.getByText('Yerel veritabanı hazırlanıyor')).toBeInTheDocument()
+    expect(screen.getByText('Şirket verilerine bağlanılıyor')).toBeInTheDocument()
     expect(screen.queryByRole('navigation')).not.toBeInTheDocument()
     expect(screen.queryByRole('table')).not.toBeInTheDocument()
 
     await waitFor(() => expect(screen.getByRole('navigation')).toBeInTheDocument())
 
     view.unmount()
-    await deleteDatabase(databaseName)
   })
 
-  it('blocks on a database it cannot safely open, and shows no application at all', async () => {
+  it('blocks when the cloud is unavailable, and shows no application at all', async () => {
     await setLocale('tr')
-    const databaseName = createTestDatabaseName('boot-gate-failure')
-    await createFutureDatabase(databaseName)
-
-    const view = render(<App options={{ databaseName, requestStorage: false }} />)
+    const gateway = createMemoryCloudGateway({ failure: new CloudError('SERVER_UNAVAILABLE', 'offline') })
+    const view = render(<App options={{ gateway, inspectLegacy: false }} />)
 
     expect(await screen.findByText('Uygulama açılamadı')).toBeInTheDocument()
-    // The specific reason, translated — not a DOMException.
     expect(
       screen.getByText(
-        'Yerel veriler, uygulamanın bu sürümünden daha yeni bir sürümle yazılmış. Devam etmek verileri bozabilir. Lütfen uygulamayı güncelleyin.',
+        'Sunucuya ulaşılamıyor. Verileriniz sunucuda güvende; bağlantı kurulana kadar kayıt yapılamaz. Lütfen yöneticinize bildirin.',
       ),
     ).toBeInTheDocument()
-    expect(screen.getByText(/SCHEMA_VERSION_TOO_NEW/)).toBeInTheDocument()
+    expect(screen.getByText(/SERVER_UNAVAILABLE/)).toBeInTheDocument()
 
     // No shell, no navigation, no empty-looking catalogue: an empty list here
     // would tell the user their data is gone.
@@ -78,22 +60,53 @@ describe('the boot gate', () => {
     expect(screen.queryByText('Ürünler')).not.toBeInTheDocument()
 
     view.unmount()
-    await deleteDatabase(databaseName)
   })
 
-  it('offers only a retry — never a "reset the database" button', async () => {
+  it('offers only a retry when the cloud is unavailable', async () => {
     await setLocale('tr')
-    const databaseName = createTestDatabaseName('boot-gate-no-reset')
-    await createFutureDatabase(databaseName)
-
-    const view = render(<App options={{ databaseName, requestStorage: false }} />)
+    const gateway = createMemoryCloudGateway({ failure: new CloudError('SERVER_UNAVAILABLE', 'offline') })
+    const view = render(<App options={{ gateway, inspectLegacy: false }} />)
     await screen.findByText('Uygulama açılamadı')
 
     const buttons = screen.getAllByRole('button').map((button) => button.textContent)
     expect(buttons).toEqual(['Yeniden Dene'])
 
     view.unmount()
-    await deleteDatabase(databaseName)
+  })
+
+  it('signs in from a sessionless boot and logout returns to the sign-in gate', async () => {
+    await setLocale('tr')
+    const user = userEvent.setup()
+    const gateway = createMemoryCloudGateway({ signedIn: false })
+    const view = render(<App options={{ gateway, inspectLegacy: false }} />)
+    expect(await screen.findByRole('heading', { name: 'Giriş yap' })).toBeInTheDocument()
+    await user.type(screen.getByLabelText('E-posta'), 'owner@example.test')
+    await user.type(screen.getByLabelText('Parola'), 'LocalOnly!1')
+    await user.click(screen.getByRole('button', { name: 'Giriş yap' }))
+    expect(await screen.findByRole('navigation', { name: 'Ana menü' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Çıkış yap' }))
+    expect(await screen.findByRole('heading', { name: 'Giriş yap' })).toBeInTheDocument()
+    view.unmount()
+  })
+
+  it('shows no-membership as a boot stop rather than an empty catalogue', async () => {
+    await setLocale('tr')
+    const gateway = createMemoryCloudGateway()
+    gateway.identity.listOwnMemberships = async () => []
+    const view = render(<App options={{ gateway, inspectLegacy: false }} />)
+    expect(await screen.findByText('Hesabınız bir şirkete bağlı değil. Yöneticinize başvurun.')).toBeInTheDocument()
+    expect(screen.queryByRole('navigation')).not.toBeInTheDocument()
+    view.unmount()
+  })
+
+  it('keeps a locked organization readable and disables catalogue writes', async () => {
+    await setLocale('tr')
+    const gateway = createMemoryCloudGateway()
+    const organizations = await gateway.identity.listOrganizations()
+    gateway.identity.listOrganizations = async () => [{ ...organizations[0], writeLocked: true, writeLockReason: 'RESTORE' }]
+    const view = render(<App options={{ gateway, inspectLegacy: false }} />)
+    expect(await screen.findByText('Şirket verisi bakım nedeniyle geçici olarak salt okunur. Görüntüleme açık, kayıt kapalı.')).toBeInTheDocument()
+    view.unmount()
   })
 })
 
@@ -146,14 +159,10 @@ describe('the application shell', () => {
 })
 
 describe('the dashboard', () => {
-  it('warns truthfully that no external backup has ever been exported', async () => {
+  it('identifies the cloud database as the authoritative source', async () => {
     harness = await renderApp()
-
-    expect(
-      screen.getByText('Henüz hiç dış yedek dosyası dışa aktarılmadı.'),
-    ).toBeInTheDocument()
-    // And it does not let an internal snapshot pass for one.
-    expect(screen.getByText(/anlık kopyalar verilerle aynı diskte/)).toBeInTheDocument()
+    expect(screen.getByText('PostgreSQL bulut veritabanı')).toBeInTheDocument()
+    expect(screen.getByText('Test Company')).toBeInTheDocument()
   })
 
   it('counts persisted records, and updates after a record is added', async () => {
@@ -182,12 +191,10 @@ describe('the dashboard', () => {
     expect(screen.getByText('Gösterge ürünü')).toBeInTheDocument()
   })
 
-  it('reports where the data physically lives', async () => {
+  it('reports the active company and role', async () => {
     harness = await renderApp()
-
-    expect(screen.getByText('Şema sürümü')).toBeInTheDocument()
-    expect(screen.getByText(String(SCHEMA_VERSION))).toBeInTheDocument()
-    expect(screen.getByText(harness.databaseName)).toBeInTheDocument()
+    expect(screen.getByText('Test Company')).toBeInTheDocument()
+    expect(screen.getByText('OWNER')).toBeInTheDocument()
   })
 })
 

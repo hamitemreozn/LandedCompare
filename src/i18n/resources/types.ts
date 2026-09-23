@@ -120,6 +120,18 @@ export interface TranslationResource {
     readonly newPasswordLabel: string
     readonly changePassword: string
   }
+  readonly catalogMigration: {
+    readonly title: string
+    readonly body: string
+    readonly counts: string
+    readonly backupNotice: string
+    readonly ownerRequired: string
+    readonly unsupportedRecords: string
+    readonly start: string
+    readonly migrating: string
+    readonly failed: string
+    readonly failedHint: string
+  }
   readonly backupStatus: {
     readonly label: string
     readonly never: string
@@ -139,6 +151,7 @@ export interface TranslationResource {
     readonly products: string
     readonly suppliers: string
     readonly customers: string
+    readonly customerStatuses: string
     readonly masterData: string
     readonly operations: string
     readonly quoteAnalysis: string
@@ -174,6 +187,11 @@ export interface TranslationResource {
     readonly recordName: string
     readonly nothingYet: string
     readonly nothingYetHint: string
+    readonly cloudData: string
+    readonly organization: string
+    readonly role: string
+    readonly source: string
+    readonly cloudAuthoritative: string
   }
   readonly list: {
     readonly searchPlaceholder: string
@@ -195,6 +213,7 @@ export interface TranslationResource {
     readonly activateTitle: string
     readonly activateBody: string
     readonly notADeletion: string
+    readonly changeFromList: string
   }
   readonly form: {
     readonly requiredNote: string
@@ -202,6 +221,7 @@ export interface TranslationResource {
     readonly mustBeNumber: string
     readonly ambiguousSeparator: string
     readonly mustBePositive: string
+    readonly mustBeInteger: string
     readonly saveFailed: string
     readonly reloadRecord: string
     readonly newRecord: string
@@ -246,6 +266,8 @@ export interface TranslationResource {
     readonly title: string
     readonly subtitle: string
     readonly newSupplier: string
+    readonly externalRef: string
+    readonly externalRefHint: string
     readonly emptyTitle: string
     readonly emptyBody: string
     readonly sortByName: string
@@ -259,11 +281,29 @@ export interface TranslationResource {
     readonly displayName: string
     readonly externalRef: string
     readonly externalRefHint: string
+    readonly status: string
+    readonly statusHint: string
+    readonly statusUnavailable: string
+    readonly noStatus: string
     readonly emptyTitle: string
     readonly emptyBody: string
     readonly notACrm: string
     readonly sortByName: string
     readonly sortByUpdated: string
+  }
+  readonly customerStatus: {
+    readonly title: string
+    readonly subtitle: string
+    readonly newStatus: string
+    readonly code: string
+    readonly sortOrder: string
+    readonly hint: string
+    readonly emptyTitle: string
+    readonly emptyBody: string
+    readonly sortByOrder: string
+    readonly sortByCode: string
+    readonly deactivateBody: string
+    readonly historicalNote: string
   }
   readonly quote: {
     readonly quote: string

@@ -8,12 +8,12 @@
  * ## Persist first, then reflect
  *
  * After a create, an edit or a deactivation, the screen calls `reload()` and
- * the list is read back out of IndexedDB. It does **not** splice the returned
+ * the list is read back from the authoritative cloud view. It does **not** splice the returned
  * record into the array it already has.
  *
  * That is slower and it is correct. An optimistic update renders a success the
- * database may have refused — a stale write, a duplicate SKU, a quota failure,
- * a transaction that aborted between the `put` resolving and the commit — and
+ * server may have refused — a stale write, a duplicate SKU, or a transaction
+ * that rolled back — and
  * the screen would then be showing a row that does not exist. At pilot volume
  * the re-read is a single-digit-millisecond scan over records that are about
  * to be rendered anyway. The user sees what is stored, or they see the error;
@@ -21,13 +21,13 @@
  *
  * The records themselves are held in React state and are **not** a cache: they
  * are the result of the last read, discarded and replaced by the next one.
- * IndexedDB remains the only source of durable truth.
+ * PostgreSQL remains the only durable source of truth.
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useAppRuntime } from '../../app/runtime'
+import type { DataGateway } from '../../cloud'
 import type { SupportedLocale } from '../../i18n'
-import type { Database } from '../../persistence'
 import {
   countActive,
   matchesActiveFilter,
@@ -47,7 +47,7 @@ export interface MasterDataRecord {
 export type SortComparator<T> = (a: T, b: T, locale: SupportedLocale) => number
 
 export interface MasterDataListOptions<T extends MasterDataRecord> {
-  readonly load: (database: Database) => Promise<T[]>
+  readonly load: (gateway: DataGateway, organizationId: string) => Promise<readonly T[]>
   /** The fields a search term is matched against, in display order. */
   readonly searchFields: (record: T) => readonly (string | undefined)[]
   readonly sorts: Readonly<Record<string, SortComparator<T>>>
@@ -76,7 +76,7 @@ export interface MasterDataList<T extends MasterDataRecord> {
 export function useMasterDataList<T extends MasterDataRecord>(
   options: MasterDataListOptions<T>,
 ): MasterDataList<T> {
-  const { database } = useAppRuntime()
+  const { gateway, organization } = useAppRuntime()
   const { load, searchFields, sorts, defaultSort, locale } = options
 
   const [all, setAll] = useState<readonly T[]>([])
@@ -88,7 +88,7 @@ export function useMasterDataList<T extends MasterDataRecord>(
 
   const reload = useCallback(async () => {
     try {
-      const records = await load(database)
+      const records = await load(gateway, organization.id)
       setAll(records)
       setLoadError(undefined)
       setStatus('READY')
@@ -96,7 +96,7 @@ export function useMasterDataList<T extends MasterDataRecord>(
       setLoadError(cause)
       setStatus('ERROR')
     }
-  }, [database, load])
+  }, [gateway, organization.id, load])
 
   useEffect(() => {
     void reload()

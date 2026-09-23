@@ -1,44 +1,27 @@
 /**
  * Product catalog actions — the layer between a React screen and the typed
- * product store.
+ * cloud catalogue gateway.
  *
  * ```text
  *   ProductsScreen / ProductForm
  *        ↓   (a draft: strings, exactly as typed)
- *   productService              ← here
- *        ↓   (a ProductRecord: validated, timestamped)
- *   stores/productStore
- *        ↓
- *   IndexedDB
+ *   productService              ← here: validation + locale conversion
+ *        ↓   (typed input, expected_version on existing records)
+ *   DataGateway → api RPC/view → PostgreSQL
  * ```
  *
- * The boundary this file defends is the one an independent audit warned about:
- * a feature that reaches past the typed store and writes through
- * `TransactionScope.put` — or worse, `indexedDB` directly — bypasses the
- * record validators, and a record that never met them can be written today and
- * refuse to restore from a backup tomorrow. **No React component in this
- * application imports `src/persistence/idb`, and none opens a transaction.**
- *
- * It is also where identity and time are decided, and neither is allowed
- * further down:
- *
- * - `id` is a `crypto.randomUUID()` and is generated **once**, on create. An
- *   edit reuses it. Array position is never identity (Data Model §2).
- * - `createdAt` is preserved across every edit; `updatedAt` is restamped. The
- *   store cannot stamp `updatedAt` itself, because that is the value the
- *   stale-write check compares against — a persistence helper inventing it
- *   would defeat the check it exists to serve.
+ * UUID identity is generated once on create. Audit timestamps and version are
+ * server facts; edits carry the version they observed and PostgreSQL rejects a
+ * stale replacement rather than accepting last-write-wins.
  */
 
 import { Quantity } from '../../domain/quantity/Quantity'
 import type { SupportedLocale } from '../../i18n'
 import {
-  listProductRecords,
-  loadProductRecord,
-  saveProduct,
-  type Database,
+  type DataGateway,
+  type ProductInput,
   type ProductRecord,
-} from '../../persistence'
+} from '../../cloud'
 import { formatDecimalForInput, parseDecimalInput } from '../shared/decimalInput'
 import { FormValidationError, requiredText } from '../shared/formError'
 import { optionalText } from '../shared/masterData'
@@ -108,17 +91,12 @@ export function productDraftFrom(record: ProductRecord, locale: SupportedLocale)
 }
 
 export interface ServiceClock {
-  readonly now?: () => string
   readonly generateId?: () => string
 }
 
 /** A service call that has to read localised input back into canonical form. */
 export interface ProductServiceOptions extends ServiceClock {
   readonly locale: SupportedLocale
-}
-
-function instant(options: ServiceClock): string {
-  return (options.now ?? (() => new Date().toISOString()))()
 }
 
 /**
@@ -158,34 +136,31 @@ function packFactor(value: string, locale: SupportedLocale): { value: string } |
   return quantity.toJSON()
 }
 
-function buildRecord(
+function buildInput(
   draft: ProductDraft,
   locale: SupportedLocale,
-  identity: { id: string; createdAt: string; updatedAt: string },
-): ProductRecord {
+  id: string,
+): ProductInput {
   return {
-    id: identity.id,
+    id,
     sku: requiredText(draft.sku, 'sku'),
     name: requiredText(draft.name, 'name'),
     description: optionalText(draft.description),
     stockUnit: requiredText(draft.stockUnit, 'stockUnit'),
     defaultPurchaseUnit: optionalText(draft.defaultPurchaseUnit),
-    unitsPerPurchaseUnit: packFactor(draft.unitsPerPurchaseUnit, locale),
+    unitsPerPurchaseUnit: packFactor(draft.unitsPerPurchaseUnit, locale)?.value,
     manufacturer: optionalText(draft.manufacturer),
     manufacturerRef: optionalText(draft.manufacturerRef),
-    active: draft.active,
     note: optionalText(draft.note),
-    createdAt: identity.createdAt,
-    updatedAt: identity.updatedAt,
   }
 }
 
-export function listProducts(database: Database): Promise<ProductRecord[]> {
-  return listProductRecords(database)
+export function listProducts(gateway: DataGateway, organizationId: string): Promise<readonly ProductRecord[]> {
+  return gateway.catalog.listProducts(organizationId)
 }
 
-export function loadProduct(database: Database, id: string): Promise<ProductRecord> {
-  return loadProductRecord(database, id)
+export function loadProduct(gateway: DataGateway, organizationId: string, id: string): Promise<ProductRecord> {
+  return gateway.catalog.readProduct(organizationId, id)
 }
 
 /**
@@ -197,18 +172,17 @@ export function loadProduct(database: Database, id: string): Promise<ProductReco
  * then reflect.
  */
 export async function createProduct(
-  database: Database,
+  gateway: DataGateway,
+  organizationId: string,
   draft: ProductDraft,
   options: ProductServiceOptions,
 ): Promise<ProductRecord> {
-  const at = instant(options)
-  const record = buildRecord(draft, options.locale, {
-    id: (options.generateId ?? (() => crypto.randomUUID()))(),
-    createdAt: at,
-    updatedAt: at,
-  })
-  await saveProduct(database, record)
-  return record
+  const input = buildInput(
+    draft,
+    options.locale,
+    (options.generateId ?? (() => crypto.randomUUID()))(),
+  )
+  return gateway.catalog.createProduct(organizationId, input)
 }
 
 /**
@@ -220,18 +194,17 @@ export async function createProduct(
  * tab's concurrent save into a refusal instead of a silent overwrite.
  */
 export async function updateProduct(
-  database: Database,
+  gateway: DataGateway,
+  organizationId: string,
   existing: ProductRecord,
   draft: ProductDraft,
   options: ProductServiceOptions,
 ): Promise<ProductRecord> {
-  const record = buildRecord(draft, options.locale, {
-    id: existing.id,
-    createdAt: existing.createdAt,
-    updatedAt: instant(options),
-  })
-  await saveProduct(database, record, { previousUpdatedAt: existing.updatedAt })
-  return record
+  return gateway.catalog.updateProduct(
+    organizationId,
+    existing.version,
+    buildInput(draft, options.locale, existing.id),
+  )
 }
 
 /**
@@ -244,12 +217,10 @@ export async function updateProduct(
  * correct either way, so it is the only one offered.
  */
 export async function setProductActive(
-  database: Database,
+  gateway: DataGateway,
+  organizationId: string,
   existing: ProductRecord,
   active: boolean,
-  options: ServiceClock = {},
 ): Promise<ProductRecord> {
-  const record: ProductRecord = { ...existing, active, updatedAt: instant(options) }
-  await saveProduct(database, record, { previousUpdatedAt: existing.updatedAt })
-  return record
+  return gateway.catalog.setProductActive(organizationId, existing.id, existing.version, active)
 }

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { screen, waitFor, within } from '@testing-library/react'
 import { goTo, renderApp, type AppHarness } from '../../test/appHarness'
 import { setLocale } from '../../i18n'
-import { listProductRecords, openDatabase, type ProductRecord } from '../../persistence'
+import type { ProductRecord } from '../../cloud'
 
 let harness: AppHarness
 
@@ -71,14 +71,9 @@ function row(name: string): HTMLElement {
   return screen.getByRole('row', { name: new RegExp(name) })
 }
 
-/** Reads the products straight out of the database the harness is using. */
+/** Reads the products through the same cloud gateway the application uses. */
 async function storedProducts(): Promise<ProductRecord[]> {
-  const database = await openDatabase({ name: harness.databaseName })
-  try {
-    return await listProductRecords(database)
-  } finally {
-    database.close()
-  }
+  return [...await harness.gateway.catalog.listProducts('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb')]
 }
 
 /** Picks "Diğer…" on a unit dropdown and types a unit that is not on the list. */
@@ -607,13 +602,13 @@ describe('a new product is active, and is not asked about it', () => {
     expect(within(row('ACT-1')).getByText('Aktif')).toBeInTheDocument()
   })
 
-  it('offers the Active control again when editing an existing product', async () => {
+  it('explains that lifecycle changes are made from the list when editing', async () => {
     await openProducts()
     await createProductThroughUI({ sku: 'ACT-2', name: 'Düzenlenecek' })
     await screen.findByText('ACT-2')
 
     await harness.user.click(within(row('ACT-2')).getByRole('button', { name: 'Düzenle' }))
-    expect(screen.getByLabelText('Aktif')).toBeChecked()
+    expect(screen.getByText('Aktif/pasif durumunu kaydettikten sonra listeden değiştirin.')).toBeInTheDocument()
   })
 })
 

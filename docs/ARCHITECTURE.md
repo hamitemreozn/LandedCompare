@@ -1002,18 +1002,19 @@ decisions don't accidentally violate them:
 
 ---
 
-## Phase 10 state — cloud foundation
+## Phase 10 foundation and Phase 11 active catalogue
 
 Canonical design: [Cloud & Multi-User
 Architecture](CLOUD_MULTIUSER_ARCHITECTURE.md), with an implementation report in
-its §28. This section records only what changed in the *module boundaries*.
+its historical §28 and Phase 11 report in §29. This section records only what
+changed in the *module boundaries*.
 
 ### Two new source trees, and only one of them is TypeScript
 
 ```text
 supabase/                  the server, and it is entirely declarative
   config.toml              exposed schemas, auth policy — security controls
-  migrations/*.sql         the canonical schema history. Seven files
+  migrations/*.sql         the canonical schema history. Eleven files through Phase 11
   tests/*.test.sql         pgTAP: the catalogue and behavioural assertions
   functions/               two Edge Functions, the only server-side code
   seed.sql                 local development fixture. Synthetic, never pushed
@@ -1037,8 +1038,8 @@ bill, to re-implement what `BEGIN … COMMIT` does.
 ### The dependency direction, extended
 
 ```text
-  screens → feature services → persistence stores → IndexedDB     (Phase 9, live)
-  screens → feature services → DataGateway → api schema → RLS     (Phase 11)
+  screens → feature services → persistence stores → IndexedDB     (Phase 9 history / cutover input only)
+  screens → feature services → DataGateway → api schema → RLS     (Phase 11, live)
 ```
 
 `src/cloud/gateway.ts` is the seam, and it is one type with a method per
@@ -1049,10 +1050,13 @@ the view), hiding the read/write asymmetry (a read is a view, every write is a
 typed RPC), and turning server failures into the error vocabulary
 `src/i18n/persistenceText.ts` already translates.
 
-**Nothing in `src/cloud/` is imported by the running application.** The catalog
-still reads IndexedDB. That is the Phase 10/11 boundary: re-pointing some
-entities at PostgreSQL while others stay on the device would be two sources of
-truth, which is the single thing the cloud architecture exists to prevent.
+The running application imports this boundary exclusively for catalogue data.
+`AppRuntime` carries a `DataGateway`, selected organisation, membership and
+profile; no IndexedDB handle crosses the boot gate. `src/cloud/legacyMigration.ts`
+is the one exception to normal cloud-only operation: it opens the old database
+only while the authenticated OWNER is on the cutover screen, reuses the Phase 8
+validator and backup envelope, calls one idempotent server transaction, verifies
+read-back counts, and retires the database. It is never a read fallback.
 
 ### What the module boundaries now forbid
 

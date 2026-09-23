@@ -131,6 +131,19 @@ for (const view of ['organizations', 'profiles', 'memberships', 'admin_events'])
   )
 }
 
+// Phase 11 catalogue views must be present in PostgREST's schema cache while
+// remaining unreadable to anon. A missing view produces a route/cache error;
+// an existing protected view reaches PostgreSQL and is refused at schema api.
+for (const view of ['products', 'suppliers', 'customers', 'customer_statuses']) {
+  const r = await request(`/rest/v1/${view}?select=*`)
+  record(
+    `api.${view} exists but anon cannot read it`,
+    r.status >= 400 && r.text.includes('permission denied for schema api'),
+    `status ${r.status}`,
+    'the Phase 11 catalogue projection must be deployed without creating an unauthenticated read path',
+  )
+}
+
 {
   const r = await request('/rest/v1/rpc/current_org_ids', { method: 'POST', body: '{}' })
   record(
@@ -163,6 +176,20 @@ for (const view of ['organizations', 'profiles', 'memberships', 'admin_events'])
     r.status >= 400,
     `status ${r.status}`,
     'threat 9b: a modified client dropping the version predicate has no route to drop it from',
+  )
+}
+
+for (const method of ['POST', 'PATCH']) {
+  const r = await request('/rest/v1/products?id=eq.00000000-0000-4000-8000-000000000000', {
+    method,
+    body: JSON.stringify({ name: 'posture-check-only' }),
+    headers: { 'Content-Profile': 'app_data' },
+  })
+  record(
+    `a crafted ${method} against canonical catalogue products is refused`,
+    r.status === 406 && r.json?.code === 'PGRST106',
+    `status ${r.status}, code ${r.json?.code ?? '—'}`,
+    'canonical catalogue writes must have no direct REST bypass around typed RPCs and expected_version',
   )
 }
 

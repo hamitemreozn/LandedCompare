@@ -1,7 +1,7 @@
 import { useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
+import type { SupplierRecord } from '../../cloud'
 import type { SupportedLocale } from '../../i18n'
-import type { SupplierRecord } from '../../persistence'
 import { PartyScreen } from './PartyScreen'
 import { SupplierForm } from './PartyForm'
 import { listSuppliers, setSupplierActive } from './partyService'
@@ -10,7 +10,7 @@ export function SuppliersScreen({ locale }: { readonly locale: SupportedLocale }
   const { t } = useTranslation()
 
   const searchFields = useCallback(
-    (record: SupplierRecord) => [record.displayName, record.note],
+    (record: SupplierRecord) => [record.displayName, record.externalRef, record.note],
     [],
   )
 
@@ -28,6 +28,10 @@ export function SuppliersScreen({ locale }: { readonly locale: SupportedLocale }
       load={listSuppliers}
       searchFields={searchFields}
       setActive={setSupplierActive}
+      secondaryColumn={{
+        header: t('supplier.externalRef'),
+        render: (record) => record.externalRef ?? '—',
+      }}
       renderForm={({ existing, onCancel, onSaved }) => (
         <SupplierForm existing={existing} onCancel={onCancel} onSaved={onSaved} />
       )}

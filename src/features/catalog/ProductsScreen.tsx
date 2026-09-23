@@ -11,8 +11,8 @@
 import { useCallback, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useAppRuntime } from '../../app/runtime'
+import type { ProductRecord } from '../../cloud'
 import type { SupportedLocale } from '../../i18n'
-import type { ProductRecord } from '../../persistence'
 import { ConfirmDialog } from '../../ui/ConfirmDialog'
 import { Banner, EmptyState, StatusBadge } from '../../ui/Feedback'
 import { compareText, compareUpdatedAtDescending } from '../shared/masterData'
@@ -41,7 +41,7 @@ type View =
 
 export function ProductsScreen({ locale }: { readonly locale: SupportedLocale }) {
   const { t } = useTranslation()
-  const { database } = useAppRuntime()
+  const { gateway, organization, organizationLocked } = useAppRuntime()
   const describeError = useDataErrorMessage()
 
   const [view, setView] = useState<View>({ mode: 'LIST' })
@@ -85,7 +85,7 @@ export function ProductsScreen({ locale }: { readonly locale: SupportedLocale })
     }
     setBusy(true)
     try {
-      await setProductActive(database, pending, !pending.active)
+      await setProductActive(gateway, organization.id, pending, !pending.active)
       setActionError(undefined)
       setPending(undefined)
       // Read the stored truth back rather than assuming the write landed the
@@ -127,6 +127,7 @@ export function ProductsScreen({ locale }: { readonly locale: SupportedLocale })
       type="button"
       className="button button--primary"
       onClick={() => setView({ mode: 'CREATE' })}
+      disabled={organizationLocked}
     >
       {t('product.newProduct')}
     </button>

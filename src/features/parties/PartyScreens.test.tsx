@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { screen, waitFor, within } from '@testing-library/react'
 import { goTo, renderApp, type AppHarness } from '../../test/appHarness'
 import { setLocale } from '../../i18n'
-import { listSupplierRecords, openDatabase, saveSupplier } from '../../persistence'
+import { TEST_ORGANIZATION_ID } from '../../test/memoryCloud'
 
 let harness: AppHarness
 
@@ -36,7 +36,7 @@ async function createParty(
   await harness.user.click(screen.getByRole('button', { name: 'Kaydet' }))
 }
 
-const newSupplier = (fields: { name: string; note?: string }) =>
+const newSupplier = (fields: { name: string; externalRef?: string; note?: string }) =>
   createParty('Yeni Tedarikçi', 'Tedarikçi Adı', fields)
 
 const newCustomer = (fields: { name: string; externalRef?: string; note?: string }) =>
@@ -58,6 +58,12 @@ describe('suppliers', () => {
 
     expect(await screen.findByText('Şanlı Çelik A.Ş.')).toBeInTheDocument()
     expect(screen.getByText('İzmir')).toBeInTheDocument()
+  })
+
+  it('keeps an external system code opaque and displays it exactly', async () => {
+    await open(SUPPLIERS)
+    await newSupplier({ name: 'Kodlu Tedarikçi', externalRef: '320-34-00-11-001' })
+    expect(await screen.findByText('320-34-00-11-001')).toBeInTheDocument()
   })
 
   it('requires a name', async () => {
@@ -211,15 +217,10 @@ describe('a new party is active, and is not asked about it', () => {
     await harness.user.click(screen.getByRole('button', { name: 'Kaydet' }))
     await screen.findByText('Varsayılan Aktif A.Ş.')
 
-    const database = await openDatabase({ name: harness.databaseName })
-    try {
-      expect((await listSupplierRecords(database))[0]!.active).toBe(true)
-    } finally {
-      database.close()
-    }
+    expect((await harness.gateway.catalog.listSuppliers(TEST_ORGANIZATION_ID))[0]!.active).toBe(true)
   })
 
-  it('offers the Active control again when editing', async () => {
+  it('explains that lifecycle changes are made from the list when editing', async () => {
     await open(SUPPLIERS)
     await newSupplier({ name: 'Düzenlenecek Tedarikçi' })
     await screen.findByText('Düzenlenecek Tedarikçi')
@@ -227,7 +228,7 @@ describe('a new party is active, and is not asked about it', () => {
     await harness.user.click(
       within(row('Düzenlenecek Tedarikçi')).getByRole('button', { name: 'Düzenle' }),
     )
-    expect(screen.getByLabelText('Aktif')).toBeChecked()
+    expect(screen.getByText('Aktif/pasif durumunu kaydettikten sonra listeden değiştirin.')).toBeInTheDocument()
   })
 
   it('applies the same rule to a new customer', async () => {
@@ -259,13 +260,13 @@ describe('a concurrent edit from a second tab', () => {
     await harness.user.type(screen.getByLabelText('Tedarikçi Adı'), 'Bu sekmenin değişikliği')
 
     // The other tab saves first.
-    const other = await openDatabase({ name: harness.databaseName })
-    const [stored] = await listSupplierRecords(other)
-    await saveSupplier(
-      other,
-      { ...stored!, displayName: 'Diğer sekmenin değişikliği', updatedAt: '2030-01-01T00:00:00.000Z' },
-      { previousUpdatedAt: stored!.updatedAt },
-    )
+    const [stored] = await harness.gateway.catalog.listSuppliers(TEST_ORGANIZATION_ID)
+    await harness.gateway.catalog.updateSupplier(TEST_ORGANIZATION_ID, stored!.version, {
+      id: stored!.id,
+      displayName: 'Diğer sekmenin değişikliği',
+      externalRef: stored!.externalRef,
+      note: stored!.note,
+    })
 
     await harness.user.click(screen.getByRole('button', { name: 'Kaydet' }))
 
@@ -278,7 +279,7 @@ describe('a concurrent edit from a second tab', () => {
     expect(screen.getByText(/STALE_WRITE/)).toBeInTheDocument()
 
     // The newer record is intact in the database — nothing was merged.
-    const after = await listSupplierRecords(other)
+    const after = await harness.gateway.catalog.listSuppliers(TEST_ORGANIZATION_ID)
     expect(after[0]!.displayName).toBe('Diğer sekmenin değişikliği')
 
     // The reload action replaces the stale baseline with the stored one.
@@ -286,7 +287,40 @@ describe('a concurrent edit from a second tab', () => {
     await waitFor(() =>
       expect(screen.getByLabelText('Tedarikçi Adı')).toHaveValue('Diğer sekmenin değişikliği'),
     )
+  })
+})
 
-    other.close()
+describe('customer statuses', () => {
+  it('assigns a configurable status and keeps displaying it after deactivation', async () => {
+    harness = await renderApp()
+    await goTo(harness, 'Müşteri Durumları', 'Müşteri Durumları')
+    await harness.user.click(await screen.findByRole('button', { name: 'Yeni Müşteri Durumu' }))
+    await harness.user.type(screen.getByLabelText('Durum Kodu'), 'A++')
+    await harness.user.clear(screen.getByLabelText('Sıralama'))
+    await harness.user.type(screen.getByLabelText('Sıralama'), '10')
+    await harness.user.click(screen.getByRole('button', { name: 'Kaydet' }))
+    expect(await screen.findByRole('cell', { name: 'A++' })).toBeInTheDocument()
+
+    await goTo(harness, CUSTOMERS, CUSTOMERS)
+    await harness.user.click(await screen.findByRole('button', { name: 'Yeni Müşteri' }))
+    await harness.user.type(screen.getByLabelText('Müşteri Adı'), 'Durumlu Müşteri')
+    const statusSelect = screen.getByLabelText('Müşteri Durumu')
+    await harness.user.selectOptions(statusSelect, within(statusSelect).getByRole('option', { name: 'A++' }))
+    await harness.user.click(screen.getByRole('button', { name: 'Kaydet' }))
+    expect(await screen.findByText('Durumlu Müşteri')).toBeInTheDocument()
+    expect(screen.getByRole('cell', { name: 'A++' })).toBeInTheDocument()
+
+    await goTo(harness, 'Müşteri Durumları', 'Müşteri Durumları')
+    const statusRow = () => screen.getByRole('row', { name: /A\+\+/ })
+    await harness.user.click(within(statusRow()).getByRole('button', { name: 'Pasife Al' }))
+    const dialog = await screen.findByRole('dialog')
+    await harness.user.click(within(dialog).getByRole('button', { name: 'Pasife Al' }))
+    await harness.user.click(screen.getByRole('button', { name: 'Pasif' }))
+    await waitFor(() => expect(within(statusRow()).getByText('Pasif')).toBeInTheDocument())
+
+    await goTo(harness, CUSTOMERS, CUSTOMERS)
+    expect(await screen.findByText('A++ (Pasif)')).toBeInTheDocument()
+    await harness.user.click(screen.getByRole('button', { name: 'Yeni Müşteri' }))
+    expect(within(screen.getByLabelText('Müşteri Durumu')).queryByRole('option', { name: /A\+\+/ })).not.toBeInTheDocument()
   })
 })

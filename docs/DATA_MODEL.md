@@ -980,8 +980,8 @@ hopes.
 | --- | --- | --- |
 | ~~`RequirementItem.productId` (Phase 9)~~ | **done** — added at `schemaVersion` 3; existing requirements keep the key absent | no |
 | ~~Supplier master normalisation (Phase 9)~~ | **no longer needed** — `suppliers` + `supplierIds` ship in `schemaVersion` 1 (Phase 7), and no persisted project data can predate it | n/a |
-| `CustomerStatus` + `Customer.customerStatusId` (Phase 11) | new table, one nullable reference; existing customers keep it absent, which means "not graded" and is a truthful value rather than a guess | no |
-| `Supplier.externalRef` (Phase 11) | additive optional field; existing suppliers keep the key absent | no |
+| ~~`CustomerStatus` + `Customer.customerStatusId` (Phase 11)~~ | **done in PostgreSQL** — organisation-scoped configurable rows that start empty, are created through the normal status mechanism, and have one nullable composite tenant-safe customer reference; imported customers keep it absent | no |
+| ~~`Supplier.externalRef` (Phase 11)~~ | **done in PostgreSQL** — additive optional opaque text; imported suppliers keep the key absent | no |
 | Multi-warehouse (future) | seed one `Location`; add required `locationId` to movements, receipts and dispatches; backfill every existing row with the seeded id | no — constant backfill, no information loss |
 | Lot tracking (future) | add `Lot` store; add optional `lotRef` to movements and receipt/dispatch lines; existing rows get `null` = "pre-lot-tracking" | no |
 | `externalRef` format rules — uniqueness, validation, parsed segments (future) | additive only: a unique index and/or derived columns over a column that already holds the complete value. **Blocked on the BUSINESS EXCEL CODE SCHEME ANALYSIS** (§4) — nothing is designed before real spreadsheets are examined | no |
@@ -997,11 +997,12 @@ once released, and tested against a realistic fixture of the previous state.
 
 ---
 
-## 13. The backend migration — now planned, not hypothetical
+## 13. The backend migration — active, not hypothetical
 
 This section was written when the pilot was local-only and a backend was a
-possibility. **Phase 9.5 decided it: PostgreSQL, hosted by Supabase, becomes the
-single source of truth for shared business data.** The canonical document is
+possibility. **Phase 9.5 decided it, Phase 10 built the foundation, and Phase 11
+connected the catalogue: PostgreSQL, hosted by Supabase, is the single source
+of truth for shared business data after cutover.** The canonical document is
 [Cloud & Multi-User Architecture](CLOUD_MULTIUSER_ARCHITECTURE.md); what follows
 is only what the *model* above gains, changes and keeps.
 

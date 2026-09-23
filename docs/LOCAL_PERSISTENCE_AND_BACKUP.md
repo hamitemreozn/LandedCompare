@@ -15,14 +15,15 @@
 > authentication, row-level security, concurrency and cloud backup is
 > **[Cloud & Multi-User Architecture](CLOUD_MULTIUSER_ARCHITECTURE.md)**.
 >
-> **Read this document for:** what the running application does today (Phase 9);
+> **Read this document for:** what the application did through Phase 9;
 > the portable backup format, canonical serialisation, checksum scope, limits
 > and untrusted-input rules, all of which are kept and re-pointed at a cloud
 > payload; and the historical record of why the local design is shaped as it is.
 >
 > **Do not read this document as:** a statement that a local database protects
-> the company's data. After Phase 11 it will not, because the company's data will
-> not be in it. §25 of the cloud document classifies exactly what is kept,
+> the company's data. Phase 11 moved the catalogue to PostgreSQL; IndexedDB is
+> opened only to validate, back up and import a detected legacy catalogue, then
+> retired after server confirmation. §25 of the cloud document classifies exactly what is kept,
 > adapted and retired.
 >
 > **Forward references to "Phase 9" below are stale.** Three pieces of UI this
@@ -41,7 +42,7 @@ restore work.
 - Why the pilot *was* local-only, and what replaced that → [Product Scope](PRODUCT_SCOPE.md)
 - Layering → [Architecture](ARCHITECTURE.md)
 
-**Implementation status.** §2 (the working database), §3 (persisted vs runtime
+**Historical implementation status.** §2 (the working database), §3 (persisted vs runtime
 shape), §4 (schema versioning and migrations) and §5 (autosave) are implemented
 by Phase 7 in `src/persistence/`. §6 (snapshots), §7 (external backup), §8
 (restore) and §9 (backup security) are implemented by Phase 8 in `src/backup/`.
@@ -55,10 +56,10 @@ they appear: the optional File System Access directory handle in §7, which
 needs a picker and therefore a UI, and every user-facing string in §10, which
 belongs to Phase 9 ([Implementation Plan](IMPLEMENTATION_PLAN.md)).
 
-**Planned fate, per section** — the full table is in
+**Phase 11 disposition, per section** — the full table is in
 [Cloud & Multi-User Architecture](CLOUD_MULTIUSER_ARCHITECTURE.md) §25:
 
-| Section | After Phase 11 |
+| Section | Phase 11 status |
 | --- | --- |
 | §1 the three-layer stance, §2 the working database, §3 persisted vs runtime shape, §4 schema versioning | **retired** — the local database is dropped; device preferences move to `localStorage` |
 | §5 autosave, and the `BroadcastChannel` advisory | **retired** — explicit Save is already what the master-data screens use, and two tabs stop being a data-loss vector once the server arbitrates |

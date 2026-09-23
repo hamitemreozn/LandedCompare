@@ -568,8 +568,8 @@ precisely why guessing now would be the expensive option.
   master's product surface — CRUD, deactivation, and the `active` flag — not a
   schema move.
 
-- **Phase 10 — Cloud Foundation** (difficulty 8). **Implemented locally; the
-  hosted link is an outstanding operator action.** What was built, what was
+- **Phase 10 — Cloud Foundation** (difficulty 8). **Implemented, deployed and
+  verified on the linked hosted project.** What was built, what was
   corrected in the design because it did not compile, and what was deliberately
   deferred is recorded in
   [Cloud & Multi-User Architecture](CLOUD_MULTIUSER_ARCHITECTURE.md) §28.
@@ -616,7 +616,8 @@ precisely why guessing now would be the expensive option.
   object copies them. A defect in the helper grants, the exposure list or the
   grant posture is a defect in every phase after this one.
 
-- **Phase 11 — Catalog Cloud Migration** (difficulty 7).
+- **Phase 11 — Catalog Cloud Migration** (difficulty 7). **Implemented in the
+  working tree and deployed to the linked hosted project after the full local gate.**
   *Objective:* the three screens that already exist run on shared data, on two
   machines, correctly.
   *Deliverables:* `app_data.products`, `app_data.suppliers` and
@@ -834,14 +835,10 @@ checkpoints with no production code. Phase 7 (local persistence), Phase 8
 (backup, snapshots and restore) and Phase 9 (application boot, catalog and
 parties) are implemented.
 
-**Phase 10 (cloud foundation) is implemented against the local stack.** The
-schema separation, the identity and tenancy tables, the RLS posture, the helper
-and function privileges, the shared triggers, the two Edge Functions, the
-application seam and both test suites exist and pass. Two things remain before
-it can be called finished: the hosted Free project is **not yet linked** — that
-needs a CLI access token obtained through a browser, which is an operator action
-([Deployment](DEPLOYMENT.md)) — and therefore nothing has been pushed to it.
-Phase 11 onward is not started.
+**Phase 10 is deployed and Phase 11 is implemented in the working tree.** The
+catalogue tables, RLS, security-invoker projections, twelve mutation RPCs,
+OWNER-only import, cloud application boot, version concurrency, customer-status
+UI and local-database retirement path now exist. Phase 12 onward is not started.
 
 **On entering pilot data — revised by Phase 9.5.** The Phase 9 wiring is done:
 `runSnapshotMaintenance()` runs on startup, `ensurePreMigrationSnapshot()` is
@@ -852,9 +849,9 @@ daily.
 But the advice that followed from it has changed, and the honest limits are now
 these:
 
-- **The local database is not where the company's data will live.** Phase 11
+- **The local database is not where the company's data lives.** Phase 11
   migrates products, suppliers and customers to PostgreSQL and retires the local
-  stores. The migration path is designed
+  database after backup, atomic import and read-back verification. The path is implemented
   ([Cloud & Multi-User Architecture](CLOUD_MULTIUSER_ARCHITECTURE.md) §15) and
   small amounts of data will move cleanly — but **bulk entry of the company's
   real catalogue is better done after Phase 11 than before it.**
@@ -864,8 +861,8 @@ these:
   losing.
 - **Nothing operational exists.** No projects, quotes, comparisons, orders,
   shipments or stock. Master data entered now is exactly that — master data.
-- **Nothing multi-user exists.** One browser profile on one machine is still the
-  whole system.
+- **The catalogue is multi-device.** Independent authenticated sessions read
+  the same authoritative PostgreSQL rows; later operational modules remain unbuilt.
 
 So: entering a handful of real records to exercise the screens is reasonable.
 Loading the company's full catalogue, and running the pilot on it, are not — and

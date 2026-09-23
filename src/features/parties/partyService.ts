@@ -18,23 +18,15 @@
  */
 
 import {
-  listCustomerRecords,
-  listSupplierRecords,
-  loadCustomerRecord,
-  loadSupplierRecord,
-  saveCustomer,
-  saveSupplier,
+  type CustomerInput,
   type CustomerRecord,
-  type Database,
+  type DataGateway,
+  type SupplierInput,
   type SupplierRecord,
-} from '../../persistence'
+} from '../../cloud'
 import { requiredText } from '../shared/formError'
 import { optionalText } from '../shared/masterData'
 import type { ServiceClock } from '../catalog/productService'
-
-function instant(options: ServiceClock): string {
-  return (options.now ?? (() => new Date().toISOString()))()
-}
 
 function newId(options: ServiceClock): string {
   return (options.generateId ?? (() => crypto.randomUUID()))()
@@ -44,92 +36,19 @@ function newId(options: ServiceClock): string {
 
 export interface SupplierDraft {
   readonly displayName: string
-  readonly note: string
-  readonly active: boolean
-}
-
-export const EMPTY_SUPPLIER_DRAFT: SupplierDraft = { displayName: '', note: '', active: true }
-
-export function supplierDraftFrom(record: SupplierRecord): SupplierDraft {
-  return { displayName: record.displayName, note: record.note ?? '', active: record.active }
-}
-
-function buildSupplier(
-  draft: SupplierDraft,
-  identity: { id: string; createdAt: string; updatedAt: string },
-): SupplierRecord {
-  return {
-    id: identity.id,
-    displayName: requiredText(draft.displayName, 'displayName'),
-    active: draft.active,
-    note: optionalText(draft.note),
-    createdAt: identity.createdAt,
-    updatedAt: identity.updatedAt,
-  }
-}
-
-export function listSuppliers(database: Database): Promise<SupplierRecord[]> {
-  return listSupplierRecords(database)
-}
-
-export function loadSupplier(database: Database, id: string): Promise<SupplierRecord> {
-  return loadSupplierRecord(database, id)
-}
-
-export async function createSupplierRecord(
-  database: Database,
-  draft: SupplierDraft,
-  options: ServiceClock = {},
-): Promise<SupplierRecord> {
-  const at = instant(options)
-  const record = buildSupplier(draft, { id: newId(options), createdAt: at, updatedAt: at })
-  await saveSupplier(database, record)
-  return record
-}
-
-export async function updateSupplierRecord(
-  database: Database,
-  existing: SupplierRecord,
-  draft: SupplierDraft,
-  options: ServiceClock = {},
-): Promise<SupplierRecord> {
-  const record = buildSupplier(draft, {
-    id: existing.id,
-    createdAt: existing.createdAt,
-    updatedAt: instant(options),
-  })
-  await saveSupplier(database, record, { previousUpdatedAt: existing.updatedAt })
-  return record
-}
-
-export async function setSupplierActive(
-  database: Database,
-  existing: SupplierRecord,
-  active: boolean,
-  options: ServiceClock = {},
-): Promise<SupplierRecord> {
-  const record: SupplierRecord = { ...existing, active, updatedAt: instant(options) }
-  await saveSupplier(database, record, { previousUpdatedAt: existing.updatedAt })
-  return record
-}
-
-// ─────────────────────────────── customers ───────────────────────────────
-
-export interface CustomerDraft {
-  readonly displayName: string
   readonly externalRef: string
   readonly note: string
   readonly active: boolean
 }
 
-export const EMPTY_CUSTOMER_DRAFT: CustomerDraft = {
+export const EMPTY_SUPPLIER_DRAFT: SupplierDraft = {
   displayName: '',
   externalRef: '',
   note: '',
   active: true,
 }
 
-export function customerDraftFrom(record: CustomerRecord): CustomerDraft {
+export function supplierDraftFrom(record: SupplierRecord): SupplierDraft {
   return {
     displayName: record.displayName,
     externalRef: record.externalRef ?? '',
@@ -138,62 +57,137 @@ export function customerDraftFrom(record: CustomerRecord): CustomerDraft {
   }
 }
 
-function buildCustomer(
-  draft: CustomerDraft,
-  identity: { id: string; createdAt: string; updatedAt: string },
-): CustomerRecord {
+function buildSupplier(
+  draft: SupplierDraft,
+  id: string,
+): SupplierInput {
   return {
-    id: identity.id,
+    id,
     displayName: requiredText(draft.displayName, 'displayName'),
     externalRef: optionalText(draft.externalRef),
-    active: draft.active,
     note: optionalText(draft.note),
-    createdAt: identity.createdAt,
-    updatedAt: identity.updatedAt,
   }
 }
 
-export function listCustomers(database: Database): Promise<CustomerRecord[]> {
-  return listCustomerRecords(database)
+export function listSuppliers(gateway: DataGateway, organizationId: string): Promise<readonly SupplierRecord[]> {
+  return gateway.catalog.listSuppliers(organizationId)
 }
 
-export function loadCustomer(database: Database, id: string): Promise<CustomerRecord> {
-  return loadCustomerRecord(database, id)
+export function loadSupplier(gateway: DataGateway, organizationId: string, id: string): Promise<SupplierRecord> {
+  return gateway.catalog.readSupplier(organizationId, id)
+}
+
+export async function createSupplierRecord(
+  gateway: DataGateway,
+  organizationId: string,
+  draft: SupplierDraft,
+  options: ServiceClock = {},
+): Promise<SupplierRecord> {
+  return gateway.catalog.createSupplier(organizationId, buildSupplier(draft, newId(options)))
+}
+
+export async function updateSupplierRecord(
+  gateway: DataGateway,
+  organizationId: string,
+  existing: SupplierRecord,
+  draft: SupplierDraft,
+  options: ServiceClock = {},
+): Promise<SupplierRecord> {
+  void options
+  return gateway.catalog.updateSupplier(
+    organizationId,
+    existing.version,
+    buildSupplier(draft, existing.id),
+  )
+}
+
+export async function setSupplierActive(
+  gateway: DataGateway,
+  organizationId: string,
+  existing: SupplierRecord,
+  active: boolean,
+): Promise<SupplierRecord> {
+  return gateway.catalog.setSupplierActive(organizationId, existing.id, existing.version, active)
+}
+
+// ─────────────────────────────── customers ───────────────────────────────
+
+export interface CustomerDraft {
+  readonly displayName: string
+  readonly externalRef: string
+  readonly customerStatusId: string
+  readonly note: string
+  readonly active: boolean
+}
+
+export const EMPTY_CUSTOMER_DRAFT: CustomerDraft = {
+  displayName: '',
+  externalRef: '',
+  customerStatusId: '',
+  note: '',
+  active: true,
+}
+
+export function customerDraftFrom(record: CustomerRecord): CustomerDraft {
+  return {
+    displayName: record.displayName,
+    externalRef: record.externalRef ?? '',
+    customerStatusId: record.customerStatusId ?? '',
+    note: record.note ?? '',
+    active: record.active,
+  }
+}
+
+function buildCustomer(
+  draft: CustomerDraft,
+  id: string,
+): CustomerInput {
+  return {
+    id,
+    displayName: requiredText(draft.displayName, 'displayName'),
+    externalRef: optionalText(draft.externalRef),
+    customerStatusId: optionalText(draft.customerStatusId),
+    note: optionalText(draft.note),
+  }
+}
+
+export function listCustomers(gateway: DataGateway, organizationId: string): Promise<readonly CustomerRecord[]> {
+  return gateway.catalog.listCustomers(organizationId)
+}
+
+export function loadCustomer(gateway: DataGateway, organizationId: string, id: string): Promise<CustomerRecord> {
+  return gateway.catalog.readCustomer(organizationId, id)
 }
 
 export async function createCustomerRecord(
-  database: Database,
+  gateway: DataGateway,
+  organizationId: string,
   draft: CustomerDraft,
   options: ServiceClock = {},
 ): Promise<CustomerRecord> {
-  const at = instant(options)
-  const record = buildCustomer(draft, { id: newId(options), createdAt: at, updatedAt: at })
-  await saveCustomer(database, record)
-  return record
+  return gateway.catalog.createCustomer(organizationId, buildCustomer(draft, newId(options)))
 }
 
 export async function updateCustomerRecord(
-  database: Database,
+  gateway: DataGateway,
+  organizationId: string,
   existing: CustomerRecord,
   draft: CustomerDraft,
   options: ServiceClock = {},
 ): Promise<CustomerRecord> {
-  const record = buildCustomer(draft, {
-    id: existing.id,
-    createdAt: existing.createdAt,
-    updatedAt: instant(options),
-  })
-  await saveCustomer(database, record, { previousUpdatedAt: existing.updatedAt })
-  return record
+  void options
+  return gateway.catalog.updateCustomer(
+    organizationId,
+    existing.version,
+    buildCustomer(draft, existing.id),
+  )
 }
 
 export async function setCustomerActive(
-  database: Database,
+  gateway: DataGateway,
+  organizationId: string,
   existing: CustomerRecord,
   active: boolean,
-  options: ServiceClock = {},
 ): Promise<CustomerRecord> {
-  const record: CustomerRecord = { ...existing, active, updatedAt: instant(options) }
-  await saveCustomer(database, record, { previousUpdatedAt: existing.updatedAt })
-  return record
+  return gateway.catalog.setCustomerActive(organizationId, existing.id, existing.version, active)
 }

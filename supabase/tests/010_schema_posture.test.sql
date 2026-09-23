@@ -295,7 +295,7 @@ $$, 'P10b: no trigger, gate or operator helper is EXECUTEable by a Data API role
 select is_empty($$
   select m.table_name
   from app_private.managed_table m
-  where m.policy_class in ('TENANT_READONLY', 'TENANT_APPEND_ONLY', 'TENANT_SERVER_WRITTEN', 'SERVER_ONLY')
+  where m.policy_class in ('TENANT_READONLY', 'TENANT_EDITABLE', 'TENANT_APPEND_ONLY', 'TENANT_SERVER_WRITTEN', 'SERVER_ONLY')
     and m.table_name <> 'organizations'
     and not exists (
       select 1 from information_schema.columns c
@@ -307,7 +307,7 @@ $$, 'P11a: every organisation-scoped table has organization_id NOT NULL');
 select is_empty($$
   select m.table_name
   from app_private.managed_table m
-  where m.policy_class in ('TENANT_READONLY', 'IDENTITY_SELF')
+  where m.policy_class in ('TENANT_READONLY', 'TENANT_EDITABLE', 'IDENTITY_SELF')
     and not exists (
       select 1 from information_schema.columns c
       where c.table_schema = m.table_schema and c.table_name = m.table_name
@@ -318,7 +318,7 @@ $$, 'P11b: every optimistically-concurrent table carries a version column');
 select is_empty($$
   select m.table_name
   from app_private.managed_table m
-  where m.policy_class in ('TENANT_READONLY', 'IDENTITY_SELF', 'SERVER_ONLY')
+  where m.policy_class in ('TENANT_READONLY', 'TENANT_EDITABLE', 'IDENTITY_SELF', 'SERVER_ONLY')
     and not exists (
       select 1 from pg_trigger t
       join pg_class c on c.oid = t.tgrelid
@@ -350,11 +350,11 @@ select is_empty($$
 $$, 'P11d: an append-only table has no version or updated_at, and does have the guard trigger');
 
 -- ---------------------------------------------------------------------------
--- P12 — no write grant exists that no phase has justified yet
+-- P12 — INSERT exists only where the declared class permits append/create
 --
--- The Phase 10 analogue of the inventory-ledger rule. `authenticated` holds
--- INSERT on nothing at all, because no Phase 10 table has a client create path;
--- the day one does, this test has to be changed deliberately by whoever adds it.
+-- Phase 11 introduces client-created catalogue masters and one tightly-policy-
+-- guarded import audit event. INSERT is valid only for TENANT_EDITABLE or
+-- TENANT_APPEND_ONLY tables; every actual grant still needs its policy (P2).
 -- ---------------------------------------------------------------------------
 select is_empty($$
   select c.relname || ':' || upper(a.privilege_type)
@@ -364,7 +364,12 @@ select is_empty($$
   where n.nspname = 'app_data' and c.relkind = 'r'
     and a.grantee = 'authenticated'::regrole
     and upper(a.privilege_type) = 'INSERT'
-$$, 'P12: no app_data table grants INSERT to authenticated in Phase 10');
+    and not exists (
+      select 1 from app_private.managed_table m
+      where m.table_schema = n.nspname and m.table_name = c.relname
+        and m.policy_class in ('TENANT_EDITABLE', 'TENANT_APPEND_ONLY')
+    )
+$$, 'P12: only TENANT_EDITABLE or TENANT_APPEND_ONLY tables grant INSERT to authenticated');
 
 -- ---------------------------------------------------------------------------
 -- P13 — `api` holds no base table
