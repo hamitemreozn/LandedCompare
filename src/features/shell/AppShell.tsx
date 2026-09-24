@@ -18,6 +18,7 @@
 import type { ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import { hrefFor, type RouteId } from '../../app/routes'
+import { useAppRuntime } from '../../app/runtime'
 import { setLocale, SUPPORTED_LOCALES, type SupportedLocale } from '../../i18n'
 
 const PRIMARY_ROUTES: readonly { id: RouteId; labelKey: string }[] = [
@@ -48,6 +49,7 @@ export function AppShell({
   readonly children: ReactNode
 }) {
   const { t } = useTranslation()
+  const { organization, profile, role } = useAppRuntime()
 
   return (
     <div className="shell">
@@ -94,6 +96,19 @@ export function AppShell({
         </nav>
 
         <div className="sidebar__footer">
+          {/*
+            Who is signed in, and into which company. All tabs share one
+            session, so this is what makes a change of identity visible rather
+            than something a user has to infer from the data (Audit A, A-M2).
+          */}
+          <dl className="sidebar__identity" aria-label={t('shell.identityLabel')}>
+            <dt className="visually-hidden">{t('shell.organization')}</dt>
+            <dd className="sidebar__identity-organization" data-testid="shell-organization">{organization.name}</dd>
+            <dt className="visually-hidden">{t('shell.user')}</dt>
+            <dd className="sidebar__identity-user" data-testid="shell-user">
+              {profile.displayName} · {role}
+            </dd>
+          </dl>
           <div
             className="locale-switch"
             role="group"

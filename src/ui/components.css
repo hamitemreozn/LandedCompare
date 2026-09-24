@@ -202,6 +202,30 @@ figure {
   gap: var(--space-3);
 }
 
+.sidebar__identity {
+  margin: 0;
+  padding-inline: var(--space-2);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.sidebar__identity-organization {
+  margin: 0;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  color: var(--text-on-nav);
+  overflow-wrap: anywhere;
+}
+
+.sidebar__identity-user {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--text-on-nav-muted);
+  overflow-wrap: anywhere;
+}
+
 .locale-switch {
   display: flex;
   gap: var(--space-1);

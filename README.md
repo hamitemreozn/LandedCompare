@@ -20,6 +20,17 @@ local and remote history match 11/11, the hosted advisor WARN gate is clean and
 the anonymous HTTP posture verification passes 18/18. No real pilot account,
 organisation or business data has been created.
 
+**Audit A remediation, passes 1 and 2** (see
+[Cloud & Multi-User Architecture](docs/CLOUD_MULTIUSER_ARCHITECTURE.md) §30):
+paginated catalogue reads reconciled against one exact count (a withdrawn
+membership fails as such, never as a shorter list); a per-record legacy cutover
+proof with exact decimal equality; auth and membership changes that end a stale
+runtime, including the migration actions and the boot itself; sign-out that
+clears the device even offline; secret guards that decode JWT-form keys; and
+regression tests proved able to fail. Its forward migration
+(`20260924120000_audit_a_remediation.sql`) is verified locally and is **not yet
+deployed** to the hosted project.
+
 The calculation and comparison engine (Phases 0–5), the
 Turkish/English i18n foundation (Phase 6), the local persistence layer (Phase 7
 — a versioned IndexedDB database with migrations, transactions and autosave, in
@@ -94,10 +105,12 @@ survives and the snapshot layer does not.
 the session, proves server reachability, reads the profile and live membership,
 and deterministically selects the pilot organisation. Only then does it inspect
 for a legacy local catalogue. A non-empty legacy catalogue stops at an explicit
-OWNER migration screen; a complete checksummed file is delivered before the
-single server import transaction, cloud counts are read back, and only then is
-the local database retired. Signed-out, unavailable, no-membership and
-write-locked states never masquerade as an empty catalogue.
+migration screen; a complete checksummed file is delivered before the single
+OWNER-only server import transaction, every legacy record is then proved present
+in the cloud by id and content, and only then is the local database retired.
+Signed-out, unavailable, no-membership and write-locked states never masquerade
+as an empty catalogue, and a session or membership that changes while the
+application is open ends the running state instead of leaving it on screen.
 
 ## Stack
 

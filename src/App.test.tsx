@@ -99,6 +99,26 @@ describe('the boot gate', () => {
     view.unmount()
   })
 
+  it('fails closed when the legacy database cannot be inspected: no invented counts, no migrate button', async () => {
+    // Audit A, A-L2: an inspection error used to produce a migration screen
+    // reading "0 products, 0 suppliers and 0 customers" with the migrate button
+    // ENABLED, which bypassed the unsupported-records guard and deleted a
+    // legacy database holding records the catalogue migration does not carry.
+    await setLocale('tr')
+    const failing = {
+      open: (...args: Parameters<IDBFactory['open']>) => indexedDB.open(...args),
+      deleteDatabase: (...args: Parameters<IDBFactory['deleteDatabase']>) => indexedDB.deleteDatabase(...args),
+      cmp: (...args: Parameters<IDBFactory['cmp']>) => indexedDB.cmp(...args),
+      databases: async () => { throw new Error('transient enumeration failure') },
+    } as unknown as IDBFactory
+    const view = render(<App options={{ gateway: createMemoryCloudGateway(), migration: { indexedDBFactory: failing, databaseName: 'inspection-failure-probe' } }} />)
+    expect(await screen.findByText('Önceki yerel katalog incelenemedi')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Yedekle ve taşı' })).not.toBeInTheDocument()
+    expect(screen.queryByText(/taşınmaya hazır/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('navigation')).not.toBeInTheDocument()
+    view.unmount()
+  })
+
   it('keeps a locked organization readable and disables catalogue writes', async () => {
     await setLocale('tr')
     const gateway = createMemoryCloudGateway()
@@ -162,7 +182,7 @@ describe('the dashboard', () => {
   it('identifies the cloud database as the authoritative source', async () => {
     harness = await renderApp()
     expect(screen.getByText('PostgreSQL bulut veritabanı')).toBeInTheDocument()
-    expect(screen.getByText('Test Company')).toBeInTheDocument()
+    expect(within(screen.getByRole('main')).getByText('Test Company')).toBeInTheDocument()
   })
 
   it('counts persisted records, and updates after a record is added', async () => {
@@ -193,8 +213,16 @@ describe('the dashboard', () => {
 
   it('reports the active company and role', async () => {
     harness = await renderApp()
-    expect(screen.getByText('Test Company')).toBeInTheDocument()
-    expect(screen.getByText('OWNER')).toBeInTheDocument()
+    expect(within(screen.getByRole('main')).getByText('Test Company')).toBeInTheDocument()
+    expect(within(screen.getByRole('main')).getByText('OWNER')).toBeInTheDocument()
+  })
+
+  it('shows who is signed in, and into which company, in the shell on every screen', async () => {
+    // Audit A, A-M2: every tab shares one session, so the identity a screen
+    // acts for must be visible rather than inferred from the data.
+    harness = await renderApp()
+    expect(screen.getByTestId('shell-organization')).toHaveTextContent('Test Company')
+    expect(screen.getByTestId('shell-user')).toHaveTextContent('Test Owner · OWNER')
   })
 })
 

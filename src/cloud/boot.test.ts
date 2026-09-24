@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { bootstrapCloudSession } from './boot'
+import { BOOT_IDENTITY_ATTEMPTS, bootstrapCloudSession } from './boot'
 import { CloudError } from './errors'
 import type { DataGateway, Membership, Organization, Profile } from './gateway'
 
@@ -62,6 +62,7 @@ function fakeGateway(state: FakeState = {}): DataGateway {
     },
     signInWithPassword: async () => {},
     signOut: async () => {},
+    onAuthChange: () => () => {},
     changeOwnPassword: async () => {},
   }
 }
@@ -106,7 +107,7 @@ describe('bootstrapCloudSession', () => {
 
   it('reports NO_MEMBERSHIP for an account attached to nothing', async () => {
     const result = await bootstrapCloudSession(fakeGateway({ memberships: [], organizations: [] }))
-    expect(result).toEqual({ phase: 'NO_MEMBERSHIP', code: 'NO_MEMBERSHIP' })
+    expect(result).toEqual({ phase: 'NO_MEMBERSHIP', code: 'NO_MEMBERSHIP', userId: USER })
   })
 
   it('distinguishes "deactivated here" from "never attached to anything"', async () => {
@@ -123,6 +124,7 @@ describe('bootstrapCloudSession', () => {
     expect(result).toEqual({
       phase: 'NO_MEMBERSHIP',
       code: 'NO_MEMBERSHIP',
+      userId: USER,
       deactivatedOrganizationIds: [ORG_A],
     })
   })
@@ -198,7 +200,7 @@ describe('bootstrapCloudSession', () => {
     // Two policies disagreeing is a server-side fault, not a user state.
     // Reporting it as unavailable is honest; rendering an empty product is not.
     const result = await bootstrapCloudSession(fakeGateway({ organizations: [] }))
-    expect(result).toEqual({ phase: 'UNAVAILABLE', code: 'SERVER_UNAVAILABLE' })
+    expect(result).toEqual({ phase: 'UNAVAILABLE', code: 'SERVER_UNAVAILABLE', userId: USER })
   })
 
   it('lets a genuine bug propagate instead of disguising it as a boot state', async () => {
@@ -211,5 +213,62 @@ describe('bootstrapCloudSession', () => {
     }
 
     await expect(bootstrapCloudSession(gateway)).rejects.toThrow('a real bug')
+  })
+})
+
+/**
+ * A session that belongs to user A when the boot starts and to user B from
+ * the moment the profile has been read — another tab signing in as B, while
+ * this tab's boot is between two requests (source review, N-1). Every read
+ * answers for whoever holds the session at that moment, as PostgREST does.
+ */
+function replacedMidBoot(switches: number): { gateway: DataGateway; identityReads: () => number } {
+  const USER_B = 'bbbbbbbb-0000-4000-8000-00000000000b'
+  const users = [USER, USER_B, 'cccccccc-0000-4000-8000-00000000000c', 'dddddddd-0000-4000-8000-00000000000d']
+  let holder = 0
+  let reads = 0
+  const who = () => users[holder]
+  const orgOf = (user: string) => (user === USER ? ORGANIZATION : { ...ORGANIZATION, id: ORG_B, name: `Company of ${user.slice(0, 4)}` })
+  return {
+    identityReads: () => reads,
+    gateway: {
+      catalog: {} as DataGateway['catalog'],
+      currentUserId: async () => { reads += 1; return who() },
+      identity: {
+        readOwnProfile: async () => {
+          const profile = { ...PROFILE, userId: who(), displayName: `Profile of ${who().slice(0, 4)}` }
+          if (holder < switches) holder += 1
+          return profile
+        },
+        listOwnMemberships: async () => [{ ...MEMBERSHIP, userId: who(), organizationId: orgOf(who()).id }],
+        listOrganizations: async () => [orgOf(who())],
+        updateOwnProfile: async () => PROFILE,
+        acknowledgePasswordChange: async () => PROFILE,
+      },
+      signInWithPassword: async () => {},
+      signOut: async () => {},
+      changeOwnPassword: async () => {},
+      onAuthChange: () => () => {},
+    },
+  }
+}
+
+describe('the identity at the end of the boot is the identity it started with (source review, N-1)', () => {
+  it('A → B between two reads: A\'s id is never published beside B\'s profile or company; the boot restarts as B', async () => {
+    const { gateway } = replacedMidBoot(1)
+    const result = await bootstrapCloudSession(gateway)
+    expect(result.phase).toBe('READY')
+    if (result.phase !== 'READY') return
+    expect(result.userId).toBe('bbbbbbbb-0000-4000-8000-00000000000b')
+    expect(result.profile.userId).toBe(result.userId)
+    expect(result.membership.userId).toBe(result.userId)
+    expect(result.organization.id).toBe(ORG_B)
+  })
+
+  it('a session that changes under every attempt is not chased forever and is never published', async () => {
+    const { gateway, identityReads } = replacedMidBoot(BOOT_IDENTITY_ATTEMPTS)
+    await expect(bootstrapCloudSession(gateway)).resolves.toEqual({ phase: 'UNAVAILABLE', code: 'UNEXPECTED' })
+    // One read at the start and one at the end of each attempt.
+    expect(identityReads()).toBe(2 * BOOT_IDENTITY_ATTEMPTS)
   })
 })

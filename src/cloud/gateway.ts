@@ -31,17 +31,40 @@
  * ## Scope in Phase 11
  *
  * Identity, live membership and the complete catalogue boundary now run here.
+ *
+ * ## Complete reads (Audit A, A-H1)
+ *
+ * PostgREST caps every response at the server's `max_rows` (1000 on this
+ * project) and says nothing when it does. A catalogue list is therefore read
+ * in keyset pages ordered by `id`, each page asking for an exact count of the
+ * rows still ahead of it. The loop ends only when the server reports none
+ * left, so a cap of any size — larger or smaller than the page — can shorten a
+ * page but can never shorten the result. A page that is empty while the count
+ * says rows remain is refused rather than treated as the end.
+ *
+ * The pages are separate requests, so a traversal alone is not a picture of
+ * one moment: a row committed behind the cursor while it moves would be
+ * missed, and a membership withdrawn between two pages would end the loop
+ * early (Audit A source review, R-1/R-2). Every traversal is therefore
+ * RECONCILED against one exact count of the whole visible set, taken after
+ * it. What that proves, and what it does not, is stated on `readAll`.
  * Products, suppliers, customers and customer statuses are read from API views
  * and mutated through typed RPCs; no feature service has a local persistence
  * fallback. The old IndexedDB catalogue is opened only by the one-time legacy
  * migration module before this gateway becomes authoritative.
  */
 
-import type { CloudClient } from './client'
+import {
+  isAuthApiError,
+  isAuthRetryableFetchError,
+  type AuthChangeEvent,
+} from '@supabase/supabase-js'
+import { CLOUD_SESSION_STORAGE_KEY, type CloudClient } from './client'
 import {
   CloudError,
   cloudErrorFromPostgrest,
   cloudErrorFromTransport,
+  isCloudError,
   type PostgrestFailure,
 } from './errors'
 
@@ -211,16 +234,57 @@ export interface IdentityGateway {
   acknowledgePasswordChange(expectedVersion: number): Promise<Profile>
 }
 
+/** An authentication state change, reduced to what the application acts on. */
+export interface AuthChange {
+  readonly event: AuthChangeEvent
+  /** The user the session now belongs to, or null when there is none. */
+  readonly userId: string | null
+}
+
 export interface DataGateway {
   readonly identity: IdentityGateway
   readonly catalog: CatalogGateway
   /** The signed-in user's id, or null. */
   currentUserId(): Promise<string | null>
   signInWithPassword(email: string, password: string): Promise<void>
+  /**
+   * Ends the session ON THIS DEVICE, unconditionally, then asks the server to
+   * revoke it as a best effort. Resolves only once no credential remains in
+   * local storage; rejects if one does.
+   */
   signOut(): Promise<void>
   /** Changes the caller's own Auth password. Does not clear the forced flag. */
   changeOwnPassword(newPassword: string): Promise<void>
+  /**
+   * Observes sign-in, sign-out, token refresh and session replacement —
+   * including those made in another tab, which Supabase relays over a
+   * BroadcastChannel. Returns the unsubscribe function.
+   */
+  onAuthChange(listener: (change: AuthChange) => void): () => void
 }
+
+export interface DataGatewayOptions {
+  /**
+   * Keyset page size for catalogue reads. Any value is correct — the loop
+   * trusts the server's count, not the page size — so tests set it above and
+   * below the server's `max_rows` to prove exactly that.
+   */
+  readonly pageSize?: number
+  /** Where the session is persisted; must be the storage the client uses. */
+  readonly storage?: Storage
+  readonly storageKey?: string
+}
+
+const DEFAULT_PAGE_SIZE = 500
+/** A guard against a server that keeps reporting rows it never returns. */
+const MAX_PAGES = 10_000
+/**
+ * How many whole traversals one list read may take before it gives up. A
+ * traversal is repeated only when rows were committed behind the cursor while
+ * it ran; under writes that never pause, the read fails explicitly instead of
+ * looping or returning a set it could not reconcile.
+ */
+export const MAX_CATALOG_TRAVERSALS = 3
 
 /** Row shapes exactly as the `api` views project them. */
 interface OrganizationRow {
@@ -389,18 +453,25 @@ function isOnline(): boolean {
   return typeof navigator === 'undefined' || navigator.onLine !== false
 }
 
+interface PostgrestOutcome<T> {
+  data: T | null
+  error: PostgrestFailure | null
+  count?: number | null
+  status?: number
+}
+
 /**
- * Runs a Supabase call and converts both failure shapes into one.
+ * Runs a Supabase call and converts every failure shape into one.
  *
- * `supabase-js` reports a PostgREST error as a value on the result and a
- * network failure as a thrown `TypeError`, so a caller that only checked
- * `result.error` would treat "the server is unreachable" as success with no
- * data — which is the empty-screen failure §13 refuses. Both paths land here.
+ * `postgrest-js` reports BOTH a PostgREST error and a network failure as a
+ * returned value — the latter with `status: 0` — so the status travels into
+ * the classifier. A thrown value is still handled, for the transport layers
+ * that do throw.
  */
-async function run<T>(
-  operation: () => PromiseLike<{ data: T | null; error: PostgrestFailure | null }>,
-): Promise<T> {
-  let result: { data: T | null; error: PostgrestFailure | null }
+async function execute<T>(
+  operation: () => PromiseLike<PostgrestOutcome<T>>,
+): Promise<{ data: T; count: number | null }> {
+  let result: PostgrestOutcome<T>
   try {
     result = await operation()
   } catch (cause) {
@@ -408,15 +479,181 @@ async function run<T>(
   }
 
   if (result.error) {
-    throw cloudErrorFromPostgrest(result.error)
+    throw cloudErrorFromPostgrest(result.error, { status: result.status, online: isOnline() })
   }
   if (result.data === null) {
     throw new CloudError('RECORD_NOT_FOUND', 'the server returned no row')
   }
-  return result.data
+  return { data: result.data, count: result.count ?? null }
 }
 
-export function createDataGateway(client: CloudClient): DataGateway {
+async function run<T>(operation: () => PromiseLike<PostgrestOutcome<T>>): Promise<T> {
+  return (await execute(operation)).data
+}
+
+function compareText(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0
+}
+
+export function createDataGateway(client: CloudClient, options: DataGatewayOptions = {}): DataGateway {
+  const pageSize = Math.max(1, Math.trunc(options.pageSize ?? DEFAULT_PAGE_SIZE))
+  const storageKey = options.storageKey ?? CLOUD_SESSION_STORAGE_KEY
+  const storage = (): Storage | undefined =>
+    options.storage ?? (globalThis as { localStorage?: Storage }).localStorage
+
+  /**
+   * True when the caller can currently see this organisation, which under RLS
+   * means: an ACTIVE membership, right now. Read from live database state, not
+   * from anything cached at boot.
+   */
+  async function organizationVisible(organizationId: string): Promise<boolean> {
+    const rows = await run<{ id: string }[]>(() =>
+      client.from('organizations').select('id').eq('id', organizationId),
+    )
+    return rows.length === 1
+  }
+
+  /**
+   * An empty answer from an RLS-protected view means "nothing you may see",
+   * which is EITHER an empty catalogue OR a membership that no longer exists.
+   * The second must never be rendered as the first — "your catalogue is empty,
+   * add your first product" said to someone whose access was just withdrawn
+   * is exactly the empty-screen failure §13 forbids.
+   */
+  async function assertStillMember(organizationId: string): Promise<void> {
+    if (!(await organizationVisible(organizationId))) {
+      throw new CloudError('NO_MEMBERSHIP', 'the caller no longer has an active membership in this organization')
+    }
+  }
+
+  /**
+   * Every row of one catalogue view for one organisation.
+   *
+   * ## What a successful return guarantees
+   *
+   * The returned ID SET is exactly the set of rows the caller could see at one
+   * instant: the moment of the reconciliation count taken after the last
+   * page. The argument rests on three properties of the catalogue, each held
+   * by the schema rather than by this module:
+   *
+   * - no catalogue row can be deleted by any client path (posture P4a/P4b);
+   * - no row changes organisation (`assert_tenant_immutable` trigger), and no
+   *   RPC changes an `id`;
+   * - pages are keyset pages on that immutable `id`, so no row is read twice.
+   *
+   * Every row a traversal collected therefore still exists, in this
+   * organisation, when the count runs — so, while the membership holds, the
+   * collected set is a SUBSET of the set the count measures. A subset with the
+   * same size is the same set. A row committed behind the cursor during the
+   * traversal makes the count larger, and the whole traversal is repeated, at
+   * most `MAX_CATALOG_TRAVERSALS` times before the read fails explicitly. A
+   * count SMALLER than what was collected means rows became invisible, which
+   * for these tables means the membership was withdrawn: `NO_MEMBERSHIP`.
+   *
+   * ## What it does NOT guarantee
+   *
+   * It is not an atomic snapshot of the CONTENT. Each page is its own
+   * request; a row updated after its page was read is returned as that page
+   * saw it, so two rows may reflect different instants. Writes are protected
+   * separately, by `expected_version`. Rows committed after the count are not
+   * included, as they could not be by any read. If a DELETE path or a
+   * mutable `id` were ever introduced, the subset argument above would no
+   * longer hold and this function would have to change with it.
+   */
+  async function readAll<Row extends { id: string }>(view: string, columns: string, organizationId: string): Promise<Row[]> {
+    for (let traversal = 1; traversal <= MAX_CATALOG_TRAVERSALS; traversal += 1) {
+      const rows = await traverse<Row>(view, columns, organizationId)
+      if (new Set(rows.map((row) => row.id)).size !== rows.length) {
+        throw new CloudError('UNEXPECTED', 'the catalogue read returned a row twice')
+      }
+      const total = await visibleTotal(view, organizationId)
+      if (total === rows.length) {
+        if (rows.length === 0) await assertStillMember(organizationId)
+        return rows
+      }
+      if (total < rows.length) {
+        // Rows already read are no longer visible. Catalogue rows are never
+        // deleted and never change organisation, so this is a withdrawn
+        // membership — reported as such, never as a shorter catalogue.
+        await assertStillMember(organizationId)
+      }
+      // Otherwise rows were committed behind the cursor: read everything again.
+    }
+    throw new CloudError('UNEXPECTED', 'the catalogue kept changing while it was being read')
+  }
+
+  /** The exact number of rows of one view the caller can see right now, in one statement. */
+  async function visibleTotal(view: string, organizationId: string): Promise<number> {
+    const { count } = await execute<{ id: string }[]>(() =>
+      client.from(view).select('id', { count: 'exact' }).eq('organization_id', organizationId).limit(1) as unknown as
+        PromiseLike<PostgrestOutcome<{ id: string }[]>>,
+    )
+    if (count === null) {
+      throw new CloudError('UNEXPECTED', 'the server did not report how many rows the read covers')
+    }
+    return count
+  }
+
+  /** One keyset traversal: pages until the server's per-page count says none remain. */
+  async function traverse<Row extends { id: string }>(view: string, columns: string, organizationId: string): Promise<Row[]> {
+    const rows: Row[] = []
+    let afterId: string | undefined
+    for (let page = 0; ; page += 1) {
+      if (page >= MAX_PAGES) {
+        throw new CloudError('UNEXPECTED', 'the catalogue read did not converge')
+      }
+      const { data, count } = await execute<Row[]>(() => {
+        let query = client
+          .from(view)
+          .select(columns, { count: 'exact' })
+          .eq('organization_id', organizationId)
+        if (afterId !== undefined) {
+          query = query.gt('id', afterId)
+        }
+        return query.order('id', { ascending: true }).limit(pageSize) as unknown as PromiseLike<PostgrestOutcome<Row[]>>
+      })
+      if (count === null) {
+        throw new CloudError('UNEXPECTED', 'the server did not report how many rows the read covers')
+      }
+      rows.push(...data)
+      if (count <= data.length) {
+        break
+      }
+      if (data.length === 0) {
+        throw new CloudError('UNEXPECTED', 'the server reported rows it did not return')
+      }
+      afterId = data[data.length - 1].id
+    }
+    return rows
+  }
+
+  /** Exactly one row, or a NOT_FOUND that is not really a lost membership. */
+  async function exactlyOne<T>(rows: readonly T[], organizationId: string): Promise<T> {
+    if (rows.length === 1) {
+      return rows[0]
+    }
+    if (rows.length === 0) {
+      await assertStillMember(organizationId)
+    }
+    return one(rows)
+  }
+
+  /**
+   * A catalogue mutation. A FORBIDDEN refusal is re-examined against live
+   * membership, so "you are no longer a member here" is distinguished from
+   * "your role may not do this" (the import's OWNER requirement).
+   */
+  async function mutate<T>(organizationId: string, operation: () => Promise<T>): Promise<T> {
+    try {
+      return await operation()
+    } catch (cause) {
+      if (isCloudError(cause) && cause.code === 'FORBIDDEN' && !(await organizationVisible(organizationId).catch(() => true))) {
+        throw new CloudError('NO_MEMBERSHIP', 'the caller no longer has an active membership in this organization')
+      }
+      throw cause
+    }
+  }
+
   const identity: IdentityGateway = {
     async listOrganizations() {
       const rows = await run<OrganizationRow[]>(() =>
@@ -474,132 +711,181 @@ export function createDataGateway(client: CloudClient): DataGateway {
 
   const catalog: CatalogGateway = {
     async listProducts(organizationId) {
-      const rows = await run<ProductRow[]>(() =>
-        client.from('products').select(PRODUCT_COLUMNS).eq('organization_id', organizationId),
-      )
-      return rows.map(toProduct)
+      return (await readAll<ProductRow>('products', PRODUCT_COLUMNS, organizationId)).map(toProduct)
     },
     async readProduct(organizationId, id) {
       const rows = await run<ProductRow[]>(() =>
         client.from('products').select(PRODUCT_COLUMNS).eq('organization_id', organizationId).eq('id', id),
       )
-      return toProduct(one(rows))
+      return toProduct(await exactlyOne(rows, organizationId))
     },
     async createProduct(organizationId, input) {
-      const rows = await run<ProductRow[]>(() => client.rpc('create_product', productParams(organizationId, input)))
-      return toProduct(one(rows))
+      return mutate(organizationId, async () =>
+        toProduct(one(await run<ProductRow[]>(() => client.rpc('create_product', productParams(organizationId, input))))),
+      )
     },
     async updateProduct(organizationId, expectedVersion, input) {
-      const rows = await run<ProductRow[]>(() => client.rpc('update_product', {
-        ...productParams(organizationId, input), p_expected_version: expectedVersion,
-      }))
-      return toProduct(one(rows))
+      return mutate(organizationId, async () =>
+        toProduct(one(await run<ProductRow[]>(() => client.rpc('update_product', {
+          ...productParams(organizationId, input), p_expected_version: expectedVersion,
+        })))),
+      )
     },
     async setProductActive(organizationId, id, expectedVersion, active) {
-      const rows = await run<ProductRow[]>(() => client.rpc('set_product_active', {
-        p_id: id, p_organization_id: organizationId, p_expected_version: expectedVersion, p_active: active,
-      }))
-      return toProduct(one(rows))
+      return mutate(organizationId, async () =>
+        toProduct(one(await run<ProductRow[]>(() => client.rpc('set_product_active', {
+          p_id: id, p_organization_id: organizationId, p_expected_version: expectedVersion, p_active: active,
+        })))),
+      )
     },
 
     async listSuppliers(organizationId) {
-      const rows = await run<SupplierRow[]>(() => client.from('suppliers').select(SUPPLIER_COLUMNS).eq('organization_id', organizationId))
-      return rows.map(toSupplier)
+      return (await readAll<SupplierRow>('suppliers', SUPPLIER_COLUMNS, organizationId)).map(toSupplier)
     },
     async readSupplier(organizationId, id) {
       const rows = await run<SupplierRow[]>(() => client.from('suppliers').select(SUPPLIER_COLUMNS).eq('organization_id', organizationId).eq('id', id))
-      return toSupplier(one(rows))
+      return toSupplier(await exactlyOne(rows, organizationId))
     },
     async createSupplier(organizationId, input) {
-      const rows = await run<SupplierRow[]>(() => client.rpc('create_supplier', partyParams(organizationId, input)))
-      return toSupplier(one(rows))
+      return mutate(organizationId, async () =>
+        toSupplier(one(await run<SupplierRow[]>(() => client.rpc('create_supplier', partyParams(organizationId, input))))),
+      )
     },
     async updateSupplier(organizationId, expectedVersion, input) {
-      const rows = await run<SupplierRow[]>(() => client.rpc('update_supplier', {
-        ...partyParams(organizationId, input), p_expected_version: expectedVersion,
-      }))
-      return toSupplier(one(rows))
+      return mutate(organizationId, async () =>
+        toSupplier(one(await run<SupplierRow[]>(() => client.rpc('update_supplier', {
+          ...partyParams(organizationId, input), p_expected_version: expectedVersion,
+        })))),
+      )
     },
     async setSupplierActive(organizationId, id, expectedVersion, active) {
-      const rows = await run<SupplierRow[]>(() => client.rpc('set_supplier_active', {
-        p_id: id, p_organization_id: organizationId, p_expected_version: expectedVersion, p_active: active,
-      }))
-      return toSupplier(one(rows))
+      return mutate(organizationId, async () =>
+        toSupplier(one(await run<SupplierRow[]>(() => client.rpc('set_supplier_active', {
+          p_id: id, p_organization_id: organizationId, p_expected_version: expectedVersion, p_active: active,
+        })))),
+      )
     },
 
     async listCustomers(organizationId) {
-      const rows = await run<CustomerRow[]>(() => client.from('customers').select(CUSTOMER_COLUMNS).eq('organization_id', organizationId))
-      return rows.map(toCustomer)
+      return (await readAll<CustomerRow>('customers', CUSTOMER_COLUMNS, organizationId)).map(toCustomer)
     },
     async readCustomer(organizationId, id) {
       const rows = await run<CustomerRow[]>(() => client.from('customers').select(CUSTOMER_COLUMNS).eq('organization_id', organizationId).eq('id', id))
-      return toCustomer(one(rows))
+      return toCustomer(await exactlyOne(rows, organizationId))
     },
     async createCustomer(organizationId, input) {
-      const rows = await run<CustomerRow[]>(() => client.rpc('create_customer', customerParams(organizationId, input)))
-      return toCustomer(one(rows))
+      return mutate(organizationId, async () =>
+        toCustomer(one(await run<CustomerRow[]>(() => client.rpc('create_customer', customerParams(organizationId, input))))),
+      )
     },
     async updateCustomer(organizationId, expectedVersion, input) {
-      const rows = await run<CustomerRow[]>(() => client.rpc('update_customer', {
-        ...customerParams(organizationId, input), p_expected_version: expectedVersion,
-      }))
-      return toCustomer(one(rows))
+      return mutate(organizationId, async () =>
+        toCustomer(one(await run<CustomerRow[]>(() => client.rpc('update_customer', {
+          ...customerParams(organizationId, input), p_expected_version: expectedVersion,
+        })))),
+      )
     },
     async setCustomerActive(organizationId, id, expectedVersion, active) {
-      const rows = await run<CustomerRow[]>(() => client.rpc('set_customer_active', {
-        p_id: id, p_organization_id: organizationId, p_expected_version: expectedVersion, p_active: active,
-      }))
-      return toCustomer(one(rows))
+      return mutate(organizationId, async () =>
+        toCustomer(one(await run<CustomerRow[]>(() => client.rpc('set_customer_active', {
+          p_id: id, p_organization_id: organizationId, p_expected_version: expectedVersion, p_active: active,
+        })))),
+      )
     },
 
     async listCustomerStatuses(organizationId) {
-      const rows = await run<CustomerStatusRow[]>(() => client.from('customer_statuses').select(CUSTOMER_STATUS_COLUMNS)
-        .eq('organization_id', organizationId).order('sort_order').order('code'))
-      return rows.map(toCustomerStatus)
+      // Read in id order like every catalogue list, then presented in the
+      // stable display order: sort_order, then the case-folded code, then id,
+      // so two screens can never disagree about the sequence.
+      const rows = await readAll<CustomerStatusRow>('customer_statuses', CUSTOMER_STATUS_COLUMNS, organizationId)
+      return rows.map(toCustomerStatus).sort((left, right) =>
+        left.sortOrder - right.sortOrder ||
+        compareText(left.code.toLowerCase(), right.code.toLowerCase()) ||
+        compareText(left.id, right.id),
+      )
     },
     async readCustomerStatus(organizationId, id) {
       const rows = await run<CustomerStatusRow[]>(() => client.from('customer_statuses').select(CUSTOMER_STATUS_COLUMNS)
         .eq('organization_id', organizationId).eq('id', id))
-      return toCustomerStatus(one(rows))
+      return toCustomerStatus(await exactlyOne(rows, organizationId))
     },
     async createCustomerStatus(organizationId, input) {
-      const rows = await run<CustomerStatusRow[]>(() => client.rpc('create_customer_status', statusParams(organizationId, input)))
-      return toCustomerStatus(one(rows))
+      return mutate(organizationId, async () =>
+        toCustomerStatus(one(await run<CustomerStatusRow[]>(() => client.rpc('create_customer_status', statusParams(organizationId, input))))),
+      )
     },
     async updateCustomerStatus(organizationId, expectedVersion, input) {
-      const rows = await run<CustomerStatusRow[]>(() => client.rpc('update_customer_status', {
-        ...statusParams(organizationId, input), p_expected_version: expectedVersion,
-      }))
-      return toCustomerStatus(one(rows))
+      return mutate(organizationId, async () =>
+        toCustomerStatus(one(await run<CustomerStatusRow[]>(() => client.rpc('update_customer_status', {
+          ...statusParams(organizationId, input), p_expected_version: expectedVersion,
+        })))),
+      )
     },
     async setCustomerStatusActive(organizationId, id, expectedVersion, active) {
-      const rows = await run<CustomerStatusRow[]>(() => client.rpc('set_customer_status_active', {
-        p_id: id, p_organization_id: organizationId, p_expected_version: expectedVersion, p_active: active,
-      }))
-      return toCustomerStatus(one(rows))
+      return mutate(organizationId, async () =>
+        toCustomerStatus(one(await run<CustomerStatusRow[]>(() => client.rpc('set_customer_status_active', {
+          p_id: id, p_organization_id: organizationId, p_expected_version: expectedVersion, p_active: active,
+        })))),
+      )
     },
 
     async importLegacyCatalog(input) {
-      return run<CatalogImportResult>(() => client.rpc('import_catalog', {
+      return mutate(input.organizationId, () => run<CatalogImportResult>(() => client.rpc('import_catalog', {
         p_request_id: input.requestId,
         p_organization_id: input.organizationId,
         p_payload_checksum: input.payloadChecksum,
         p_products: input.products,
         p_suppliers: input.suppliers,
         p_customers: input.customers,
-      }))
+      })))
     },
   }
 
+  /** Network trouble while talking to Auth is not a verdict about the session. */
+  function authFailure(error: unknown, whenRefused: CloudError): CloudError {
+    if (isAuthRetryableFetchError(error)) {
+      return cloudErrorFromTransport(error, isOnline())
+    }
+    if (isAuthApiError(error) && error.status >= 500) {
+      return new CloudError('SERVER_UNAVAILABLE', 'the authentication service is not answering')
+    }
+    return whenRefused
+  }
+
   async function currentUserId(): Promise<string | null> {
+    let result: Awaited<ReturnType<typeof client.auth.getSession>>
     try {
-      const { data, error } = await client.auth.getSession()
-      if (error) {
-        throw new CloudError('SESSION_EXPIRED', 'the session could not be read')
-      }
-      return data.session?.user.id ?? null
+      result = await client.auth.getSession()
     } catch (cause) {
       throw cloudErrorFromTransport(cause, isOnline())
+    }
+    if (result.error) {
+      // A refresh the server REFUSED ends the session; a refresh that could
+      // not be attempted because the network is down does not. Reporting the
+      // second as "session expired" would send an offline user to a sign-in
+      // form that cannot work either.
+      throw authFailure(result.error, new CloudError('SESSION_EXPIRED', 'the session could not be refreshed'))
+    }
+    return result.data.session?.user.id ?? null
+  }
+
+  /** Removes every key auth-js keeps for this session from local storage. */
+  function clearStoredSession(): void {
+    const store = storage()
+    if (!store) return
+    for (const key of [storageKey, `${storageKey}-user`, `${storageKey}-code-verifier`]) {
+      store.removeItem(key)
+    }
+  }
+
+  function storedAccessToken(): string | undefined {
+    try {
+      const raw = storage()?.getItem(storageKey)
+      if (!raw) return undefined
+      const parsed = JSON.parse(raw) as { access_token?: unknown }
+      return typeof parsed.access_token === 'string' ? parsed.access_token : undefined
+    } catch {
+      return undefined
     }
   }
 
@@ -619,16 +905,53 @@ export function createDataGateway(client: CloudClient): DataGateway {
         // Wrong credentials and a disabled account are deliberately the same
         // answer. Distinguishing them would turn the sign-in form into an
         // oracle for which addresses have accounts, which is the enumeration
-        // problem §7 closes everywhere else.
-        throw new CloudError('SESSION_EXPIRED', 'the e-mail address or password is not correct')
+        // problem §7 closes everywhere else. A network failure is NOT that
+        // answer: it is OFFLINE or SERVER_UNAVAILABLE.
+        throw authFailure(result.error, new CloudError('INVALID_CREDENTIALS', 'the e-mail address or password is not correct'))
       }
     },
 
     async signOut() {
+      // Audit A, A-M3. auth-js loads — and, for an expired access token,
+      // REFRESHES — the session before it removes it; with the network down
+      // that refresh fails and the session used to survive in storage, so the
+      // previous user came back the moment the connection did.
+      //
+      // 1. Capture the access token for a best-effort server revocation.
+      // 2. Sign out LOCALLY. If auth-js cannot, clear its storage keys
+      //    directly and sign out again, which now finds no session and emits
+      //    SIGNED_OUT to this tab and every other tab.
+      // 3. Refuse to report success while any credential remains stored.
+      // 4. Only then ask the server to revoke the session everywhere. Offline,
+      //    that fails — harmlessly, because the device no longer holds it.
+      const accessToken = storedAccessToken()
+
+      let local: { error: unknown } = { error: null }
       try {
-        await client.auth.signOut()
+        local = await client.auth.signOut({ scope: 'local' })
       } catch (cause) {
-        throw cloudErrorFromTransport(cause, isOnline())
+        local = { error: cause }
+      }
+      if (local.error || storage()?.getItem(storageKey) != null) {
+        clearStoredSession()
+        try {
+          await client.auth.signOut({ scope: 'local' })
+        } catch {
+          // The storage is already clear; the event is a courtesy to listeners.
+        }
+      }
+
+      if (storage()?.getItem(storageKey) != null) {
+        throw new CloudError('UNEXPECTED', 'the local session could not be removed')
+      }
+
+      if (accessToken) {
+        try {
+          await client.auth.admin.signOut(accessToken, 'global')
+        } catch {
+          // Best effort by definition: an expired token or no network cannot
+          // revoke, and neither leaves anything usable on this device.
+        }
       }
     },
 
@@ -640,8 +963,15 @@ export function createDataGateway(client: CloudClient): DataGateway {
         throw cloudErrorFromTransport(cause, isOnline())
       }
       if (result.error) {
-        throw new CloudError('RECORD_INVALID', 'the password was refused')
+        throw authFailure(result.error, new CloudError('RECORD_INVALID', 'the password was refused'))
       }
+    },
+
+    onAuthChange(listener) {
+      const { data } = client.auth.onAuthStateChange((event, session) => {
+        listener({ event, userId: session?.user.id ?? null })
+      })
+      return () => data.subscription.unsubscribe()
     },
   }
 }

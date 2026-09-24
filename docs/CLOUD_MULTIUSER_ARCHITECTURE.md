@@ -344,9 +344,17 @@ password grant still succeeds — because a test for the first alone would call
 the broken configuration a success.
 
 **Session handling.** `supabase-js` persists the session in `localStorage` and
-refreshes the access token automatically. A refresh that fails (revoked token,
-disabled user, server unreachable) surfaces as an explicit `SESSION_EXPIRED` state
-that returns the user to the sign-in screen — never as an empty data screen.
+refreshes the access token automatically. A refresh the server REFUSES (revoked
+token, disabled user) surfaces as an explicit `SESSION_EXPIRED` state that
+returns the user to the sign-in screen — never as an empty data screen. A
+refresh that cannot be ATTEMPTED because the network or server is down is
+`OFFLINE` / `SERVER_UNAVAILABLE` and keeps the session, so the user continues
+when the connection returns (Audit A, A-L1). Sign-out removes the session from
+this device unconditionally — even offline with an expired access token — and
+only then asks the server to revoke it (A-M3). A session change made in another
+tab, and a membership withdrawn on the server, end the running application
+state rather than leaving it READY under the old identity (A-M2); §30 has the
+mechanism.
 
 **OPTIONAL FUTURE.** Custom SMTP (a free-tier transactional email provider) would
 enable real email invitations and self-service password reset. It changes the
@@ -561,8 +569,12 @@ Three independent layers, in this order:
    needs it to hold, named object by object, in the same migration that creates
    the object. A table created without that block is unreachable even from `api`.
 3. **Policies.** RLS is `enable`d **and `force`d** on every table in `app_data`,
-   so the table owner is subject to it too, and a `SECURITY DEFINER` function
-   cannot accidentally read across tenants through a table it forgot to filter.
+   so a plain table owner is subject to it too. **FORCE does not bind a role
+   holding BYPASSRLS** — and `postgres`, which owns these tables and every
+   `SECURITY DEFINER` function here, holds it. A DEFINER function therefore
+   reads across tenants unless its own SQL filters by organisation; FORCE is not
+   the safety net for that, explicit filtering is (correction recorded by Audit
+   A, A-L8).
 
 ```sql
 create schema if not exists api;          -- exposed  (config.toml, §20)
@@ -1538,6 +1550,13 @@ enforceable rather than aspirational:
   `text`. The client receives `"12.5"` and hands it to `Quantity.fromJSON` /
   `Money.fromJSON` — the existing contract, unchanged. There is no second route
   that returns the same field as a number, because `app_data` is not exposed.
+  One precision about what that means (Audit A, A-L9): PostgREST lets a caller
+  ask for a cast in `select` — `select=units_per_purchase_unit::numeric` returns
+  a JSON number. No route does it by default and the supported client never
+  asks; the gateway also refuses any decimal that does not arrive as a
+  canonical string. The invariant is therefore a property of the projection
+  plus the supported client, not a claim that a deliberately crafted request
+  cannot choose a lossy representation for itself.
 
   **Every such view is created `with (security_invoker = on)`.** This is not a
   footnote: a PostgreSQL view executes with its *owner's* privileges by default,
@@ -2475,9 +2494,13 @@ comes from row-level policies evaluated on the server against a verified JWT —
 from anything being hard to find.
 
 **One cheap, concrete control worth building in Phase 10:** a build step that
-greps the production bundle for `sb_secret_` and the legacy `service_role` marker
-and **fails the build** on a hit. It costs three lines and it catches the one
-mistake that would be catastrophic and silent.
+scans the production bundle for secret key material and **fails the build** on a
+hit. It catches the one mistake that would be catastrophic and silent. A legacy
+`service_role` key is a JWT whose role is base64url-encoded, so the text
+`service_role` never appears inside it: the scan DECODES every JWT-shaped string
+and refuses any role but `anon`, alongside `sb_secret_…`. The same rule
+(`src/cloud/credentialPolicy.mjs`) guards the runtime configuration and the
+hosted posture script (Audit A, A-M4).
 
 ---
 
@@ -2618,7 +2641,7 @@ interface hiding a button.
 | 3 | Removed member keeps a valid JWT | Every policy resolves membership from the `memberships` table **at query time**, never from a JWT claim. `status = 'DISABLED'` takes effect on the very next request. Authentication without membership grants nothing. (Admin sign-out additionally revokes refresh tokens; the policy is the load-bearing control) |
 | 4 | Desktop application reverse engineered | The binary contains a project URL and a publishable key. Both are designed to be public. `anon` has no grant on any business table, so extraction yields the capabilities of a logged-out visitor |
 | 5 | Publishable key extracted from a bundle or a network trace | Same as 4 — this is the key's intended use. RLS and platform rate limits are the defence |
-| 6 | Secret key exposure | It exists only in Edge Function secrets, never in the repository, never in a `.env` that is committed, never in a bundle. **A build step greps the production bundle for `sb_secret_` and fails on a hit** (§19) |
+| 6 | Secret key exposure | It exists only in Edge Function secrets, never in the repository, never in a `.env` that is committed, never in a bundle. **A build step scans the production bundle for `sb_secret_` and for JWT-form keys whose decoded role is not `anon`, and fails on a hit** (§19) |
 | 7 | Manipulated RPC parameters | Every function re-proves membership and role from the database as its first statement; `SECURITY INVOKER` functions additionally inherit RLS. Parameters are strongly typed (`uuid`, `numeric`, `date`), all SQL is static or parameterised, and every `SECURITY DEFINER` function pins `search_path = ''` with schema-qualified names |
 | 8 | Client forges `created_by` / timestamps | The stamping trigger **overwrites** rather than validates. The client's value is discarded, because it was never an input |
 | 9 | Stale-write race (two people edit one record) | `update … where version = $expected`. Zero rows = refusal, surfaced through the existing `STALE_WRITE` code and its existing translation. No merge, ever |
@@ -2881,7 +2904,7 @@ design reads as a design and this reads as a report against it.
 | §4 | `api.begin_provisioning` / `complete_provisioning` / `fail_provisioning` / `begin_password_reset` / `complete_password_reset`, `SECURITY DEFINER`, granted to `service_role` alone |
 | §4 | The `admin-provision-user` and `admin-reset-password` Edge Functions, including the compensating delete that only ever removes an auth user the same attempt created |
 | §16 | The write gate's **enforcement** — columns, `assert_write_allowed`, and the trigger — attached to `counters`, the one organisation-scoped table Phase 10 has that a restore would replace. Phase 11 attaches it with every business table; Phase 21 owns the restore that acquires and releases it |
-| §19 | `npm run build` greps the production bundle for `sb_secret_` and `service_role` and fails on a hit. Verified by planting one |
+| §19 | `npm run build` greps the production bundle for `sb_secret_` and `service_role` and fails on a hit. Verified by planting one. *Audit A (A-M4) later showed the plain-text marker cannot see a JWT-form legacy key; the scan now decodes it — §30* |
 | §19 | The Edge Functions read the server credential from the platform-injected `SUPABASE_SECRET_KEYS`. There is **no project secret to set** — see the correction below |
 | §7, §20 | `npm run verify:hosted` — eighteen unauthenticated HTTP checks of the hosted exposed-schema list, Phase 11 catalogue posture and auth configuration, creating nothing. Proved by pointing it at a deliberately broken configuration |
 | §20 | `supabase/config.toml` declares only what this product governs on the hosted project. Every declared property is pushed, so the file's silence is a control — see the fifth correction below |
@@ -3055,7 +3078,9 @@ the gateway is the only module that names PostgREST views and RPCs.
 path. It detects a legacy database without creating one, reuses the Phase 8
 validator, takes the required snapshot and delivers a complete checksummed
 backup, reuses a persisted request id for retry, invokes one server transaction,
-verifies cloud counts, and only then deletes the local database and writes the
+proves every legacy record in the cloud by id and content (§30 — the original
+organisation-wide count comparison was replaced after Audit A), and only then
+deletes the local database and writes the
 completion marker. A corrupt row or an unconfirmed import leaves local data in
 place. There is no read fallback, write queue, cache authority or dual-master
 mode after cutover.
@@ -3074,3 +3099,75 @@ All four Phase 11 migrations are deployed to the linked hosted project. Local
 and remote history match 11/11; no configuration push was needed, the hosted
 security advisor reports no WARN findings, and the eighteen anonymous HTTP posture
 checks pass. No real user, organisation or business row was created.
+
+---
+
+## 30. Audit A remediation, pass 1
+
+The independent Audit A (after Phase 11) failed the phase on one HIGH and five
+MEDIUM findings. None was a tenant-isolation or decimal-precision breach on the
+server; all of them were places where the client could present something other
+than the server's truth, or where the tests could not see a regression. What
+changed, by finding:
+
+| Finding | What was wrong | What holds now |
+| --- | --- | --- |
+| **A-H1** | Catalogue lists were one PostgREST request; `max_rows` (1000) truncated them silently, so a larger catalogue was shown as complete | Every catalogue list is read in keyset pages by `id`, each asking for an exact count of the rows ahead; the loop ends only when the server reports none left, and a page that is empty while rows remain is refused. Correct whatever `max_rows` is — proved with 1001 and 1500 rows and page sizes above and below the cap. Every traversal is then reconciled against one exact count (correction pass 2, below) |
+| **A-M1** | The legacy cutover compared the organisation's whole cloud row count with the legacy count, which locked a device out for good beyond 1000 rows, when a colleague saved a record, on a second device, and on a record the server refused | Proof is per legacy record, by id and content, under the server's own normalisation. Extra cloud rows never block it; a catalogue the cloud already holds converges without an import (a lost response, a second device); a record breaking a server limit is named before anything is sent; a genuine conflict, or missing records in a cloud catalogue already in use, stops with a named reason and nothing merged. The one way past a conflict is an OWNER decision behind a confirmation, preceded by a fresh complete backup file |
+| **A-M2** | The application stayed READY when the session changed in another tab or a membership was withdrawn, and an RLS-empty list read as "your catalogue is empty" | Auth events (relayed between tabs) invalidate the runtime; every business call checks the signed-in user before and after the request; an empty list is re-checked against live membership and becomes `NO_MEMBERSHIP` when the organisation is no longer visible. The shell names the signed-in user and organisation |
+| **A-M3** | Offline sign-out with an expired access token left the session stored, and the previous user returned with the network | Sign-out clears the device's session unconditionally, refuses to report success while any credential remains stored, and only then revokes on the server as a best effort |
+| **A-M4** | The secret guards searched for the text `service_role`, which a JWT-form key never contains | One policy module decodes the role; build scanner, runtime configuration and hosted script all refuse any role but `anon` (and `anon` only where explicitly allowed) |
+| **A-M5** | Granting UPDATE on an `api` view, or removing a version predicate, left every suite green | pgTAP P18–P20 (view privileges, no overloads, `p_expected_version` on every update/lifecycle RPC) and a narrowed P12; per-entity stale-write, assignability and writable-view tests over real HTTP; the regressions were re-applied locally and each turned the suites red |
+
+Cheap, directly related LOW findings were fixed in the same pass: transport
+failures now reach `OFFLINE` / `SERVER_UNAVAILABLE` and wrong credentials read
+as such (A-L1); an inspection failure no longer invents zero counts, and the
+catalogue-only guard lives inside the migration (A-L2); `api.import_catalog`
+validates JSON types NULL-safely and stores the checksum exactly (A-L3);
+required identifiers must contain a visible character (A-L4); and the
+documentation statements above were corrected (A-L8, A-L9).
+
+**Forward migration, local only.** `20260924120000_audit_a_remediation.sql`
+adds the visible-identifier constraints, the typed import helpers and the
+strict `api.import_catalog`. It is proved from an empty local database and is
+**not yet applied to the hosted project**; that is a separate, reviewed
+deployment step. Applied migrations were not edited.
+
+**Deferred, and recorded:** the cross-tenant UUID existence oracle (A-L5),
+provisioned-user deletion (A-L6) and the organisation selector (A-L7) belong to
+Phase 12 or later; opaque external codes are unchanged by design.
+
+### 30.1 Correction pass 2 (source review of pass 1)
+
+A source-level review of pass 1 found that its own claims were stronger than
+its code in five places. Each is corrected without a schema change:
+
+| ID | What was wrong | What holds now |
+| --- | --- | --- |
+| **R-1 / R-2** | A catalogue read is several requests. A membership withdrawn between two pages ended the loop with a SHORTER list and no error, and a row committed behind the cursor was silently missed, although the code claimed "complete or fails" | Every traversal is reconciled against one exact count of the whole visible set, taken after it. Equal: return. Smaller: the membership was withdrawn — `NO_MEMBERSHIP`. Larger: rows were committed behind the cursor — read everything again, at most `MAX_CATALOG_TRAVERSALS` (3) times, then fail explicitly |
+| **R-3** | The legacy proof compared decimals as TEXT, so `1.20` (PostgreSQL keeps the scale it was given) and `1.2` (what `Quantity` writes) were a false conflict | Exact value equality on canonical decimal text (`sameExactDecimal`): trailing fraction zeros and leading integer zeros are representation; no value ever becomes a JavaScript number. Pre-import comparison and post-import verification share it. Validation is unchanged |
+| **R-4** | The migrate and retire actions could finish after a sign-out or a sign-in as someone else and restore the previous user's migration screen; retire could delete the local database on that stale authority | A monotonic generation, advanced by every invalidation, retry, boot run and sign-out. A stale action writes no state. Right before the local database is deleted, and again before the cutover is marked complete, the action checks that its generation is current AND that the session still belongs to the user the screen was built for |
+| **N-1** | The boot read the user id once, then three more things; a sign-in as someone else in between could publish A's id beside B's profile or company | The boot re-reads the signed-in user at the end and publishes nothing unless it is the same; otherwise it starts over, at most `BOOT_IDENTITY_ATTEMPTS` (3) times |
+| **R-5** | pgTAP P18 used `has_table_privilege`, which does not see a COLUMN grant — `grant update (note) on api.customers` left every suite green | P18 now checks table privileges, `has_any_column_privilege` for INSERT/UPDATE/REFERENCES, and the raw view and column ACLs for any grantee; P18b keeps the legitimate SELECT in place |
+
+**The read guarantee, stated exactly.** A successful catalogue list returns
+exactly the set of row IDS the caller could see at one instant — the moment of
+the reconciliation count. That rests on three schema facts: no client path
+deletes a catalogue row (P4a/P4b), no row changes organisation
+(`assert_tenant_immutable`), and no RPC changes an `id`. It is NOT an atomic
+snapshot of the CONTENT: pages are separate requests, and a row updated after
+its page was read is returned as that page saw it. Writes are protected by
+`expected_version`, not by the read. A future DELETE path or mutable id would
+invalidate the argument and must change `readAll` with it.
+
+**Correction pass 3 — live authority before a local deletion.** The check
+that runs right before the legacy database is deleted (and again before the
+cutover is marked complete) no longer trusts the role the boot cached. After
+confirming the action's generation and the signed-in user, it re-reads the
+user's OWN membership rows from the server and requires the row for this
+organisation to be ACTIVE — and, for the OWNER-only "back up and remove",
+to carry the OWNER role — then confirms generation and user once more. A
+downgraded, disabled or removed membership aborts with nothing deleted and
+nothing marked, and the application reboots from live state. The automatic
+retirement of an EMPTY legacy database requires no role, but is bound in the
+same way to the boot that observed it and to that boot's user.

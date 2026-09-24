@@ -37,6 +37,7 @@
  */
 
 import process from 'node:process'
+import { classifyCredential } from '../src/cloud/credentialPolicy.mjs'
 
 const url = (process.env.SUPABASE_URL ?? '').replace(/\/+$/, '')
 const key = process.env.SUPABASE_PUBLISHABLE_KEY ?? ''
@@ -46,12 +47,19 @@ if (url === '' || key === '') {
   process.exit(2)
 }
 
-if (key.includes('sb_secret_') || key.includes('service_role')) {
-  // Refusing is the whole point: a secret key here would make every check below
-  // pass while proving nothing, because service_role bypasses the posture the
-  // checks exist to confirm.
-  console.error('refused: SUPABASE_PUBLISHABLE_KEY looks like a secret key. Use the publishable key.')
-  process.exit(2)
+// Refusing is the whole point: a secret key here would make every check below
+// pass while proving nothing, because service_role bypasses the posture the
+// checks exist to confirm. The key is CLASSIFIED — a legacy service-role key is
+// a JWT whose role is base64url-encoded, so no substring search can see it —
+// and only the kind is ever printed, never the value.
+{
+  const { kind, role } = classifyCredential(key)
+  if (kind !== 'PUBLISHABLE' && kind !== 'LEGACY_ANON_JWT') {
+    console.error(
+      `refused: SUPABASE_PUBLISHABLE_KEY is ${kind}${role ? ` (decoded role "${role}")` : ''}, not a publishable key.`,
+    )
+    process.exit(2)
+  }
 }
 
 const results = []
@@ -155,12 +163,24 @@ for (const view of ['products', 'suppliers', 'customers', 'customer_statuses']) 
 }
 
 {
-  const r = await request('/rest/v1/rpc/begin_provisioning', { method: 'POST', body: '{}' })
+  // The FULL parameter list, so PostgREST resolves the function and the refusal
+  // is the privilege check itself (anon has no USAGE on `api`) — not a missing
+  // signature, which an empty body would produce and which proves nothing.
+  const r = await request('/rest/v1/rpc/begin_provisioning', {
+    method: 'POST',
+    body: JSON.stringify({
+      p_request_id: '00000000-0000-4000-8000-000000000000',
+      p_organization_id: '00000000-0000-4000-8000-000000000000',
+      p_email: 'posture-check@example.invalid',
+      p_requested_role: 'MEMBER',
+      p_actor_user_id: '00000000-0000-4000-8000-000000000000',
+    }),
+  })
   record(
     'provisioning RPCs are not callable by anon',
-    r.status >= 400,
-    `status ${r.status}`,
-    'EXECUTE is granted to service_role alone',
+    r.status === 401 && r.json?.code === '42501' && r.text.includes('permission denied for schema api'),
+    `status ${r.status}, code ${r.json?.code ?? '—'}`,
+    'EXECUTE is granted to service_role alone, and anon holds no USAGE on api',
   )
 }
 

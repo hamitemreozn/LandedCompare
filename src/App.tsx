@@ -13,6 +13,7 @@ import {
   BootLoadingScreen,
   CatalogMigrationScreen,
   CloudFailureScreen,
+  LegacyInspectionFailedScreen,
   PasswordChangeScreen,
   SignInScreen,
 } from './features/shell/BootScreens'
@@ -21,7 +22,7 @@ import { getLocale } from './i18n'
 
 export default function App({ options }: { readonly options?: ApplicationBootOptions } = {}) {
   const { i18n } = useTranslation()
-  const { state, retry, signIn, signOut, changePassword, migrate } = useApplicationBoot(options)
+  const { state, retry, signIn, signOut, changePassword, migrate, retireLocal } = useApplicationBoot(options)
   const { route } = useRoute()
 
   useEffect(() => {
@@ -31,15 +32,19 @@ export default function App({ options }: { readonly options?: ApplicationBootOpt
   if (state.phase === 'INITIALIZING') return <BootLoadingScreen />
   if (state.phase === 'SIGNED_OUT') return <SignInScreen onSignIn={signIn} />
   if (state.phase === 'UNAVAILABLE' || state.phase === 'NO_MEMBERSHIP') {
-    return <CloudFailureScreen code={state.code} onRetry={retry} />
+    return <CloudFailureScreen code={state.code} deactivated={state.deactivated} onRetry={retry} />
+  }
+  if (state.phase === 'LEGACY_INSPECTION_FAILED') {
+    return <LegacyInspectionFailedScreen failure={state.failure} onRetry={retry} />
   }
   if (state.phase === 'MIGRATION_REQUIRED' || state.phase === 'MIGRATION_FAILED') {
     return (
       <CatalogMigrationScreen
         counts={state.inspection.counts}
-        canMigrate={state.ready.role === 'OWNER'}
+        role={state.ready.role}
         failure={state.phase === 'MIGRATION_FAILED' ? state.failure : undefined}
         onMigrate={migrate}
+        onRetire={retireLocal}
       />
     )
   }

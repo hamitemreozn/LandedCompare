@@ -26,6 +26,8 @@
  * reaches the output.
  */
 
+import { classifyCredential, findPrivilegedCredentials, isClientCredential } from './credentialPolicy.mjs'
+
 /**
  * The prefixes a client bundle must never contain.
  *
@@ -38,11 +40,12 @@ export const FORBIDDEN_KEY_PREFIXES = [
 ] as const
 
 /**
- * The legacy `service_role` JWT marker. Supabase is deprecating the legacy
- * anon/service_role key pair by the end of 2026 in favour of
- * publishable/secret, so new work uses the new names — but a legacy secret in a
- * bundle is exactly as catastrophic as a new one, and the build check looks for
- * both.
+ * The legacy `service_role` marker, for plain text that names the role.
+ *
+ * NOT sufficient on its own and not relied upon: a legacy service-role KEY is a
+ * JWT whose role claim is base64url-encoded, so this text never appears inside
+ * it. `credentialPolicy.mjs` decodes the payload instead, and that is the check
+ * that refuses the key.
  */
 export const FORBIDDEN_KEY_MARKERS = [
   String.fromCodePoint(115, 101, 114, 118, 105, 99, 101, 95, 114, 111, 108, 101),
@@ -61,12 +64,19 @@ export type CloudConfigProblem =
   /** No `VITE_SUPABASE_PUBLISHABLE_KEY` was provided at build time. */
   | 'KEY_MISSING'
   /**
-   * A secret key was provided where a publishable one belongs. This is the
-   * single most dangerous configuration mistake available, and it fails loudly
-   * rather than working perfectly and silently handing every visitor
-   * unrestricted database access.
+   * A secret key — `sb_secret_…`, or a legacy JWT whose decoded role is
+   * anything but `anon` — was provided where a publishable one belongs. This
+   * is the single most dangerous configuration mistake available, and it
+   * fails loudly rather than working perfectly and silently handing every
+   * visitor unrestricted database access.
    */
   | 'KEY_IS_SECRET'
+  /**
+   * The value is not a recognisable client credential: neither a publishable
+   * key nor (on the loopback development stack only) a legacy JWT whose
+   * decoded role is `anon`.
+   */
+  | 'KEY_UNRECOGNIZED'
 
 export class CloudConfigError extends Error {
   readonly problem: CloudConfigProblem
@@ -128,16 +138,32 @@ export function readCloudConfig(environment: CloudEnvironment): CloudConfig {
     )
   }
 
+  // A legacy anon JWT is accepted only against the loopback development stack.
+  // A deployed build must carry a publishable key, which is the credential
+  // Supabase designed to be public.
+  if (!isClientCredential(publishableKey, { allowLegacyAnon: isLoopback })) {
+    throw new CloudConfigError(
+      'KEY_UNRECOGNIZED',
+      'VITE_SUPABASE_PUBLISHABLE_KEY is not a publishable key',
+    )
+  }
+
   return { url, publishableKey }
 }
 
 /**
- * True if the text contains a marker that must never appear in client-side
- * material. Shared by this module and the build-time bundle scan, so the rule
- * is stated once and applied in both places.
+ * True if the text contains credential material that must never appear in
+ * client-side material: a `sb_secret_` key, the plain legacy marker, or a
+ * JWT-form key whose DECODED role is anything but `anon`. Shared in spirit with
+ * the build-time bundle scan, which applies the same `credentialPolicy.mjs`.
  */
 export function containsForbiddenKeyMaterial(text: string): boolean {
+  const { kind } = classifyCredential(text)
   return (
+    kind === 'SECRET' ||
+    kind === 'PRIVILEGED_JWT' ||
+    kind === 'MALFORMED_JWT' ||
+    findPrivilegedCredentials(text).length > 0 ||
     FORBIDDEN_KEY_PREFIXES.some((prefix) => text.includes(prefix)) ||
     FORBIDDEN_KEY_MARKERS.some((marker) => text.includes(marker))
   )

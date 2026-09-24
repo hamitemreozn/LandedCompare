@@ -15,6 +15,12 @@ const VALID: CloudEnvironment = {
   VITE_SUPABASE_PUBLISHABLE_KEY: 'sb_publishable_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
 }
 
+/** A syntactically valid, unsigned, synthetic JWT carrying `payload`. */
+function syntheticJwt(payload: Record<string, unknown>): string {
+  const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url')
+  return `${encode({ alg: 'HS256', typ: 'JWT' })}.${encode(payload)}.synthetic-signature`
+}
+
 function problemOf(environment: CloudEnvironment): string {
   try {
     readCloudConfig(environment)
@@ -45,19 +51,32 @@ describe('readCloudConfig', () => {
     ).toBe('KEY_IS_SECRET')
   })
 
-  it('refuses a legacy service-role key too', () => {
+  it('refuses a legacy service-role key too — by decoding it, not by reading its text', () => {
     // Supabase is deprecating the legacy anon/service_role JWT pair, but a
-    // legacy secret in a bundle is exactly as catastrophic as a new one. A
-    // check that only knew the new prefix would wave the old one through.
-    const legacyServiceRole =
-      'eyJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJvbGUiOiJzZXJ2aWNlX3JvbGUifQ.signature'
-    expect(containsForbiddenKeyMaterial(legacyServiceRole)).toBe(false)
-    // …the JWT body is base64, so the marker is not visible in the token
-    // itself. What IS visible — and what the build scan and CI configuration
-    // actually catch — is the plain string appearing beside it.
-    expect(problemOf({ ...VALID, VITE_SUPABASE_PUBLISHABLE_KEY: 'service_role-key' })).toBe(
-      'KEY_IS_SECRET',
-    )
+    // legacy secret in a bundle is exactly as catastrophic as a new one. The
+    // role claim is base64url-encoded, so the text `service_role` is NOT
+    // visible in the key; Audit A A-M4 proved a substring check waved a real
+    // service-role key through. The payload is decoded instead.
+    const legacyServiceRole = syntheticJwt({ iss: 'supabase', role: 'service_role' })
+    expect(legacyServiceRole).not.toContain('service_role')
+    expect(containsForbiddenKeyMaterial(legacyServiceRole)).toBe(true)
+    expect(problemOf({ ...VALID, VITE_SUPABASE_PUBLISHABLE_KEY: legacyServiceRole })).toBe('KEY_IS_SECRET')
+    expect(
+      problemOf({ ...VALID, VITE_SUPABASE_PUBLISHABLE_KEY: syntheticJwt({ role: 'supabase_admin' }) }),
+    ).toBe('KEY_IS_SECRET')
+  })
+
+  it('accepts a legacy anon JWT only on the loopback development stack', () => {
+    const legacyAnon = syntheticJwt({ iss: 'supabase', role: 'anon' })
+    expect(
+      problemOf({ VITE_SUPABASE_URL: 'http://127.0.0.1:54321', VITE_SUPABASE_PUBLISHABLE_KEY: legacyAnon }),
+    ).toBe('NO_ERROR')
+    expect(problemOf({ ...VALID, VITE_SUPABASE_PUBLISHABLE_KEY: legacyAnon })).toBe('KEY_UNRECOGNIZED')
+  })
+
+  it('refuses a value that is not a client credential at all', () => {
+    expect(problemOf({ ...VALID, VITE_SUPABASE_PUBLISHABLE_KEY: 'not-a-key' })).toBe('KEY_UNRECOGNIZED')
+    expect(problemOf({ ...VALID, VITE_SUPABASE_PUBLISHABLE_KEY: 'eyJx.eyJ-not-json.sig' })).toBe('KEY_IS_SECRET')
   })
 
   it('names a missing URL and a missing key separately', () => {

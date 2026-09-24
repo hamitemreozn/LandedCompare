@@ -44,13 +44,26 @@ export const CLOUD_SESSION_STORAGE_KEY = 'landedcompare.session'
  */
 export type CloudClient = ReturnType<typeof createCloudClient>
 
-export function createCloudClient(config: CloudConfig) {
+/**
+ * Seams for tests only. Production passes nothing: the session lives in the
+ * browser's `localStorage` and requests use the platform `fetch`.
+ */
+export interface CloudClientOptions {
+  /** Where the session is persisted. Defaults to `localStorage`. */
+  readonly storage?: Storage
+  /** The transport. Defaults to the platform `fetch`. */
+  readonly fetch?: typeof fetch
+}
+
+export function createCloudClient(config: CloudConfig, options: CloudClientOptions = {}) {
   return createClient(config.url, config.publishableKey, {
     db: { schema: 'api' },
+    ...(options.fetch ? { global: { fetch: options.fetch } } : {}),
     auth: {
       storageKey: CLOUD_SESSION_STORAGE_KEY,
       persistSession: true,
       autoRefreshToken: true,
+      ...(options.storage ? { storage: options.storage } : {}),
       // No redirect-based flow exists in this product, so there is no callback
       // fragment to detect. Leaving it on would make the client inspect the URL
       // of every page load for an OAuth response it can never receive.

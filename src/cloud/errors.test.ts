@@ -65,6 +65,25 @@ describe('cloudErrorFromPostgrest', () => {
   })
 })
 
+describe('what postgrest-js 2.117 actually reports', () => {
+  it('a response that never arrived (status 0) is a transport failure, not UNEXPECTED', () => {
+    // postgrest-js RETURNS a network failure as a value — it does not throw —
+    // with `status: 0` and an empty code. Audit A (A-L1) found this mapped to
+    // UNEXPECTED, which made OFFLINE and SERVER_UNAVAILABLE unreachable.
+    const returned = { code: '', details: 'TypeError: Failed to fetch', hint: '', message: 'TypeError: Failed to fetch' }
+    expect(cloudErrorFromPostgrest(returned, { status: 0, online: true }).code).toBe('SERVER_UNAVAILABLE')
+    expect(cloudErrorFromPostgrest(returned, { status: 0, online: false }).code).toBe('OFFLINE')
+  })
+
+  it('a gateway 5xx without a database code, and PostgREST connection codes, are SERVER_UNAVAILABLE', () => {
+    expect(cloudErrorFromPostgrest({ message: '<html>' }, { status: 502 }).code).toBe('SERVER_UNAVAILABLE')
+    expect(cloudErrorFromPostgrest({ code: 'PGRST002', message: 'schema cache' }, { status: 503 }).code).toBe('SERVER_UNAVAILABLE')
+    expect(cloudErrorFromPostgrest({ code: 'PGRST000', message: 'no database' }, { status: 503 }).code).toBe('SERVER_UNAVAILABLE')
+    // A database refusal that PostgREST happens to send as 500 keeps its own code.
+    expect(cloudErrorFromPostgrest({ code: '55006', message: 'locked' }, { status: 500 }).code).toBe('ORGANIZATION_LOCKED')
+  })
+})
+
 describe('cloudErrorFromTransport', () => {
   it('distinguishes no network from an unreachable server', () => {
     // `TypeError: Failed to fetch` means both, so the two honest messages are

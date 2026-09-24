@@ -11,6 +11,8 @@
  * machine-readable, `message` is developer-facing English, and the user sees
  * whatever `src/i18n` resolves `messageKey` to.
  */
+import { hasVisibleText } from '../../cloud/catalogRules'
+
 export class FormValidationError extends Error {
   readonly field: string
   readonly messageKey: string
@@ -27,10 +29,14 @@ export function isFormValidationError(value: unknown): value is FormValidationEr
   return value instanceof FormValidationError
 }
 
-/** A required text field, trimmed. Empty is a failure, not an empty string. */
+/**
+ * A required text field, trimmed. Empty is a failure, not an empty string —
+ * and so is text made only of invisible characters (a zero-width space
+ * survives `trim()`), which the server refuses for every required identifier.
+ */
 export function requiredText(value: string, field: string): string {
   const trimmed = value.trim()
-  if (trimmed === '') {
+  if (trimmed === '' || !hasVisibleText(trimmed)) {
     throw new FormValidationError(field, 'form.requiredField')
   }
   return trimmed

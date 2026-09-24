@@ -26,7 +26,19 @@ export {
   createCloudClient,
   createCloudClientFromEnvironment,
   type CloudClient,
+  type CloudClientOptions,
 } from './client'
+
+export {
+  CATALOG_LIMITS,
+  canonicalDecimal,
+  codePointLength,
+  hasVisibleText,
+  isCanonicalPositiveDecimal,
+  sameExactDecimal,
+  serverOptional,
+  serverTrim,
+} from './catalogRules'
 
 export {
   CloudError,
@@ -35,12 +47,15 @@ export {
   isCloudError,
   type CloudErrorCode,
   type CloudErrorDetails,
+  type PostgrestContext,
   type PostgrestFailure,
 } from './errors'
 
 export {
   createDataGateway,
+  type AuthChange,
   type CatalogGateway,
+  type DataGatewayOptions,
   type CatalogImportInput,
   type CatalogImportResult,
   type CloudRecord,
@@ -72,10 +87,20 @@ export {
 export {
   CATALOG_CUTOVER_MARKER_KEY,
   CATALOG_IMPORT_ATTEMPT_KEY,
+  LegacyMigrationError,
+  findImportProblem,
   inspectLegacyCatalog,
+  isLegacyMigrationError,
   migrateLegacyCatalog,
   retireEmptyLegacyDatabase,
+  retireLegacyCatalogWithBackup,
   type LegacyCatalogCounts,
   type LegacyCatalogInspection,
+  type LegacyMigrationDetails,
   type LegacyMigrationOptions,
+  type LegacyMigrationReason,
+  type LegacyMigrationResult,
+  type LegacyStore,
 } from './legacyMigration'
+
+export { guardRuntimeGateway, type IdentityLoss } from './guardedGateway'

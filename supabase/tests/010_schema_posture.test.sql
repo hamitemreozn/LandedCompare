@@ -22,7 +22,7 @@ begin;
 create extension if not exists pgtap with schema extensions;
 set local search_path = extensions, pg_catalog, public;
 
-select plan(29);
+select plan(34);
 
 -- ---------------------------------------------------------------------------
 -- P0 — the registry and the catalogue agree, in both directions
@@ -56,9 +56,12 @@ $$, 'P0b: every registry row names a table that exists');
 -- ---------------------------------------------------------------------------
 -- P1 — RLS enabled AND forced
 --
--- `force` is the half that is forgotten. Without it the table owner is exempt,
--- which means a SECURITY DEFINER function running as that owner reads across
--- every tenant through any table it forgot to filter by hand.
+-- `force` is the half that is forgotten. Without it the table owner is exempt
+-- from RLS whenever it is a plain owner. Note what FORCE does NOT do: a role
+-- holding BYPASSRLS — `postgres`, which owns these tables and every SECURITY
+-- DEFINER function here — bypasses RLS even on a forced table. So a DEFINER
+-- function must still filter by organisation in its own SQL; FORCE is not the
+-- safety net for that (Audit A, A-L8).
 -- ---------------------------------------------------------------------------
 select is_empty($$
   select c.relname::text
@@ -350,11 +353,16 @@ select is_empty($$
 $$, 'P11d: an append-only table has no version or updated_at, and does have the guard trigger');
 
 -- ---------------------------------------------------------------------------
--- P12 — INSERT exists only where the declared class permits append/create
+-- P12 — INSERT exists only where it is NAMED, not where a class permits it
 --
--- Phase 11 introduces client-created catalogue masters and one tightly-policy-
--- guarded import audit event. INSERT is valid only for TENANT_EDITABLE or
--- TENANT_APPEND_ONLY tables; every actual grant still needs its policy (P2).
+-- A catalogue master (TENANT_EDITABLE) may be inserted through its typed RPCs.
+-- An append-only table may NOT be inserted into merely because of its class:
+-- the future inventory ledger is TENANT_APPEND_ONLY and §12 requires it to
+-- have no INSERT grant at all, only SECURITY DEFINER posting functions. The one
+-- append-only exception is named here — `admin_events`, for the Phase 11
+-- import's own audit row — together with the single policy that guards it, so
+-- a second exception is a visible edit to this file rather than something a
+-- class quietly pre-authorises (Audit A, A-M5).
 -- ---------------------------------------------------------------------------
 select is_empty($$
   select c.relname || ':' || upper(a.privilege_type)
@@ -367,9 +375,18 @@ select is_empty($$
     and not exists (
       select 1 from app_private.managed_table m
       where m.table_schema = n.nspname and m.table_name = c.relname
-        and m.policy_class in ('TENANT_EDITABLE', 'TENANT_APPEND_ONLY')
+        and m.policy_class = 'TENANT_EDITABLE'
     )
-$$, 'P12: only TENANT_EDITABLE or TENANT_APPEND_ONLY tables grant INSERT to authenticated');
+    and c.relname <> 'admin_events'
+$$, 'P12: INSERT is granted only on TENANT_EDITABLE tables and the one named append-only exception');
+
+select is(
+  (select string_agg(p.policyname::text, ',' order by p.policyname::text)
+     from pg_policies p
+    where p.schemaname = 'app_data' and p.tablename = 'admin_events' and p.cmd in ('INSERT', 'ALL')),
+  'admin_events_catalog_import_insert'::text,
+  'P12b: the append-only exception carries exactly one INSERT policy, the import audit row'
+);
 
 -- ---------------------------------------------------------------------------
 -- P13 — `api` holds no base table
@@ -476,6 +493,112 @@ select ok(
     where n.nspname = 'app_private' and p.proname = 'shares_active_organization'),
   'P17: the SECURITY DEFINER helper owner bypasses RLS, which is what lets it read another user''s membership'
 );
+
+-- ---------------------------------------------------------------------------
+-- P18 — the read surface is read-only, by privilege — TABLE AND COLUMN
+--
+-- An `api` view over one table is AUTO-UPDATABLE in PostgreSQL, and
+-- `authenticated` holds UPDATE on the table underneath it for the invoker
+-- RPCs. So one `grant update on api.products to authenticated` would make
+-- `PATCH /rest/v1/products` a version-less write around every typed RPC —
+-- Audit A demonstrated exactly that, with every earlier test still green.
+--
+-- A grant can also name COLUMNS — `grant update (note) on api.customers` —
+-- and `has_table_privilege` does not see that: it answers for the whole
+-- table only (Audit A source review, R-5). So this asserts, for every view
+-- in `api`, three ways at once:
+--   (a) table-level: no Data API role holds anything but SELECT;
+--   (b) column-level: no Data API role holds INSERT, UPDATE or REFERENCES on
+--       ANY column (`has_any_column_privilege` sees table and column grants,
+--       directly or through PUBLIC or role membership);
+--   (c) the ACLs themselves: no grantee at all — not only the three Data API
+--       roles — holds anything but SELECT, on the view or on any column.
+-- ---------------------------------------------------------------------------
+select is_empty($$
+  select c.relname || ':' || r.rolname || ':' || p.privilege || ':table'
+  from pg_class c
+  join pg_namespace n on n.oid = c.relnamespace
+  cross join (values ('anon'), ('authenticated'), ('service_role')) as r(rolname)
+  cross join (values ('INSERT'), ('UPDATE'), ('DELETE'), ('TRUNCATE'), ('REFERENCES'), ('TRIGGER')) as p(privilege)
+  where n.nspname = 'api' and c.relkind = 'v'
+    and has_table_privilege(r.rolname, c.oid, p.privilege)
+  union all
+  select c.relname || ':' || r.rolname || ':' || p.privilege || ':any-column'
+  from pg_class c
+  join pg_namespace n on n.oid = c.relnamespace
+  cross join (values ('anon'), ('authenticated'), ('service_role')) as r(rolname)
+  cross join (values ('INSERT'), ('UPDATE'), ('REFERENCES')) as p(privilege)
+  where n.nspname = 'api' and c.relkind = 'v'
+    and has_any_column_privilege(r.rolname, c.oid, p.privilege)
+  union all
+  select c.relname || ':' || coalesce(g.rolname, 'PUBLIC') || ':' || a.privilege_type || ':view-acl'
+  from pg_class c
+  join pg_namespace n on n.oid = c.relnamespace
+  cross join lateral aclexplode(c.relacl) as a
+  left join pg_roles g on g.oid = a.grantee
+  where n.nspname = 'api' and c.relkind = 'v'
+    and a.privilege_type <> 'SELECT' and a.grantee <> c.relowner
+  union all
+  select c.relname || '.' || att.attname || ':' || coalesce(g.rolname, 'PUBLIC') || ':' || a.privilege_type || ':column-acl'
+  from pg_attribute att
+  join pg_class c on c.oid = att.attrelid
+  join pg_namespace n on n.oid = c.relnamespace
+  cross join lateral aclexplode(att.attacl) as a
+  left join pg_roles g on g.oid = a.grantee
+  where n.nspname = 'api' and c.relkind = 'v'
+    and att.attnum > 0 and not att.attisdropped
+    and a.privilege_type <> 'SELECT'
+$$, 'P18: no role holds any privilege but SELECT on an api view — neither on the view nor on any column');
+
+-- The legitimate half of the same surface: the read access the application
+-- depends on is still there, so P18 cannot be satisfied by revoking reads.
+select is_empty($$
+  select c.relname
+  from pg_class c
+  join pg_namespace n on n.oid = c.relnamespace
+  where n.nspname = 'api' and c.relkind = 'v'
+    and not has_table_privilege('authenticated', c.oid, 'SELECT')
+$$, 'P18b: authenticated can still SELECT every api view');
+
+-- ---------------------------------------------------------------------------
+-- P19 — no overloads in the exposed schema
+--
+-- PostgREST resolves an RPC by the names of the arguments it is sent. A second
+-- function with the same name and FEWER arguments — `update_product` without
+-- `p_expected_version` — would be a weaker overload a crafted request could
+-- select. One name, one signature.
+-- ---------------------------------------------------------------------------
+select is_empty($$
+  select p.proname::text
+  from pg_proc p
+  join pg_namespace n on n.oid = p.pronamespace
+  where n.nspname = 'api'
+  group by p.proname
+  having count(*) > 1
+$$, 'P19: every function name in api has exactly one signature — no weaker overload exists');
+
+-- ---------------------------------------------------------------------------
+-- P20 — every update and lifecycle RPC requires the version it read
+--
+-- `update_*`, `set_*_active` and `acknowledge_password_change` each take
+-- `p_expected_version integer`, with NO default, so omitting it is a missing
+-- argument (PGRST202) rather than a silently weaker write.
+-- ---------------------------------------------------------------------------
+select is_empty($$
+  select p.oid::regprocedure::text
+  from pg_proc p
+  join pg_namespace n on n.oid = p.pronamespace
+  where n.nspname = 'api'
+    and (p.proname like 'update\_%' or p.proname ~ '^set_.*_active$' or p.proname = 'acknowledge_password_change')
+    and (
+      p.pronargdefaults <> 0
+      or not exists (
+        select 1
+        from unnest(p.proargnames, p.proargtypes::oid[]) as arg(name, type)
+        where arg.name = 'p_expected_version' and arg.type = 'integer'::regtype
+      )
+    )
+$$, 'P20: every update and lifecycle RPC requires p_expected_version integer, with no default');
 
 select * from finish();
 rollback;

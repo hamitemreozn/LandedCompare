@@ -115,7 +115,8 @@ describe('threat 1 — a client-supplied organization_id cannot reach another te
       },
     })
 
-    expect(response.status).toBeGreaterThanOrEqual(400)
+    expect(response.status).toBe(404)
+    expect((response.json as { code?: string }).code).toBe('PGRST202')
 
     const untouched = await sql(
       `select display_name from app_data.profiles where user_id = '${SEED.ownerB.id}'`,
@@ -144,7 +145,7 @@ describe('threat 1 — a client-supplied organization_id cannot reach another te
       method: 'POST',
       body: { p_display_name: 'Ayşe Yılmaz', p_expected_version: version },
     })
-    expect(stale.status).toBeGreaterThanOrEqual(400)
+    expect(stale.status).toBe(400)
     expect((stale.json as { details?: string }).details).toBe('STALE_WRITE')
 
     // And there is no overload without the argument, so a client cannot simply
@@ -154,7 +155,7 @@ describe('threat 1 — a client-supplied organization_id cannot reach another te
       method: 'POST',
       body: { p_display_name: 'Ayşe Yılmaz' },
     })
-    expect(omitted.status).toBeGreaterThanOrEqual(400)
+    expect(omitted.status).toBe(404)
     expect((omitted.json as { code?: string }).code).toBe('PGRST202')
   })
 })

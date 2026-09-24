@@ -102,6 +102,7 @@ const en: TranslationResource = {
     serverUnavailableAdmin:
       'A Free-plan project is paused automatically after about a week without use. Restart it from the Supabase dashboard with "Resume project".',
     sessionExpired: 'Your session has ended. Please sign in again.',
+    invalidCredentials: 'The e-mail address or password is not correct.',
     forbidden: 'You are not permitted to do this.',
     noMembership: 'Your account is not attached to a company. Please contact your administrator.',
     membershipDeactivated:
@@ -137,6 +138,33 @@ const en: TranslationResource = {
     migrating: 'Backing up and migrating…',
     failed: 'Migration stopped safely',
     failedHint: 'The local database was kept. Fix the reported condition and try the migration again.',
+    inspectionFailedTitle: 'The previous local catalogue could not be inspected',
+    inspectionFailedBody:
+      'The previous local catalogue in this browser could not be read safely. Nothing was deleted and nothing was sent to the server. Close other tabs of this application and try again; if the problem persists, tell your administrator.',
+    reasonInvalidRecord:
+      'A local record does not meet the server rules ({{store}} · {{id}} · {{field}}). Nothing was imported.',
+    reasonConflict:
+      '{{count}} local records differ from the cloud record with the same identity. The cloud version is authoritative; nothing was merged. First difference: {{store}} · {{id}} · {{field}}.',
+    reasonCloudNotEmpty:
+      'The cloud catalogue already holds data and {{count}} local records on this device are not in it. Nothing is merged automatically. First missing record: {{store}} · {{id}}.',
+    reasonVerificationFailed:
+      'The server accepted the import but the records could not be confirmed by reading them back. The local database was kept; try again.',
+    reasonUnsupportedRecords:
+      'This local database holds {{count}} records from later modules. The catalogue-only migration was stopped for safety.',
+    retireAction: 'Back up and retire the local catalogue',
+    retireTitle: 'Retire the local catalogue?',
+    retireBody:
+      'A complete backup file of the local catalogue is downloaded first. Then the local copy in this browser is deleted; the cloud catalogue does not change at all. Local records that are missing from, or differ from, the cloud remain only in that backup file.',
+    retireNote: 'This affects only the previous copy on this device.',
+    retireConfirm: 'Back up and retire',
+    storeProducts: 'product',
+    storeSuppliers: 'supplier',
+    storeCustomers: 'customer',
+  },
+  shell: {
+    identityLabel: 'Signed-in identity',
+    organization: 'Organisation',
+    user: 'User',
   },
   backupStatus: {
     label: 'External backup',

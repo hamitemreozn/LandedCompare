@@ -33,7 +33,7 @@ describe('route isolation — the exposed-schema list is the security boundary',
     // never gets as far as a privilege check, let alone a policy.
     const response = await rest('counters?select=*', { token })
 
-    expect(response.status).toBeGreaterThanOrEqual(400)
+    expect(response.status).toBe(404)
     expect((response.json as { code?: string }).code).toBe('PGRST205')
   })
 
@@ -80,7 +80,7 @@ describe('route isolation — the exposed-schema list is the security boundary',
     // a route" an observed state rather than a claim: the same function, in the
     // same request, executable and unreachable.
     const asRpc = await rest('rpc/current_org_ids', { token, method: 'POST', body: {} })
-    expect(asRpc.status).toBeGreaterThanOrEqual(400)
+    expect(asRpc.status).toBe(404)
     expect((asRpc.json as { code?: string }).code).toBe('PGRST202')
   })
 
@@ -89,7 +89,8 @@ describe('route isolation — the exposed-schema list is the security boundary',
 
     for (const fn of ['stamp_row', 'assert_write_allowed', 'bootstrap_organization', 'has_org_role']) {
       const response = await rest(`rpc/${fn}`, { token, method: 'POST', body: {} })
-      expect(response.status, `rpc/${fn} must not be routable`).toBeGreaterThanOrEqual(400)
+      expect(response.status, `rpc/${fn} must not be routable`).toBe(404)
+      expect((response.json as { code?: string }).code, `rpc/${fn}`).toBe('PGRST202')
     }
   })
 
@@ -104,7 +105,8 @@ describe('route isolation — the exposed-schema list is the security boundary',
       method: 'PATCH',
       body: { next_value: 9999 },
     })
-    expect(patch.status).toBeGreaterThanOrEqual(400)
+    expect(patch.status).toBe(404)
+    expect((patch.json as { code?: string }).code).toBe('PGRST205')
 
     const patchViaSchema = await rest(`counters?organization_id=eq.${SEED.organizationA}`, {
       token,
@@ -112,7 +114,8 @@ describe('route isolation — the exposed-schema list is the security boundary',
       body: { next_value: 9999 },
       headers: { 'Content-Profile': 'app_data' },
     })
-    expect(patchViaSchema.status).toBeGreaterThanOrEqual(400)
+    expect(patchViaSchema.status).toBe(406)
+    expect((patchViaSchema.json as { code?: string }).code).toBe('PGRST106')
   })
 
   it('B9: and neither can an INSERT or a DELETE', async () => {
@@ -124,14 +127,16 @@ describe('route isolation — the exposed-schema list is the security boundary',
       body: { organization_id: SEED.organizationA, key: 'SMUGGLED', next_value: 1 },
       headers: { 'Content-Profile': 'app_data' },
     })
-    expect(insert.status).toBeGreaterThanOrEqual(400)
+    expect(insert.status).toBe(406)
+    expect((insert.json as { code?: string }).code).toBe('PGRST106')
 
     const remove = await rest(`organizations?id=eq.${SEED.organizationA}`, {
       token,
       method: 'DELETE',
       headers: { 'Content-Profile': 'app_data' },
     })
-    expect(remove.status).toBeGreaterThanOrEqual(400)
+    expect(remove.status).toBe(406)
+    expect((remove.json as { code?: string }).code).toBe('PGRST106')
   })
 
   it('an api VIEW is read-only: a write aimed at the exposed surface is refused too', async () => {
@@ -149,13 +154,14 @@ describe('route isolation — the exposed-schema list is the security boundary',
       method: 'PATCH',
       body: { name: 'Renamed By A Client' },
     })
-    expect(write.status).toBeGreaterThanOrEqual(400)
+    expect(write.status).toBe(403)
+    expect((write.json as { code?: string }).code).toBe('42501')
   })
 
   it('B8: anon reaches nothing — not a view, not an RPC, not the schema', async () => {
     for (const path of ['organizations?select=*', 'profiles?select=*', 'memberships?select=*']) {
       const response = await rest(path)
-      expect(response.status, `anon must not read ${path}`).toBeGreaterThanOrEqual(400)
+      expect(response.status, `anon must not read ${path}`).toBe(401)
       // `permission denied for schema api` — the refusal happens before any
       // object is consulted, because `anon` holds no USAGE at all.
       expect(response.text).toContain('permission denied for schema api')
@@ -165,7 +171,8 @@ describe('route isolation — the exposed-schema list is the security boundary',
       method: 'POST',
       body: { p_display_name: 'anon', p_expected_version: 1 },
     })
-    expect(rpc.status).toBeGreaterThanOrEqual(400)
+    expect(rpc.status).toBe(401)
+    expect((rpc.json as { code?: string }).code).toBe('42501')
   })
 
   it('B8: and the provisioning RPCs are refused even to a signed-in OWNER', async () => {
@@ -187,7 +194,8 @@ describe('route isolation — the exposed-schema list is the security boundary',
       },
     })
 
-    expect(response.status).toBeGreaterThanOrEqual(400)
+    expect(response.status).toBe(403)
+    expect(response.text).toContain('permission denied for function begin_provisioning')
     expect(response.text).not.toContain('CLAIMED')
   })
 })

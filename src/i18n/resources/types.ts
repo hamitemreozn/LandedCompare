@@ -101,6 +101,7 @@ export interface TranslationResource {
     readonly serverUnavailable: string
     readonly serverUnavailableAdmin: string
     readonly sessionExpired: string
+    readonly invalidCredentials: string
     readonly forbidden: string
     readonly noMembership: string
     readonly membershipDeactivated: string
@@ -131,6 +132,26 @@ export interface TranslationResource {
     readonly migrating: string
     readonly failed: string
     readonly failedHint: string
+    readonly inspectionFailedTitle: string
+    readonly inspectionFailedBody: string
+    readonly reasonInvalidRecord: string
+    readonly reasonConflict: string
+    readonly reasonCloudNotEmpty: string
+    readonly reasonVerificationFailed: string
+    readonly reasonUnsupportedRecords: string
+    readonly retireAction: string
+    readonly retireTitle: string
+    readonly retireBody: string
+    readonly retireNote: string
+    readonly retireConfirm: string
+    readonly storeProducts: string
+    readonly storeSuppliers: string
+    readonly storeCustomers: string
+  }
+  readonly shell: {
+    readonly identityLabel: string
+    readonly organization: string
+    readonly user: string
   }
   readonly backupStatus: {
     readonly label: string

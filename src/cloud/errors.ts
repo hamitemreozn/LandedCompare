@@ -37,8 +37,15 @@ export type CloudErrorCode =
    * panel explaining what to do about it.
    */
   | 'SERVER_UNAVAILABLE'
-  /** No session, or a refresh that failed. The remedy is the sign-in screen. */
+  /** No session, or a refresh the server refused. The remedy is the sign-in screen. */
   | 'SESSION_EXPIRED'
+  /**
+   * A sign-in attempt the Auth service refused. Wrong address, wrong password
+   * and a disabled account are deliberately ONE code, so the form is not an
+   * oracle for which addresses have accounts — but it is not "your session
+   * expired", which is a different sentence for a different situation.
+   */
+  | 'INVALID_CREDENTIALS'
   /** Authenticated, but not permitted to do this. */
   | 'FORBIDDEN'
   /**
@@ -94,6 +101,23 @@ export interface PostgrestFailure {
 }
 
 /**
+ * What the transport knew about the failed request.
+ *
+ * `postgrest-js` (2.117) does NOT throw on a network failure: it RETURNS an
+ * error value with `status: 0` and a message such as `TypeError: Failed to
+ * fetch`. So the HTTP status travels with the error, and a status of 0 is how
+ * "the request never got an answer" is recognised. Audit A A-L1 found the
+ * earlier mapper waiting for a thrown `TypeError` that never came, which made
+ * OFFLINE and SERVER_UNAVAILABLE unreachable from every Data API call.
+ */
+export interface PostgrestContext {
+  /** The HTTP status postgrest-js reported; 0 when no response arrived. */
+  readonly status?: number
+  /** The browser's connectivity signal, used only to choose between two sentences. */
+  readonly online?: boolean
+}
+
+/**
  * PostgreSQL SQLSTATE codes this system raises on purpose.
  *
  * `55006` is `object_in_use`, which §16's write gate chose deliberately over a
@@ -109,6 +133,27 @@ const SQLSTATE_FOREIGN_KEY_VIOLATION = '23503'
 const SQLSTATE_RAISE_EXCEPTION = 'P0001'
 
 /**
+ * Data exceptions (class 22) a caller's parameters can produce: a value out of
+ * range for its type, text that is not an integer, a numeric too large to
+ * represent. They are refusals of the input, so they read as RECORD_INVALID.
+ */
+const SQLSTATE_INVALID_INPUT = new Set(['22001', '22003', '22007', '22008', '22023', '22P02'])
+
+/**
+ * PostgREST's own "the database is not answering" family: PGRST000 (could not
+ * connect), PGRST001 (connection error), PGRST002 (schema cache not ready) and
+ * PGRST003 (timed out acquiring a connection). None of them is the caller's
+ * fault and every one of them clears when the server recovers.
+ */
+const POSTGREST_UNAVAILABLE = new Set(['PGRST000', 'PGRST001', 'PGRST002', 'PGRST003'])
+
+function unavailable(online: boolean): CloudError {
+  return online
+    ? new CloudError('SERVER_UNAVAILABLE', 'the server could not be reached')
+    : new CloudError('OFFLINE', 'the device has no network connection')
+}
+
+/**
  * Maps a PostgREST failure onto the error vocabulary.
  *
  * The RPCs raise with a `detail` naming the code — `STALE_WRITE`,
@@ -117,9 +162,19 @@ const SQLSTATE_RAISE_EXCEPTION = 'P0001'
  * pattern-matches on English prose breaks the first time somebody improves a
  * sentence.
  */
-export function cloudErrorFromPostgrest(failure: PostgrestFailure): CloudError {
+export function cloudErrorFromPostgrest(
+  failure: PostgrestFailure,
+  context: PostgrestContext = {},
+): CloudError {
   const detail = (failure.details ?? '').trim()
   const code = failure.code ?? ''
+  const status = context.status
+  const online = context.online ?? true
+
+  // No HTTP response at all: the network or the server's front door.
+  if (status === 0) {
+    return unavailable(online)
+  }
 
   if (code === SQLSTATE_RAISE_EXCEPTION) {
     switch (detail) {
@@ -154,23 +209,37 @@ export function cloudErrorFromPostgrest(failure: PostgrestFailure): CloudError {
       break
   }
 
-  // PostgREST's own codes. `PGRST301` is an invalid or expired JWT; the rest of
-  // the PGRST3xx family is authentication. `PGRST106` and `PGRST202`/`PGRST205`
-  // mean a route does not exist — which, if it ever happens in production, is a
-  // deployment fault rather than a user-facing condition, so it is reported as
-  // a server problem rather than as a puzzling permission message.
+  if (SQLSTATE_INVALID_INPUT.has(code)) {
+    return new CloudError('RECORD_INVALID', 'a value was refused by its database type')
+  }
+
+  // PostgREST's own codes. `PGRST301`/`PGRST303` are an invalid or expired
+  // JWT; the rest of the PGRST3xx family is authentication. `PGRST106` and
+  // `PGRST202`/`PGRST205` mean a route does not exist — which, if it ever
+  // happens in production, is a deployment fault rather than a user-facing
+  // condition, so it is reported as a server problem rather than as a puzzling
+  // permission message.
   if (code.startsWith('PGRST3')) {
     return new CloudError('SESSION_EXPIRED', 'the session is no longer valid')
   }
   if (code === 'PGRST106' || code === 'PGRST202' || code === 'PGRST205') {
     return new CloudError('SERVER_UNAVAILABLE', 'the expected API surface is not present on this server')
   }
+  if (POSTGREST_UNAVAILABLE.has(code)) {
+    return unavailable(true)
+  }
+
+  // A gateway failure (a paused project, a proxy that lost its upstream) or a
+  // 5xx without a database code: the server side is not answering properly.
+  if (status === 502 || status === 503 || status === 504 || (status !== undefined && status >= 500 && code === '')) {
+    return unavailable(true)
+  }
 
   return new CloudError('UNEXPECTED', 'the request failed')
 }
 
 /**
- * Classifies a thrown value from `fetch`.
+ * Classifies a THROWN value from a network call.
  *
  * The distinction between OFFLINE and SERVER_UNAVAILABLE cannot be made from
  * the exception alone — a `TypeError: Failed to fetch` means both — so the
@@ -183,8 +252,5 @@ export function cloudErrorFromTransport(cause: unknown, online = true): CloudErr
   if (isCloudError(cause)) {
     return cause
   }
-  if (!online) {
-    return new CloudError('OFFLINE', 'the device has no network connection')
-  }
-  return new CloudError('SERVER_UNAVAILABLE', 'the server could not be reached')
+  return unavailable(online)
 }

@@ -19,26 +19,12 @@ import { useTranslation } from 'react-i18next'
 import { isBackupError } from '../../backup'
 import {
   BACKUP_ERROR_TRANSLATION_KEY,
+  CLOUD_ERROR_TRANSLATION_KEY,
   PERSISTENCE_ERROR_TRANSLATION_KEY,
 } from '../../i18n/persistenceText'
 import { isPersistenceError } from '../../persistence'
 import { isFormValidationError } from './formError'
-import { isCloudError, type CloudErrorCode } from '../../cloud'
-
-const CLOUD_ERROR_TRANSLATION_KEY: Record<CloudErrorCode, string> = {
-  OFFLINE: 'cloudError.offline',
-  SERVER_UNAVAILABLE: 'cloudError.serverUnavailable',
-  SESSION_EXPIRED: 'cloudError.sessionExpired',
-  FORBIDDEN: 'cloudError.forbidden',
-  NO_MEMBERSHIP: 'cloudError.noMembership',
-  ORGANIZATION_LOCKED: 'cloudError.organizationLocked',
-  NOT_CONFIGURED: 'cloudError.notConfigured',
-  STALE_WRITE: 'dataError.staleWrite',
-  DUPLICATE_KEY: 'dataError.duplicateKey',
-  RECORD_NOT_FOUND: 'dataError.recordNotFound',
-  RECORD_INVALID: 'dataError.recordInvalid',
-  UNEXPECTED: 'cloudError.unexpected',
-}
+import { isCloudError } from '../../cloud'
 
 export function useDataErrorMessage(): (error: unknown) => string {
   const { t } = useTranslation()

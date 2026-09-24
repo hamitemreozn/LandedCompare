@@ -74,9 +74,22 @@ export interface CloudBootStopped {
    * its owner.
    */
   readonly deactivatedOrganizationIds?: readonly string[]
+  /**
+   * The signed-in user, when the sequence got far enough to know one. The
+   * application compares it with later authentication events, so a sign-in
+   * as somebody else in another tab is recognised as a different identity.
+   */
+  readonly userId?: string
 }
 
 export type CloudBootResult = CloudBootReady | CloudBootStopped
+
+/**
+ * How many times the sequence may start over because the session changed
+ * while it ran. One change is a sign-in in another tab; three in a row is not
+ * a state worth chasing.
+ */
+export const BOOT_IDENTITY_ATTEMPTS = 3
 
 /**
  * Runs the cloud boot sequence and reports where it got to.
@@ -89,18 +102,45 @@ export type CloudBootResult = CloudBootReady | CloudBootStopped
  * how a bug becomes a support ticket about Supabase.
  */
 export async function bootstrapCloudSession(gateway: DataGateway): Promise<CloudBootResult> {
-  // ── 1. Session ─────────────────────────────────────────────────────────
-  let userId: string | null
-  try {
-    userId = await gateway.currentUserId()
-  } catch (cause) {
-    return stopped(cause)
-  }
+  for (let attempt = 1; attempt <= BOOT_IDENTITY_ATTEMPTS; attempt += 1) {
+    // ── 1. Session ───────────────────────────────────────────────────────
+    let userId: string | null
+    try {
+      userId = await gateway.currentUserId()
+    } catch (cause) {
+      return stopped(cause)
+    }
 
-  if (userId === null) {
-    return { phase: 'SIGNED_OUT', code: 'SESSION_EXPIRED' }
-  }
+    if (userId === null) {
+      return { phase: 'SIGNED_OUT', code: 'SESSION_EXPIRED' }
+    }
 
+    const result = await bootFor(gateway, userId)
+
+    // ── 3. The same identity at the end as at the start ──────────────────
+    //
+    // Every read above carried whichever session was stored when it was sent.
+    // Another tab signing in as somebody else in between would leave user
+    // A's id beside user B's profile or organisation (Audit A source review,
+    // N-1). The result is published only if the session still belongs to the
+    // user it was built for; otherwise it is discarded and the sequence runs
+    // again for the session that exists now.
+    let after: string | null
+    try {
+      after = await gateway.currentUserId()
+    } catch (cause) {
+      return { ...stopped(cause), userId }
+    }
+    if (after === userId) {
+      return result
+    }
+  }
+  // The session changed under every attempt. Publishing any of them would be
+  // publishing a mixture; the retry button is the honest answer.
+  return { phase: 'UNAVAILABLE', code: 'UNEXPECTED' }
+}
+
+async function bootFor(gateway: DataGateway, userId: string): Promise<CloudBootResult> {
   // ── 2. Reachability and membership, in one round trip each ─────────────
   //
   // The profile read is what proves the server answered AND that the session's
@@ -115,7 +155,7 @@ export async function bootstrapCloudSession(gateway: DataGateway): Promise<Cloud
     memberships = await gateway.identity.listOwnMemberships()
     organizations = await gateway.identity.listOrganizations()
   } catch (cause) {
-    return stopped(cause)
+    return { ...stopped(cause), userId }
   }
 
   const active = memberships.filter((membership) => membership.status === 'ACTIVE')
@@ -128,6 +168,7 @@ export async function bootstrapCloudSession(gateway: DataGateway): Promise<Cloud
     return {
       phase: 'NO_MEMBERSHIP',
       code: 'NO_MEMBERSHIP',
+      userId,
       ...(deactivated.length > 0 ? { deactivatedOrganizationIds: deactivated } : {}),
     }
   }
@@ -150,7 +191,7 @@ export async function bootstrapCloudSession(gateway: DataGateway): Promise<Cloud
     // policies disagree, which is a server-side fault rather than a user state.
     // Reporting it as "unavailable" is honest; rendering an empty product would
     // not be.
-    return { phase: 'UNAVAILABLE', code: 'SERVER_UNAVAILABLE' }
+    return { phase: 'UNAVAILABLE', code: 'SERVER_UNAVAILABLE', userId }
   }
 
   return {
@@ -171,6 +212,7 @@ function stopped(cause: unknown): CloudBootStopped {
   }
   switch (cause.code) {
     case 'SESSION_EXPIRED':
+    case 'INVALID_CREDENTIALS':
       return { phase: 'SIGNED_OUT', code: 'SESSION_EXPIRED' }
     case 'FORBIDDEN':
     case 'NO_MEMBERSHIP':

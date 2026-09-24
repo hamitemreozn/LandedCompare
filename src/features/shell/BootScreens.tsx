@@ -1,23 +1,19 @@
 import { useState, type FormEvent } from 'react'
 import { useTranslation } from 'react-i18next'
-import { isCloudError, type CloudErrorCode, type LegacyCatalogCounts } from '../../cloud'
+import {
+  isCloudError,
+  isLegacyMigrationError,
+  type CloudErrorCode,
+  type LegacyCatalogCounts,
+  type LegacyMigrationError,
+  type MembershipRole,
+} from '../../cloud'
+import { CLOUD_ERROR_TRANSLATION_KEY } from '../../i18n/persistenceText'
+import { ConfirmDialog } from '../../ui/ConfirmDialog'
 import { TextField } from '../../ui/Field'
 import { Banner } from '../../ui/Feedback'
 
-const CLOUD_ERROR_KEYS: Record<CloudErrorCode, string> = {
-  OFFLINE: 'cloudError.offline',
-  SERVER_UNAVAILABLE: 'cloudError.serverUnavailable',
-  SESSION_EXPIRED: 'cloudError.sessionExpired',
-  FORBIDDEN: 'cloudError.forbidden',
-  NO_MEMBERSHIP: 'cloudError.noMembership',
-  ORGANIZATION_LOCKED: 'cloudError.organizationLocked',
-  NOT_CONFIGURED: 'cloudError.notConfigured',
-  STALE_WRITE: 'dataError.staleWrite',
-  DUPLICATE_KEY: 'dataError.duplicateKey',
-  RECORD_NOT_FOUND: 'dataError.recordNotFound',
-  RECORD_INVALID: 'dataError.recordInvalid',
-  UNEXPECTED: 'cloudError.unexpected',
-}
+const CLOUD_ERROR_KEYS: Record<CloudErrorCode, string> = CLOUD_ERROR_TRANSLATION_KEY
 
 function BootPanel({ children }: { readonly children: React.ReactNode }) {
   const { t } = useTranslation()
@@ -49,16 +45,20 @@ export function BootLoadingScreen() {
 
 export function CloudFailureScreen({
   code,
+  deactivated,
   onRetry,
 }: {
   readonly code: CloudErrorCode
+  /** A membership exists and was switched off — a different sentence from "never attached". */
+  readonly deactivated?: boolean
   readonly onRetry: () => void
 }) {
   const { t } = useTranslation()
+  const key = code === 'NO_MEMBERSHIP' && deactivated ? 'cloudError.membershipDeactivated' : CLOUD_ERROR_KEYS[code]
   return (
     <BootPanel>
       <h1 className="boot__title" role="alert">{t('boot.failureTitle')}</h1>
-      <p className="boot__text">{t(CLOUD_ERROR_KEYS[code])}</p>
+      <p className="boot__text">{t(key)}</p>
       <p className="boot__code">{t('boot.errorCode')}: {code}</p>
       <button type="button" className="button button--primary" onClick={onRetry}>{t('common.retry')}</button>
     </BootPanel>
@@ -151,27 +151,98 @@ export function PasswordChangeScreen({
   )
 }
 
+export function LegacyInspectionFailedScreen({
+  failure,
+  onRetry,
+}: {
+  readonly failure: unknown
+  readonly onRetry: () => void
+}) {
+  const { t } = useTranslation()
+  const code = isCloudError(failure) ? failure.code : undefined
+  return (
+    <BootPanel>
+      <h1 className="boot__title" role="alert">{t('catalogMigration.inspectionFailedTitle')}</h1>
+      <p className="boot__text">{t('catalogMigration.inspectionFailedBody')}</p>
+      {code ? <p className="boot__code">{t('boot.errorCode')}: {code}</p> : null}
+      <button type="button" className="button button--primary" onClick={onRetry}>{t('common.retry')}</button>
+    </BootPanel>
+  )
+}
+
+const RETIRABLE_REASONS = new Set(['LEGACY_CONFLICT', 'CLOUD_NOT_EMPTY', 'LEGACY_RECORD_INVALID'])
+
+function storeLabel(store: string | undefined, t: (key: string) => string): string {
+  if (store === 'products') return t('catalogMigration.storeProducts')
+  if (store === 'suppliers') return t('catalogMigration.storeSuppliers')
+  if (store === 'customers') return t('catalogMigration.storeCustomers')
+  return '—'
+}
+
+/** The named, actionable sentence for a stopped cutover — never a raw message. */
+function MigrationFailure({ failure }: { readonly failure: unknown }) {
+  const { t } = useTranslation()
+  if (!isLegacyMigrationError(failure)) {
+    const code = isCloudError(failure) ? failure.code : undefined
+    return (
+      <Banner tone="danger" label={t('catalogMigration.failed')}>
+        {code ? t(CLOUD_ERROR_KEYS[code]) : t('catalogMigration.failedHint')}
+        {code ? <span className="boot__code"> {t('boot.errorCode')}: {code}</span> : null}
+      </Banner>
+    )
+  }
+  const error: LegacyMigrationError = failure
+  const values = {
+    store: storeLabel(error.details.store, t),
+    id: error.details.id ?? '—',
+    field: error.details.field ?? '—',
+    count: error.details.count ?? 0,
+  }
+  const key: Record<LegacyMigrationError['reason'], string> = {
+    LEGACY_UNSUPPORTED_RECORDS: 'catalogMigration.reasonUnsupportedRecords',
+    LEGACY_RECORD_INVALID: 'catalogMigration.reasonInvalidRecord',
+    LEGACY_CONFLICT: 'catalogMigration.reasonConflict',
+    CLOUD_NOT_EMPTY: 'catalogMigration.reasonCloudNotEmpty',
+    IMPORT_REQUIRES_OWNER: 'catalogMigration.ownerRequired',
+    VERIFICATION_FAILED: 'catalogMigration.reasonVerificationFailed',
+  }
+  return (
+    <Banner tone="danger" label={t('catalogMigration.failed')}>
+      <span data-migration-reason={error.reason}>{t(key[error.reason], values)}</span>
+    </Banner>
+  )
+}
+
 export function CatalogMigrationScreen({
   counts,
-  canMigrate,
+  role,
   failure,
   onMigrate,
+  onRetire,
 }: {
   readonly counts: LegacyCatalogCounts
-  readonly canMigrate: boolean
+  readonly role: MembershipRole
   readonly failure?: unknown
   readonly onMigrate: () => Promise<void>
+  readonly onRetire: () => Promise<void>
 }) {
   const { t } = useTranslation()
   const [busy, setBusy] = useState(false)
-  const start = async () => {
+  const [confirming, setConfirming] = useState(false)
+  const run = async (action: () => Promise<void>) => {
     setBusy(true)
     try {
-      await onMigrate()
+      await action()
     } finally {
       setBusy(false)
     }
   }
+  const unsupported = counts.otherBusinessRecords > 0
+  // The explicit way past a named conflict: OWNER only, behind a confirmation,
+  // and only for the reasons where keeping the cloud and backing up the local
+  // copy is a meaningful choice.
+  const canRetire =
+    role === 'OWNER' && isLegacyMigrationError(failure) && RETIRABLE_REASONS.has(failure.reason)
   return (
     <BootPanel>
       <h1 className="boot__title">{t('catalogMigration.title')}</h1>
@@ -183,18 +254,40 @@ export function CatalogMigrationScreen({
           customers: counts.customers,
         })}
       </p>
-      {counts.otherBusinessRecords > 0 ? <Banner tone="danger" label={t('common.error')}>{t('catalogMigration.unsupportedRecords')}</Banner> : null}
-      {failure !== undefined ? <Banner tone="danger" label={t('catalogMigration.failed')}>{t('catalogMigration.failedHint')}</Banner> : null}
-      {!canMigrate ? <Banner tone="warning" label={t('common.warning')}>{t('catalogMigration.ownerRequired')}</Banner> : null}
+      {unsupported ? <Banner tone="danger" label={t('common.error')}>{t('catalogMigration.unsupportedRecords')}</Banner> : null}
+      {failure !== undefined ? <MigrationFailure failure={failure} /> : null}
       <p className="field__hint">{t('catalogMigration.backupNotice')}</p>
-      <button
-        type="button"
-        className="button button--primary"
-        disabled={busy || !canMigrate || counts.otherBusinessRecords > 0}
-        onClick={() => void start()}
-      >
-        {busy ? t('catalogMigration.migrating') : t('catalogMigration.start')}
-      </button>
+      <div className="form-actions">
+        {canRetire ? (
+          <button type="button" className="button" disabled={busy} onClick={() => setConfirming(true)}>
+            {t('catalogMigration.retireAction')}
+          </button>
+        ) : null}
+        <span className="form-actions__spacer" />
+        <button
+          type="button"
+          className="button button--primary"
+          disabled={busy || unsupported}
+          onClick={() => void run(onMigrate)}
+        >
+          {busy ? t('catalogMigration.migrating') : t('catalogMigration.start')}
+        </button>
+      </div>
+      {confirming ? (
+        <ConfirmDialog
+          title={t('catalogMigration.retireTitle')}
+          body={t('catalogMigration.retireBody')}
+          note={t('catalogMigration.retireNote')}
+          confirmLabel={t('catalogMigration.retireConfirm')}
+          cancelLabel={t('common.cancel')}
+          busy={busy}
+          onCancel={() => setConfirming(false)}
+          onConfirm={() => {
+            setConfirming(false)
+            void run(onRetire)
+          }}
+        />
+      ) : null}
     </BootPanel>
   )
 }

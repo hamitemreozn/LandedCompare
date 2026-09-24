@@ -66,12 +66,18 @@ describe('catalogue exactness, routes and tenant isolation', () => {
     expect(direct.status).toBe(406)
     expect((direct.json as { code?: string }).code).toBe('PGRST106')
 
+    // A genuinely updatable column of the auto-updatable view. Audit A (A-M5)
+    // found the earlier version of this test PATCHing the computed decimal
+    // column, which fails with 0A000 for an unrelated reason and would have
+    // passed with UPDATE granted on the view. The refusal must be PRIVILEGE.
     const patch = await rest(`products?id=eq.${PRODUCT_ID}`, {
       token: ownerADeviceA,
       method: 'PATCH',
-      body: { units_per_purchase_unit: 1 },
+      body: { name: 'Bypassed update_product' },
     })
-    expect(patch.status).toBeGreaterThanOrEqual(400)
+    expect(patch.status).toBe(403)
+    expect((patch.json as { code?: string }).code).toBe('42501')
+    expect(patch.text).toContain('permission denied for view products')
   })
 
   it('hides every catalogue view and exact UUID lookup from another tenant', async () => {
@@ -89,9 +95,14 @@ describe('catalogue exactness, routes and tenant isolation', () => {
 
   it('anon cannot read a catalogue view or call a catalogue mutation', async () => {
     const read = await rest('products?select=id')
-    expect(read.status).toBeGreaterThanOrEqual(400)
-    const write = await rest('rpc/create_product', { method: 'POST', body: {} })
-    expect(write.status).toBeGreaterThanOrEqual(400)
+    expect(read.status).toBe(401)
+    expect(read.text).toContain('permission denied for schema api')
+    // The FULL parameter list, so PostgREST resolves the function and the
+    // refusal is the privilege itself — an empty body would only prove that
+    // no zero-argument function exists.
+    const write = await createProduct('', { p_id: 'c1000000-0000-4000-8000-0000000000a0' })
+    expect(write.status).toBe(401)
+    expect((write.json as { code?: string }).code).toBe('42501')
   })
 })
 
@@ -127,7 +138,7 @@ describe('typed mutations and shared authoritative state', () => {
         p_manufacturer: '', p_manufacturer_ref: '', p_note: '',
       },
     })
-    expect(stale.status).toBeGreaterThanOrEqual(400)
+    expect(stale.status).toBe(400)
     expect((stale.json as { details?: string }).details).toBe('STALE_WRITE')
 
     const omitted = await rest('rpc/update_product', {
@@ -135,7 +146,8 @@ describe('typed mutations and shared authoritative state', () => {
       method: 'POST',
       body: { p_id: PRODUCT_ID, p_organization_id: SEED.organizationA },
     })
-    expect(omitted.status).toBeGreaterThanOrEqual(400)
+    expect(omitted.status).toBe(404)
+    expect((omitted.json as { code?: string }).code).toBe('PGRST202')
   })
 
   it('deactivation requires the current version and preserves the row', async () => {
@@ -161,7 +173,7 @@ describe('typed mutations and shared authoritative state', () => {
       p_organization_id: SEED.organizationB,
       p_sku: 'FOREIGN-1',
     })
-    expect(response.status).toBeGreaterThanOrEqual(400)
+    expect(response.status).toBe(403)
     expect((response.json as { details?: string }).details).toBe('FORBIDDEN')
   })
 
@@ -278,7 +290,8 @@ describe('one-time legacy catalogue import', () => {
   const payload = {
     p_request_id: requestId,
     p_organization_id: SEED.organizationB,
-    p_payload_checksum: 'sha256-test-catalog',
+    // The server accepts exactly what the client sends: a lowercase hex SHA-256.
+    p_payload_checksum: 'a'.repeat(64),
     p_products: [],
     p_suppliers: [{ id: 'c2000000-0000-4000-8000-000000000099', displayName: 'Imported', externalRef: '000-OPAQUE', active: true, createdAt: '2026-09-22T12:00:00.000Z', updatedAt: '2026-09-22T12:00:00.000Z' }],
     p_customers: [],
@@ -286,7 +299,7 @@ describe('one-time legacy catalogue import', () => {
 
   it('requires OWNER, assigns the authenticated target tenant and is idempotent by request id', async () => {
     const forbidden = await rest('rpc/import_catalog', { token: memberA, method: 'POST', body: { ...payload, p_organization_id: SEED.organizationA } })
-    expect(forbidden.status).toBeGreaterThanOrEqual(400)
+    expect(forbidden.status).toBe(403)
     expect((forbidden.json as { details?: string }).details).toBe('FORBIDDEN')
 
     const imported = await rest('rpc/import_catalog', { token: ownerB, method: 'POST', body: payload })

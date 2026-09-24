@@ -4,7 +4,7 @@ begin;
 create extension if not exists pgtap with schema extensions;
 set local search_path = extensions, pg_catalog, public;
 
-select plan(34);
+select plan(35);
 
 select has_table('app_data', 'products', 'catalog has canonical products');
 select has_table('app_data', 'suppliers', 'catalog has canonical suppliers');
@@ -104,6 +104,19 @@ select is(
    where organization_id = '7f7f7f7f-0000-4000-8000-00000000000a'),
   0,
   'a new organization starts with no customer statuses'
+);
+
+-- Org B must actually HOLD a product, or "A cannot see B's catalogue" is
+-- vacuously true — the Audit A finding (A-M5) against the earlier version of
+-- the last assertion in this file, which counted an empty organisation.
+insert into app_data.products (id, organization_id, sku, name, stock_unit)
+values ('70000000-0000-4000-8000-0000000000b1', '7f7f7f7f-0000-4000-8000-00000000000b', 'B-ONLY', 'Org B product', 'PIECE');
+
+select is(
+  (select count(*)::integer from app_data.products
+    where organization_id = '7f7f7f7f-0000-4000-8000-00000000000b'),
+  1,
+  'fixture: organisation B really holds a product, so the isolation assertion below can fail'
 );
 
 insert into app_data.profiles (user_id, display_name)
@@ -218,9 +231,10 @@ select throws_ok(
 
 select is(
   (select count(*)::integer from api.products
-    where organization_id = '7f7f7f7f-0000-4000-8000-00000000000b'),
+    where organization_id = '7f7f7f7f-0000-4000-8000-00000000000b'
+       or id = '70000000-0000-4000-8000-0000000000b1'),
   0,
-  'a foreign-tenant catalogue remains invisible'
+  'a foreign-tenant catalogue that does hold a product remains invisible, by filter and by exact id'
 );
 
 reset role;

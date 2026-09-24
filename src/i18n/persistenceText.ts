@@ -85,6 +85,7 @@ export const CLOUD_ERROR_TRANSLATION_KEY: Record<CloudErrorCode, string> = {
   OFFLINE: 'cloudError.offline',
   SERVER_UNAVAILABLE: 'cloudError.serverUnavailable',
   SESSION_EXPIRED: 'cloudError.sessionExpired',
+  INVALID_CREDENTIALS: 'cloudError.invalidCredentials',
   FORBIDDEN: 'cloudError.forbidden',
   NO_MEMBERSHIP: 'cloudError.noMembership',
   ORGANIZATION_LOCKED: 'cloudError.organizationLocked',

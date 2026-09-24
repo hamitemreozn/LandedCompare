@@ -1,5 +1,6 @@
 import {
   CloudError,
+  type AuthChange,
   type CustomerInput,
   type CustomerRecord,
   type CustomerStatusInput,
@@ -38,6 +39,28 @@ function requireRecord<T>(map: Map<string, T>, id: string): T {
   return record
 }
 
+interface LegacyProductShape {
+  readonly id: string
+  readonly sku: string
+  readonly name: string
+  readonly description?: string
+  readonly stockUnit: string
+  readonly defaultPurchaseUnit?: string
+  readonly unitsPerPurchaseUnit?: { readonly value: string }
+  readonly manufacturer?: string
+  readonly manufacturerRef?: string
+  readonly note?: string
+  readonly active: boolean
+}
+
+interface LegacyPartyShape {
+  readonly id: string
+  readonly displayName: string
+  readonly externalRef?: string
+  readonly note?: string
+  readonly active: boolean
+}
+
 function updateRecord<T extends { readonly version: number }>(stored: T, expectedVersion: number): void {
   if (stored.version !== expectedVersion) throw new CloudError('STALE_WRITE', 'stale write')
 }
@@ -49,6 +72,9 @@ export function createMemoryCloudGateway(options: { signedIn?: boolean; failure?
   const customerStatuses = new Map<string, CustomerStatusRecord>()
   let signedIn = options.signedIn ?? true
   let profileVersion = 1
+  const authListeners = new Set<(change: AuthChange) => void>()
+  const notify = (change: AuthChange) => { for (const listener of authListeners) listener(change) }
+  const imports = new Map<string, { checksum: string; counts: { products: number; suppliers: number; customers: number } }>()
 
   const base = (id: string) => ({
     id,
@@ -184,13 +210,48 @@ export function createMemoryCloudGateway(options: { signedIn?: boolean; failure?
         const stored = requireRecord(customerStatuses, id); updateRecord(stored, expectedVersion)
         const record = { ...stored, ...next(stored), active }; customerStatuses.set(id, record); return record
       },
+      // Mirrors api.import_catalog's contract: OWNER-only is out of scope for
+      // this double, but an idempotent request id, a refused non-empty target
+      // and all-or-nothing insertion are not.
       async importLegacyCatalog(input) {
-        return { products: input.products.length, suppliers: input.suppliers.length, customers: input.customers.length }
+        const previous = imports.get(input.requestId)
+        if (previous) {
+          if (previous.checksum !== input.payloadChecksum) throw new CloudError('DUPLICATE_KEY', 'request id reused')
+          return previous.counts
+        }
+        if (products.size + suppliers.size + customers.size > 0) {
+          throw new CloudError('DUPLICATE_KEY', 'catalog import target is not empty')
+        }
+        const stamp = (raw: { id: string; active: boolean }) => ({ ...base(raw.id), active: raw.active })
+        for (const raw of input.products as readonly LegacyProductShape[]) {
+          products.set(raw.id, {
+            ...stamp(raw), sku: raw.sku.trim(), name: raw.name.trim(), stockUnit: raw.stockUnit.trim(),
+            ...(absent(raw.description) ? { description: absent(raw.description) } : {}),
+            ...(absent(raw.defaultPurchaseUnit) ? { defaultPurchaseUnit: absent(raw.defaultPurchaseUnit) } : {}),
+            ...(raw.unitsPerPurchaseUnit ? { unitsPerPurchaseUnit: { value: raw.unitsPerPurchaseUnit.value } } : {}),
+            ...(absent(raw.manufacturer) ? { manufacturer: absent(raw.manufacturer) } : {}),
+            ...(absent(raw.manufacturerRef) ? { manufacturerRef: absent(raw.manufacturerRef) } : {}),
+            ...(absent(raw.note) ? { note: absent(raw.note) } : {}),
+          })
+        }
+        for (const raw of input.suppliers as readonly LegacyPartyShape[]) {
+          suppliers.set(raw.id, { ...stamp(raw), displayName: raw.displayName.trim(), ...(absent(raw.externalRef) ? { externalRef: absent(raw.externalRef) } : {}), ...(absent(raw.note) ? { note: absent(raw.note) } : {}) })
+        }
+        for (const raw of input.customers as readonly LegacyPartyShape[]) {
+          customers.set(raw.id, { ...stamp(raw), displayName: raw.displayName.trim(), ...(absent(raw.externalRef) ? { externalRef: absent(raw.externalRef) } : {}), ...(absent(raw.note) ? { note: absent(raw.note) } : {}) })
+        }
+        const counts = { products: input.products.length, suppliers: input.suppliers.length, customers: input.customers.length }
+        imports.set(input.requestId, { checksum: input.payloadChecksum, counts })
+        return counts
       },
     },
-    async signInWithPassword() { signedIn = true },
-    async signOut() { signedIn = false },
+    async signInWithPassword() { signedIn = true; notify({ event: 'SIGNED_IN', userId: TEST_USER_ID }) },
+    async signOut() { signedIn = false; notify({ event: 'SIGNED_OUT', userId: null }) },
     async changeOwnPassword() {},
+    onAuthChange(listener) {
+      authListeners.add(listener)
+      return () => { authListeners.delete(listener) }
+    },
   }
   return gateway
 }

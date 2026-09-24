@@ -653,11 +653,16 @@ the hosted step is an enforceable gate rather than a report somebody reads.
 
 ### The guard on the build
 
-`npm run build` greps the production bundle for `sb_secret_` and the legacy
-`service_role` marker and fails on a hit. It was verified by planting one — a
-check of this kind that has never been seen to fail is a check nobody knows
-works. It prints the marker and never the value, because moving a key from a
-build artefact into a CI log is not an improvement.
+`npm run build` scans the production bundle for secret key material and fails
+on a hit: `sb_secret_…`, and any JWT-shaped string whose DECODED role is not
+`anon`. The original version searched for the text `service_role`, which a
+JWT-form legacy key never contains; Audit A (A-M4) planted a synthetic
+service-role JWT and watched it pass. The rule now lives in
+`src/cloud/credentialPolicy.mjs`, shared with the runtime configuration check
+and `verify:hosted`, and `src/cloud/credentialPolicy.test.ts` runs the real
+script against synthetic bundles. It prints the kind and never the value,
+because moving a key from a build artefact into a CI log is not an
+improvement.
 
 ---
 
@@ -694,3 +699,79 @@ anonymous HTTP posture checks pass. Functional browser smoke covered Turkish
 and English boot/login/logout, products create/edit/deactivate, opaque external
 codes, user-created customer statuses, an inactive status retained on its customer,
 and a real stopped-server `SERVER_UNAVAILABLE` state.
+
+## Audit A remediation, pass 1
+
+Current result: **79 files, 1,174 unit tests**; **174 pgTAP assertions in eight
+files**; **77 HTTP tests in ten files**; lint, typecheck, build and `db:lint`
+clean. `npm run db:reset` replays **twelve migrations** from empty — the twelfth,
+`20260924120000_audit_a_remediation.sql`, is local only until it is deployed.
+
+What each finding's tests prove, against the real stack where it matters:
+
+| Finding | Tests |
+| --- | --- |
+| A-H1 complete reads | `security/catalogPagination.security.test.ts` puts 1001 and 1500 rows of every catalogue entity behind real PostgREST (whose raw response is shown to stop at 1000) and requires all of them back in id order, with page sizes 333, 1000, 1200 and 5000; `gateway.test.ts` drives the real supabase-js client over a capped stub and requires a refusal, never a partial list, when the server's count and rows disagree |
+| A-M1 legacy cutover | `security/legacyMigration.security.test.ts`: 1200 legacy products; a colleague's record during and after the import; a second device converging on a catalogue the cloud already holds; a different catalogue meeting a cloud in use; a genuine conflict; a server-limit violation named before sending; a lost response after commit. `legacyMigration.test.ts` covers the same states against a server-faithful double |
+| A-M2 identity freshness | `app/authFreshness.security.test.ts` renders the real App over the real gateway: a membership disabled mid-session, another tab signing in as someone else, another tab signing out, a revoked refresh token. A MutationObserver fails the test if an "empty catalogue" message ever appears |
+| A-M3 offline sign-out | `security/offlineLogout.security.test.ts` (real GoTrue) and `gateway.test.ts`: expired token, no network, sign-out → no credential stored → network back → still signed out; online sign-out also revokes the refresh token server-side |
+| A-M4 credential guards | `credentialPolicy.test.ts`, `config.test.ts`: legacy anon JWT allowed only where explicitly supported, legacy service_role JWT and `sb_secret_` refused by the runtime check, the build scanner and `verify:hosted`, `sb_publishable_` allowed |
+| A-M5 regression guards | pgTAP P18 (read views are read-only for every Data API role), P19 (no overloads in `api`), P20 (`p_expected_version`, without default, on every update/lifecycle RPC), a narrowed P12, the repaired `070` isolation assertion, and `080_audit_a_regressions.test.sql`; over HTTP, `security/catalogIntegrity.security.test.ts` (stale update and stale lifecycle on every entity, status assignability, writable-view PATCH of a genuinely updatable column) and exact status codes in place of `>= 400` |
+
+**Proof that the new guards can fail.** Each regression Audit A reproduced was
+re-applied temporarily — to the local database, or to a throwaway copy of the
+source outside the repository — and each turned the suites red: an UPDATE grant
+on the `api` views (pgTAP P18 and four HTTP tests); the version predicate and
+status assignability removed from `update_supplier` / `update_customer` (eight
+pgTAP and three HTTP tests); a weaker overload without `p_expected_version`
+(P19, P20 and an HTTP test); an unpaginated catalogue read; a plain
+`auth.signOut()`; an undecoded JWT role; an unguarded runtime without auth
+events; an empty list not checked against membership; the organisation-wide
+count comparison; invented zero counts after an inspection failure; and a
+classifier without the transport status. The database was reset to its clean
+migration state afterwards.
+
+## Audit A remediation, correction pass 2
+
+A source review of pass 1 found five places where the code promised more than
+it did (R-1 to R-5, and N-1). Current result: **81 files, 1,203 unit tests**;
+**175 pgTAP assertions in eight files**; **84 HTTP tests in ten files**; lint,
+typecheck, build and `db:lint` clean; `db:reset` replays the same **twelve
+migrations** — no schema change was needed.
+
+| ID | Tests |
+| --- | --- |
+| R-1 / R-2 reconciled reads | `security/catalogPagination.security.test.ts` changes the REAL database between two pages of a 1200-row read (the fixture's `afterResponse` hook): a membership disabled after page 1 must fail as `NO_MEMBERSHIP`; a row committed behind the cursor must be in the result after exactly two traversals; one committed ahead must appear once in one traversal; rows committed behind the cursor on every traversal must end in `UNEXPECTED` after exactly `MAX_CATALOG_TRAVERSALS`. `gateway.test.ts` proves the same four over the real supabase-js client and a stub |
+| R-3 exact decimal equality | `catalogRules.test.ts` (canonical form, 2^53 + 1 vs 2^53, 30-digit fractions, absent vs present, invalid text equal to nothing, server rules unchanged); `legacyMigration.test.ts` (`1.2`/`1.20`, `1.200`/`1.2`, a 24-digit value with trailing zeros converge; different values and absent-vs-present conflict; post-import verification uses the same equality; zero, negative and non-canonical factors still refused); `security/legacyMigration.security.test.ts` — PostgreSQL keeps `1.20`, the app writes `1.2`, and a second device still converges |
+| R-4 action generation | `app/migrationAuthRace.test.tsx` pauses the real App's migrate and retire actions inside the backup delivery, then signs out, signs in as another user, or replaces the session with no event at all; the previous user's screen must not return, the legacy database must not be deleted and the cutover must not be marked. A control test proves the same paused retire does complete when nothing changed |
+| N-1 boot identity | `boot.test.ts` (A → B between two reads restarts as B; a session changing under every attempt stops after `BOOT_IDENTITY_ATTEMPTS`); `app/authFreshness.security.test.ts` — a second tab signs in as B through real GoTrue right after the first boot request |
+| R-5 column privileges | pgTAP P18 now fails for a column grant as well as a table grant (`has_any_column_privilege`, and the view and column ACLs for any grantee); P18b keeps SELECT in place |
+
+**Proof that the new guards can fail**, each applied temporarily to a copy of
+the source outside the repository or to the local database, and reverted:
+reconciliation removed (3 unit and 3 HTTP tests red); raw text comparison of
+decimals restored (5 unit and 1 HTTP); the action generation guard removed (3
+of the 4 race tests; with only the pre-deletion check removed, 2); the final
+boot identity check removed (2 unit and 1 HTTP); `grant update (note) on
+api.customers to authenticated` and `grant insert (sort_order) on
+api.customer_statuses to public` (P18 red, naming the view, role and column).
+
+## Audit A remediation, correction pass 3
+
+Current result: **81 files, 1,206 unit tests**; **175 pgTAP assertions**;
+**87 HTTP tests in eleven files**; lint, typecheck, build and `db:lint` clean;
+twelve migrations from empty, unchanged.
+
+`app/retireAuthority.security.test.ts` drives the real App over the real
+local stack: an OWNER starts "back up and remove", the action is paused in the
+backup delivery, and the membership is changed in the database — OWNER →
+MEMBER, and ACTIVE → DISABLED. The local database must survive, no completion
+marker may be written, and the application must reboot to the MEMBER's
+migration screen (no retire action) or the deactivated screen. A control test
+proves the unchanged OWNER's retire completes. `app/migrationAuthRace.test.tsx`
+adds the same downgrade deterministically, and proves the automatic retirement
+of an EMPTY legacy database is not performed for a boot whose user no longer
+holds the session (with a control: it still happens, for any role, when the
+user does). Removing the live membership re-read turned both real-stack
+downgrade tests and the deterministic one red; removing the empty-database
+check turned its test red.

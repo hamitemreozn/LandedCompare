@@ -102,6 +102,7 @@ const tr: TranslationResource = {
     serverUnavailableAdmin:
       'Ücretsiz plandaki proje yaklaşık bir hafta kullanılmazsa otomatik olarak duraklatılır. Supabase panelinden projeyi "Resume project" ile yeniden başlatın.',
     sessionExpired: 'Oturumunuz sona erdi. Lütfen yeniden giriş yapın.',
+    invalidCredentials: 'E-posta adresi veya parola hatalı.',
     forbidden: 'Bu işlem için yetkiniz yok.',
     noMembership: 'Hesabınız bir şirkete bağlı değil. Yöneticinize başvurun.',
     membershipDeactivated:
@@ -137,6 +138,33 @@ const tr: TranslationResource = {
     migrating: 'Yedekleniyor ve taşınıyor…',
     failed: 'Taşıma güvenle durduruldu',
     failedHint: 'Yerel veritabanı korundu. Bildirilen durumu giderip taşımayı yeniden deneyin.',
+    inspectionFailedTitle: 'Önceki yerel katalog incelenemedi',
+    inspectionFailedBody:
+      'Bu tarayıcıdaki önceki yerel katalog güvenle okunamadı. Hiçbir şey silinmedi ve sunucuya hiçbir şey gönderilmedi. Tarayıcıdaki diğer sekmeleri kapatıp yeniden deneyin; sorun sürerse yöneticinize bildirin.',
+    reasonInvalidRecord:
+      'Yerel kayıtlardan biri sunucu kurallarına uymuyor ({{store}} · {{id}} · {{field}}). Hiçbir şey aktarılmadı.',
+    reasonConflict:
+      '{{count}} yerel kayıt, buluttaki aynı kimlikli kayıttan farklı. Bulut sürümü esastır; hiçbir şey birleştirilmedi. İlk fark: {{store}} · {{id}} · {{field}}.',
+    reasonCloudNotEmpty:
+      'Buluttaki katalog zaten dolu ve bu cihazdaki {{count}} yerel kayıt bulutta yok. Otomatik birleştirme yapılmaz. İlk eksik kayıt: {{store}} · {{id}}.',
+    reasonVerificationFailed:
+      'Sunucu aktarımı kabul etti ancak kayıtlar geri okunarak doğrulanamadı. Yerel veritabanı korundu; yeniden deneyin.',
+    reasonUnsupportedRecords:
+      'Bu yerel veritabanında sonraki modüllere ait {{count}} kayıt var. Yalnız katalog taşıyan işlem güvenlik için durduruldu.',
+    retireAction: 'Yerel kataloğu yedekle ve kaldır',
+    retireTitle: 'Yerel katalog kaldırılsın mı?',
+    retireBody:
+      'Önce yerel kataloğun tam bir yedek dosyası indirilecek. Ardından bu tarayıcıdaki yerel kopya silinir; buluttaki katalog hiç değişmez. Bulutta olmayan veya bulutla farklı olan yerel kayıtlar yalnızca bu yedek dosyasında kalır.',
+    retireNote: 'Bu işlem yalnızca bu cihazdaki önceki kopyayı etkiler.',
+    retireConfirm: 'Yedekle ve kaldır',
+    storeProducts: 'ürün',
+    storeSuppliers: 'tedarikçi',
+    storeCustomers: 'müşteri',
+  },
+  shell: {
+    identityLabel: 'Oturum bilgisi',
+    organization: 'Şirket',
+    user: 'Kullanıcı',
   },
   backupStatus: {
     label: 'Dış yedek',
