@@ -686,6 +686,33 @@ precisely why guessing now would be the expensive option.
   export be mistaken for an infrastructure backup, or the reverse, and the
   documentation must not promise an Auth recovery that has not been rehearsed.
 
+- **Phase 12.6 — Brand & Design System Foundation** (difficulty 3).
+  *Objective:* give every later screen one consistent visual language to build
+  on, before any screen is redesigned.
+  *Deliverables:* the frozen LandedCompare brand marks (`lc-mark.svg` and its
+  small/mono/dark/app-icon variants) under `src/assets/brand/`; self-hosted IBM
+  Plex Sans/Mono via `@fontsource`, replacing the placeholder Inter stack;
+  an expanded `src/styles/tokens.css` carrying the brand palette and semantic
+  tokens (light now, dark-ready) alongside the existing `src/ui/tokens.css`
+  scale; a Lucide React icon convention; and a small foundational primitive
+  set (Button, Input, Label, Badge, Tooltip, Separator) proving the
+  architecture without replacing the working `src/ui/components.css`
+  patterns. Recorded in [Design System](DESIGN_SYSTEM.md).
+  *Dependencies:* Phase 12.
+  *Risk:* low — purely additive. No screen is redesigned, no navigation
+  changes, no business logic touched.
+
+- **Phase 12.7 — Application Shell Modernization** (difficulty 4, not started).
+  *Objective:* apply the Phase 12.6 foundation to the parts of the shell that
+  are visible on every screen.
+  *Deliverables:* sidebar, topbar, breadcrumb and navigation restructured onto
+  the semantic tokens and primitives; existing screens (tables, forms, cards,
+  filters, page headers) are explicitly out of scope for this phase too and
+  migrate screen-by-screen afterward.
+  *Dependencies:* Phase 12.6.
+  *Risk:* the first phase that changes what the working application looks
+  like; needs its own review pass separate from the token/asset foundation.
+
 - **Phase 13 — Projects, Requirements, Suppliers & Quotes UI** (difficulty 7).
   *Objective:* the existing engine becomes usable.
   *Deliverables:* `projects`, `requirement_items`, `quotes`, `quote_items` and
@@ -843,8 +870,8 @@ tables, RLS, security-invoker projections, twelve mutation RPCs, OWNER-only
 import, cloud application boot, version concurrency, customer-status UI and
 local-database retirement path exist and are live.
 
-**Phase 12 is implemented in the working tree, deployed and pending final
-release review.** Organisation
+**Phase 12 is CLOSED** — final commit `c650f20f7ba79e63b99ef0860740368a67deb0d1`,
+pushed to `origin/main`, local and remote matched after closeout. Organisation
 administration (members, roles, access, e-mail invitations — no
 administrator-known or administrator-set password of any kind), the
 portable organisation backup (`backupFormatVersion` 2) with its strict
@@ -855,7 +882,14 @@ reminder, the Tauri save path, the own-profile screen), is recorded in
 [Cloud & Multi-User Architecture](CLOUD_MULTIUSER_ARCHITECTURE.md) §31.
 Deployment state: local and hosted histories match at **13/13**, with no
 pending migration; the corrected invitation-based provisioner and final UI
-polish are deployed. Phase 13 onward is not started.
+polish are deployed.
+
+**Phase 12.6 — Brand & Design System Foundation is implemented in the working
+tree, not yet committed.** Brand assets, self-hosted IBM Plex fonts, the
+semantic token layer and a small primitive set exist; no screen was
+redesigned. See [Design System](DESIGN_SYSTEM.md). Phase 12.7 (the visible
+shell modernization that consumes this foundation) and Phase 13 onward are
+not started.
 
 **On entering pilot data — revised by Phase 9.5.** The Phase 9 wiring is done:
 `runSnapshotMaintenance()` runs on startup, `ensurePreMigrationSnapshot()` is

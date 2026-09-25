@@ -1,2 +1,4 @@
+/* Import order is deliberate — see src/styles/tokens.css's header comment. */
+@import './styles/tokens.css';
 @import './ui/tokens.css';
 @import './ui/components.css';

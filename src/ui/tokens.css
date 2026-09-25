@@ -70,12 +70,22 @@
 
   --accent: var(--accent-600);
   --accent-strong: var(--accent-700);
-  --focus-ring: var(--accent-500);
+  /* Phase 12.6: focus styling is explicitly in-scope minimal brand
+     integration (docs/DESIGN_SYSTEM.md); the accent used for buttons/links
+     elsewhere is not touched by this phase. */
+  --focus-ring: var(--action-primary);
 
   /* ── Type ────────────────────────────────────────────────────────────── */
-  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue',
-    Arial, sans-serif;
-  --font-mono: ui-monospace, 'SF Mono', 'Cascadia Mono', 'Segoe UI Mono', Menlo, monospace;
+  /* Phase 12.6: the design-system UI font is IBM Plex Sans, self-hosted via
+     @fontsource and registered in src/main.tsx. --font-sans keeps its own
+     name here (rather than being renamed everywhere) because every existing
+     component already reads it — this is the one minimal, explicitly
+     in-scope integration point, not a rename of the whole token surface.
+     --font-mono is deliberately NOT redeclared below: it falls through to
+     `--font-mono` from src/styles/tokens.css (IBM Plex Mono), which is what
+     the existing `.detail-list__value--mono` technical-identifier usage
+     wants per Phase 12.6's typography rules (docs/DESIGN_SYSTEM.md). */
+  --font-sans: var(--font-ui);
 
   --text-xs: 0.75rem;
   --text-sm: 0.8125rem;

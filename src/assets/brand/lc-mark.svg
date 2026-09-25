@@ -1,13 +1,14 @@
 <svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
   <path d="M15 16 L15 44 L29 44"
         stroke="#1B2A55"
-        stroke-width="9"
+        stroke-width="8"
         stroke-linecap="round"
         stroke-linejoin="round"
         fill="none"/>
   <path d="M29 28.06 A12 12 0 1 1 29 43.94"
         stroke="#3557F3"
-        stroke-width="9"
+        stroke-width="8"
         stroke-linecap="round"
         fill="none"/>
+  <circle cx="29" cy="44" r="3.2" fill="#C99A3D"/>
 </svg>

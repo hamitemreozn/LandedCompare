@@ -13,6 +13,7 @@ import { CLOUD_ERROR_TRANSLATION_KEY } from '../../i18n/persistenceText'
 import { ConfirmDialog } from '../../ui/ConfirmDialog'
 import { TextField } from '../../ui/Field'
 import { Banner } from '../../ui/Feedback'
+import { AppIconTile } from '../../ui/Brand'
 
 const CLOUD_ERROR_KEYS: Record<CloudErrorCode, string> = CLOUD_ERROR_TRANSLATION_KEY
 
@@ -22,7 +23,9 @@ function BootPanel({ children }: { readonly children: React.ReactNode }) {
     <div className="boot">
       <div className="boot__panel">
         <div className="boot__brand">
-          <span className="brand__mark" aria-hidden="true">LC</span>
+          <span className="brand__mark">
+            <AppIconTile />
+          </span>
           <span className="brand__name">{t('common.appName')}</span>
         </div>
         {children}

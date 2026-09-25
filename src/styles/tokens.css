@@ -1,0 +1,218 @@
+/*
+ * LandedCompare design-system tokens — Phase 12.6 foundation.
+ *
+ * This file is the canonical home for the FROZEN brand palette and its
+ * semantic layer (docs/DESIGN_SYSTEM.md). It is imported before
+ * `src/ui/tokens.css` in `src/index.css` on purpose: where a name is defined
+ * in both files, `ui/tokens.css` — loaded second — wins, so today's screens
+ * keep their current colours unchanged. Phase 12.7 is where components move
+ * onto the names defined here and `ui/tokens.css`'s colliding declarations
+ * are retired; until then this file is available (and tested for presence)
+ * but not the active source for shared names.
+ *
+ * Two names ARE consumed directly by this phase, deliberately, because they
+ * were named as in-scope minimal integration: `--font-ui` (root font) and
+ * `--focus-ring` (declared here for reference; the live value is set on
+ * `ui/tokens.css`'s `--focus-ring`, see that file's header comment).
+ *
+ * Non-colour scales that already work (space, radius, shadow) are NOT
+ * duplicated here — see `src/ui/tokens.css`. This file adds only what is new:
+ * the brand palette/semantics, typography tokens, and a light/dark-ready
+ * token architecture. Dark values are declared but inert: nothing in the
+ * application sets `data-theme="dark"` yet (Phase 12.6 does not ship a
+ * dark-mode toggle).
+ */
+
+:root {
+  /* ── Typography ──────────────────────────────────────────────────────── */
+  --font-ui: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+    'Helvetica Neue', Arial, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, monospace;
+
+  /* ── Raw palette ─────────────────────────────────────────────────────── */
+  --palette-indigo-900: #101b33;
+  --palette-indigo-700: #1b2a55;
+
+  --palette-blue-600: #3557f3;
+  --palette-blue-500: #6c86ff;
+
+  --palette-gold-500: #c99a3d;
+  --palette-gold-300: #d8b15c;
+
+  --palette-neutral-50: #f7f8fa;
+  --palette-neutral-100: #eef1f5;
+  --palette-neutral-200: #e2e6ed;
+  --palette-neutral-300: #c7ceda;
+  --palette-neutral-400: #9aa3b2;
+  --palette-neutral-500: #828c9c;
+  --palette-neutral-600: #5b6472;
+  --palette-neutral-800: #2b3242;
+  --palette-neutral-900: #12172b;
+
+  --palette-green-700: #15803d;
+  --palette-green-500: #16a34a;
+  --palette-green-400: #4ade80;
+  /* Light status surface tints below (green-50/orange-50/red-50/blue-50) are
+     NOT part of the originally frozen brand spec — that spec fixed the
+     base/icon status colours and the dark surfaces, but left the light
+     surface/text pairing incomplete and, in the case of warning, paired a
+     saturated surface with a colour that fails WCAG contrast against it (see
+     docs/DESIGN_SYSTEM.md, "Status token contrast"). These tints were chosen
+     and contrast-checked (`src/styles/tokens.test.ts`) to close that gap
+     without touching any frozen value. */
+  --palette-green-50: #f0faf3;
+
+  --palette-orange-700: #b35f0a;
+  --palette-orange-500: #dc7a0f;
+  --palette-orange-400: #fbbf24;
+  --palette-orange-50: #fffefb;
+  /* The original frozen spec's `--status-warning-text: #8a4a08` is kept
+     available here, under its palette name, rather than deleted — but it is
+     no longer paired with `--status-warning-surface` as "text on surface"
+     (that pairing was the F12.6-03 contrast failure: ~2.2:1). Reserved for a
+     future context that needs a darker warning tone NOT rendered on top of
+     `--status-warning-surface`. */
+  --palette-orange-900: #8a4a08;
+
+  --palette-red-600: #dc2626;
+  --palette-red-400: #f87171;
+  --palette-red-50: #fef8f8;
+
+  --palette-blue-info-600: #2563eb;
+  --palette-blue-info-400: #60a5fa;
+  --palette-blue-info-50: #eef3fe;
+
+  /* ── Semantic tokens (light) ─────────────────────────────────────────── */
+  --brand-primary: var(--palette-indigo-700);
+  --brand-accent: var(--palette-gold-500);
+
+  --surface-app: var(--palette-neutral-50);
+  --surface-card: #ffffff;
+  --surface-elevated: #ffffff;
+
+  --text-primary: var(--palette-neutral-900);
+  --text-secondary: var(--palette-neutral-600);
+  /* Not suitable for ordinary small body text — contrast is insufficient
+     there. Reserve for metadata and large-enough UI contexts. */
+  --text-muted: var(--palette-neutral-500);
+
+  --border-default: var(--palette-neutral-200);
+  --border-strong: var(--palette-neutral-300);
+
+  --action-primary: var(--palette-blue-600);
+  --action-primary-hover: #2a46d6;
+  --action-primary-active: #22399f;
+  --focus-ring: var(--palette-blue-600);
+
+  --state-disabled-bg: var(--palette-neutral-100);
+  --state-disabled-text: #b3bac7;
+  --state-selected-bg: #e8edff;
+  --state-row-hover: #f2f4fa;
+
+  /*
+   * Status tokens — four roles per state, same names in light and dark
+   * (F12.6-03): `--status-X` (base/strong — plain-background emphasis, e.g.
+   * an unfilled icon or a strong border), `--status-X-icon` (icon fill),
+   * `--status-X-surface` (tinted background for a badge/banner) and
+   * `--status-X-text` (the colour placed ON `--status-X-surface` — verified
+   * ≥4.5:1 against it, see `src/styles/tokens.test.ts`). Every one of the 16
+   * light tokens has a same-named dark counterpart below — no component may
+   * end up depending on a name that exists in only one theme.
+   */
+  --status-success: var(--palette-green-700);
+  --status-success-icon: var(--palette-green-500);
+  --status-success-surface: var(--palette-green-50);
+  --status-success-text: var(--palette-green-700);
+
+  --status-warning: var(--palette-orange-700);
+  --status-warning-icon: var(--palette-orange-500);
+  --status-warning-surface: var(--palette-orange-50);
+  --status-warning-text: var(--palette-orange-700);
+
+  --status-error: var(--palette-red-600);
+  --status-error-icon: var(--palette-red-600);
+  --status-error-surface: var(--palette-red-50);
+  --status-error-text: var(--palette-red-600);
+
+  --status-info: var(--palette-blue-info-600);
+  --status-info-icon: var(--palette-blue-info-600);
+  --status-info-surface: var(--palette-blue-info-50);
+  --status-info-text: var(--palette-blue-info-600);
+}
+
+/*
+ * Dark tokens — prepared, not wired up. Nothing in the application sets
+ * `data-theme="dark"` today; this selector is inert until a later phase adds
+ * a toggle. Deliberately not a `prefers-color-scheme` media query: this
+ * project's stated position (see `src/ui/tokens.css`) is that a half-built
+ * dark mode is worse than none, so dark tokens only activate on an explicit,
+ * future opt-in, never silently from the OS setting.
+ *
+ * Status tokens: `--status-X-surface` values below are the ones the original
+ * frozen brand spec fixed for dark. `--status-X`/`--status-X-icon`/
+ * `--status-X-text` are new (F12.6-03 — the light theme had all four roles,
+ * dark had only `-surface`); dark deliberately uses the same bright tone for
+ * both `-icon` and `-text` (unlike light, which uses a distinct icon shade)
+ * — one accessible bright tone already serves both roles against these dark
+ * surfaces, and inventing a second shade per state was not worth the extra
+ * token for a foundation phase.
+ */
+:root[data-theme='dark'] {
+  --surface-app: #0d1424;
+  --surface-card: #151f35;
+  --surface-elevated: #1b2740;
+
+  --text-primary: #f2f4f8;
+  --text-secondary: #a6aec2;
+  --text-muted: #7b84a0;
+
+  --border-default: #26304a;
+  --border-strong: #37456a;
+
+  --action-primary: var(--palette-blue-500);
+  --action-primary-hover: #8398ff;
+  --action-primary-active: #5670e0;
+  --focus-ring: var(--palette-blue-500);
+
+  --brand-accent: var(--palette-gold-300);
+
+  --state-disabled-bg: #1b2438;
+  --state-disabled-text: var(--palette-neutral-600);
+  --state-selected-bg: #1e2a4d;
+  --state-row-hover: #17213a;
+
+  --status-success: var(--palette-green-400);
+  --status-success-icon: var(--palette-green-400);
+  --status-success-surface: #123322;
+  --status-success-text: var(--palette-green-400);
+
+  --status-warning: var(--palette-orange-400);
+  --status-warning-icon: var(--palette-orange-400);
+  --status-warning-surface: #3a2410;
+  --status-warning-text: var(--palette-orange-400);
+
+  --status-error: var(--palette-red-400);
+  --status-error-icon: var(--palette-red-400);
+  --status-error-surface: #3a1616;
+  --status-error-text: var(--palette-red-400);
+
+  --status-info: var(--palette-blue-info-400);
+  --status-info-icon: var(--palette-blue-info-400);
+  --status-info-surface: #16213d;
+  --status-info-text: var(--palette-blue-info-400);
+}
+
+/* ── Typography utilities ─────────────────────────────────────────────── */
+
+/* Numeric columns (prices, percentages, quantities): digits line up without
+   forcing the whole cell into a monospace face. */
+.text-tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Genuinely fixed-width identifiers only: SKU, product codes, HS/tariff
+   codes, external reference IDs. Not for prices or ordinary numeric columns —
+   use `.text-tabular` for those instead. */
+.text-code {
+  font-family: var(--font-mono);
+}

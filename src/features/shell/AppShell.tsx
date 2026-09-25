@@ -21,6 +21,7 @@ import { hrefFor, type RouteId } from '../../app/routes'
 import { useAppRuntime } from '../../app/runtime'
 import { setLocale, SUPPORTED_LOCALES, type SupportedLocale } from '../../i18n'
 import { Banner } from '../../ui/Feedback'
+import { AppIconTile } from '../../ui/Brand'
 
 const PRIMARY_ROUTES: readonly { id: RouteId; labelKey: string }[] = [
   { id: 'dashboard', labelKey: 'nav.dashboard' },
@@ -59,8 +60,8 @@ export function AppShell({
     <div className="shell">
       <aside className="sidebar">
         <div className="brand">
-          <span className="brand__mark" aria-hidden="true">
-            LC
+          <span className="brand__mark">
+            <AppIconTile />
           </span>
           <span>
             <span className="brand__name">{t('common.appName')}</span>
