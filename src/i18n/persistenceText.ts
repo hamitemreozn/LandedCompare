@@ -90,6 +90,7 @@ export const CLOUD_ERROR_TRANSLATION_KEY: Record<CloudErrorCode, string> = {
   NO_MEMBERSHIP: 'cloudError.noMembership',
   ORGANIZATION_LOCKED: 'cloudError.organizationLocked',
   NOT_CONFIGURED: 'cloudError.notConfigured',
+  PROVISIONING_IN_FLIGHT: 'cloudError.provisioningInFlight',
   STALE_WRITE: 'dataError.staleWrite',
   DUPLICATE_KEY: 'dataError.duplicateKey',
   RECORD_NOT_FOUND: 'dataError.recordNotFound',

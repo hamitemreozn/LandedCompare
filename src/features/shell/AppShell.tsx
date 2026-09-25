@@ -20,6 +20,7 @@ import { useTranslation } from 'react-i18next'
 import { hrefFor, type RouteId } from '../../app/routes'
 import { useAppRuntime } from '../../app/runtime'
 import { setLocale, SUPPORTED_LOCALES, type SupportedLocale } from '../../i18n'
+import { Banner } from '../../ui/Feedback'
 
 const PRIMARY_ROUTES: readonly { id: RouteId; labelKey: string }[] = [
   { id: 'dashboard', labelKey: 'nav.dashboard' },
@@ -41,15 +42,18 @@ export function AppShell({
   route,
   locale,
   onSignOut,
+  onSwitchOrganization,
   children,
 }: {
   readonly route: RouteId
   readonly locale: SupportedLocale
   readonly onSignOut: () => Promise<void>
+  /** Present only when the user may enter more than one company. */
+  readonly onSwitchOrganization?: () => void
   readonly children: ReactNode
 }) {
   const { t } = useTranslation()
-  const { organization, profile, role } = useAppRuntime()
+  const { organization, profile, role, choices, previousSelectionUnavailable } = useAppRuntime()
 
   return (
     <div className="shell">
@@ -77,6 +81,17 @@ export function AppShell({
                 {t(entry.labelKey)}
               </a>
             ))}
+          </div>
+
+          <div className="nav__group">
+            <h2 className="nav__heading">{t('nav.administration')}</h2>
+            <a
+              className="nav__link"
+              href={hrefFor('organization')}
+              aria-current={route === 'organization' ? 'page' : undefined}
+            >
+              {t('nav.organization')}
+            </a>
           </div>
 
           <div className="nav__group">
@@ -126,6 +141,11 @@ export function AppShell({
               </button>
             ))}
           </div>
+          {onSwitchOrganization !== undefined && choices.length > 1 ? (
+            <button type="button" className="button button--small" onClick={onSwitchOrganization}>
+              {t('shell.switchOrganization')}
+            </button>
+          ) : null}
           <button type="button" className="button button--small" onClick={() => void onSignOut()}>
             {t('cloudAuth.signOut')}
           </button>
@@ -133,6 +153,11 @@ export function AppShell({
       </aside>
 
       <main className="shell__main">
+        {previousSelectionUnavailable ? (
+          <Banner tone="warning" label={t('common.warning')}>
+            {t('shell.previousSelectionUnavailable', { organization: organization.name })}
+          </Banner>
+        ) : null}
         {children}
       </main>
     </div>

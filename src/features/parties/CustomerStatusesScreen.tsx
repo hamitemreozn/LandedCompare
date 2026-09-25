@@ -109,6 +109,7 @@ function StatusForm({
             label={t('customerStatus.sortOrder')}
             value={draft.sortOrder}
             error={errors.sortOrder}
+            hint={t('customerStatus.sortOrderHint')}
             onChange={(sortOrder) => {
               setDraft({ ...draft, sortOrder })
               setErrors({})
@@ -256,7 +257,9 @@ export function CustomerStatusesScreen({ locale }: { readonly locale: SupportedL
               </table>
             </div>
           )}
-          <ResultCount shown={list.visible.length} total={list.all.length} />
+          <div className="card__body">
+            <ResultCount shown={list.visible.length} total={list.all.length} />
+          </div>
         </section>
       )}
       {pending !== undefined ? (

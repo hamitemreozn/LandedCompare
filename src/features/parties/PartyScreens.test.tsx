@@ -296,8 +296,8 @@ describe('customer statuses', () => {
     await goTo(harness, 'Müşteri Durumları', 'Müşteri Durumları')
     await harness.user.click(await screen.findByRole('button', { name: 'Yeni Müşteri Durumu' }))
     await harness.user.type(screen.getByLabelText('Durum Kodu'), 'A++')
-    await harness.user.clear(screen.getByLabelText('Sıralama'))
-    await harness.user.type(screen.getByLabelText('Sıralama'), '10')
+    await harness.user.clear(screen.getByLabelText('Liste sırası'))
+    await harness.user.type(screen.getByLabelText('Liste sırası'), '10')
     await harness.user.click(screen.getByRole('button', { name: 'Kaydet' }))
     expect(await screen.findByRole('cell', { name: 'A++' })).toBeInTheDocument()
 

@@ -1,16 +1,18 @@
 /**
- * Shared server-side context for the two privileged Edge Functions.
+ * Shared server-side context for the privileged Edge Function.
  *
  * Canonical design: docs/CLOUD_MULTIUSER_ARCHITECTURE.md §4 and §19.
  *
- * These functions exist for exactly one reason: creating or re-credentialling
- * an `auth.users` row requires the Auth Admin API and the secret key, and the
- * secret key bypasses every row-level policy in the system. It therefore lives
- * in Edge Function secrets, is read here, and is never returned, logged, or
- * sent anywhere near a client.
+ * These functions exist for exactly one reason: invitation-based provisioning
+ * must invite a new `auth.users` identity or locate an existing one through the
+ * Auth Admin API. That API requires the secret key, which bypasses every
+ * row-level policy in the system. It therefore lives in Edge Function secrets,
+ * is read here, and is never returned, logged, or sent anywhere near a client.
  *
  * Everything else this product does is a view or a function in the `api`
- * schema. Two Edge Functions is the whole server-side deployment surface
+ * schema. One Edge Function (`admin-provision-user`) is the whole server-side
+ * deployment surface — `admin-reset-password` was removed in Phase 12 because
+ * an organisation must not replace a global credential (P12-B1) —
  * outside the migrations.
  */
 
@@ -44,14 +46,14 @@ function projectUrl(): string {
 }
 
 /**
- * A client authorised as `service_role`, holding EXECUTE on five named RPCs and
- * no privilege on any table in `app_data`.
+ * A client authorised as `service_role`, holding EXECUTE on three named RPCs
+ * and no privilege on any table in `app_data`.
  *
  * That is deliberate and it is the reason this is the only place the secret key
  * appears: the most dangerous credential in the system can call
- * `begin_provisioning`, `complete_provisioning`, `fail_provisioning`,
- * `begin_password_reset` and `complete_password_reset`, and cannot compose a
- * single statement against a business table if this file is ever wrong.
+ * `begin_provisioning`, `complete_provisioning` and `fail_provisioning`, and
+ * cannot compose a single statement against a business table if this file is
+ * ever wrong. (The two password-reset RPCs were dropped in Phase 12.)
  */
 export function serviceClient(): SupabaseClient {
   return createClient(projectUrl(), secretKey(), {
@@ -133,29 +135,33 @@ export function fromPostgrest(error: { code?: string; details?: string | null; m
 }
 
 /**
- * A one-time password, generated on the server and shown once.
+ * Where an invitation link lands, or undefined for the project's Site URL.
  *
- * Handed to the employee out of band — in person or by phone — because that is
- * the only delivery channel that exists at $0 (§4: the Free plan's built-in
- * e-mail sends two messages an hour and only to the Supabase organisation's own
- * team members). For three people in one office it is also *better* than
- * e-mail: the credential never sits in a mailbox.
+ * Read from the function's environment (`LANDEDCOMPARE_INVITE_REDIRECT_URL`,
+ * an operator setting) and NEVER from a request: the link carries the
+ * invited person's session tokens in its fragment, so a caller-chosen
+ * destination would be a way to collect them. Auth additionally refuses any
+ * redirect outside the project's allow list. Only `https:` — or plain `http:`
+ * to a loopback address, for local development — is accepted; anything else
+ * fails closed rather than silently falling back.
  *
- * `crypto.getRandomValues` rather than `Math.random`, and an alphabet with no
- * `0/O` or `1/l/I`, because this string is going to be read aloud down a phone.
+ * There is no generated password anywhere in this codebase any more (Phase
+ * 12): a new person receives an invitation and chooses their own.
  */
-export function generateTemporaryPassword(): string {
-  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789'
-  const bytes = new Uint8Array(16)
-  crypto.getRandomValues(bytes)
-  let password = ''
-  for (const byte of bytes) {
-    password += alphabet[byte % alphabet.length]
+export function inviteRedirectUrl(): string | undefined {
+  const raw = (Deno.env.get('LANDEDCOMPARE_INVITE_REDIRECT_URL') ?? '').trim()
+  if (raw === '') return undefined
+  let url: URL
+  try {
+    url = new URL(raw)
+  } catch {
+    throw new AdminError(500, 'SERVER_UNAVAILABLE', 'the invitation redirect is misconfigured')
   }
-  // A digit and a symbol, so the value satisfies any password policy the
-  // project is configured with rather than being refused by the Auth service
-  // after the administrator has already been told it was created.
-  return `${password}7!`
+  const loopback = url.hostname === '127.0.0.1' || url.hostname === 'localhost'
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback)) {
+    throw new AdminError(500, 'SERVER_UNAVAILABLE', 'the invitation redirect must be https')
+  }
+  return url.toString()
 }
 
 const CORS_HEADERS: Record<string, string> = {

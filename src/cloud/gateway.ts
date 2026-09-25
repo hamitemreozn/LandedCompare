@@ -31,6 +31,9 @@
  * ## Scope in Phase 11
  *
  * Identity, live membership and the complete catalogue boundary now run here.
+ * Phase 12 adds `admin`: the member roster and membership changes through
+ * typed RPCs, and provisioning through the `admin-provision-user` Edge
+ * Function — every one of them authorised by the server, never here.
  *
  * ## Complete reads (Audit A, A-H1)
  *
@@ -55,6 +58,9 @@
  */
 
 import {
+  FunctionsFetchError,
+  FunctionsHttpError,
+  FunctionsRelayError,
   isAuthApiError,
   isAuthRetryableFetchError,
   type AuthChangeEvent,
@@ -234,6 +240,85 @@ export interface IdentityGateway {
   acknowledgePasswordChange(expectedVersion: number): Promise<Profile>
 }
 
+/**
+ * One member of an organisation, as an OWNER/ADMIN of THAT organisation sees
+ * it (Phase 12). The e-mail comes from `auth.users`, which no view exposes; it
+ * reaches only an administrator of the member's own organisation, through
+ * `api.list_organization_members`.
+ */
+export interface OrganizationMember {
+  readonly userId: string
+  /** Null only when provisioning never created a profile for this account. */
+  readonly displayName: string | null
+  readonly email: string | null
+  readonly role: MembershipRole
+  readonly status: MembershipStatus
+  readonly version: number
+  readonly createdAt: string
+  readonly updatedAt: string
+}
+
+export type ProvisioningAttemptStatus = 'IN_FLIGHT' | 'SUCCEEDED' | 'FAILED'
+
+/** A row of `api.provisioning_attempts` — readable by OWNER/ADMIN only. */
+export interface ProvisioningAttempt {
+  readonly requestId: string
+  readonly organizationId: string
+  readonly email: string
+  readonly requestedRole: MembershipRole
+  readonly status: ProvisioningAttemptStatus
+  readonly failureReason: string | null
+  readonly createdAt: string
+  readonly updatedAt: string
+}
+
+export interface ProvisioningAttemptList {
+  readonly attempts: readonly ProvisioningAttempt[]
+  /** How many in-flight attempts exist in total; more than `attempts.length` means the list is a prefix. */
+  readonly total: number
+}
+
+export interface ProvisionMemberInput {
+  /**
+   * Generated ONCE per press of the button and reused on every retry of that
+   * press. It is the whole idempotency mechanism of §4.
+   */
+  readonly requestId: string
+  readonly organizationId: string
+  readonly email: string
+  readonly displayName: string
+  readonly role: MembershipRole
+}
+
+/**
+ * The outcome of an invitation — the same shape whether the address was new
+ * (Auth e-mailed the person an invitation) or already had an account (it was
+ * linked). No credential, invitation link, token or user id ever comes back to
+ * an administrator; the person sets their own password (Phase 12).
+ */
+export interface ProvisionMemberResult {
+  readonly status: 'SUCCEEDED' | 'ALREADY_SUCCEEDED'
+}
+
+/**
+ * Organisation administration (Phase 12). Every authority decision is the
+ * server's: OWNER/ADMIN is re-proved from live membership inside each RPC and
+ * Edge Function, whatever the screen believed when it rendered the button.
+ *
+ * There is no password reset and no temporary password here, by design: an
+ * Auth identity is global, and an administrator of one organisation must
+ * never learn a credential that opens another. New people are invited by
+ * e-mail and choose their own password.
+ */
+export interface AdministrationGateway {
+  listMembers(organizationId: string): Promise<readonly OrganizationMember[]>
+  setMemberRole(organizationId: string, userId: string, expectedVersion: number, role: MembershipRole): Promise<OrganizationMember>
+  setMemberStatus(organizationId: string, userId: string, expectedVersion: number, status: MembershipStatus): Promise<OrganizationMember>
+  listInFlightProvisioningAttempts(organizationId: string): Promise<ProvisioningAttemptList>
+  clearProvisioningAttempt(organizationId: string, requestId: string): Promise<void>
+  provisionMember(input: ProvisionMemberInput): Promise<ProvisionMemberResult>
+}
+
 /** An authentication state change, reduced to what the application acts on. */
 export interface AuthChange {
   readonly event: AuthChangeEvent
@@ -244,8 +329,14 @@ export interface AuthChange {
 export interface DataGateway {
   readonly identity: IdentityGateway
   readonly catalog: CatalogGateway
+  readonly admin: AdministrationGateway
   /** The signed-in user's id, or null. */
   currentUserId(): Promise<string | null>
+  /**
+   * The signed-in user's e-mail address, or null — shown to the person
+   * themself (whose account is this?), never to anyone else.
+   */
+  currentUserEmail(): Promise<string | null>
   signInWithPassword(email: string, password: string): Promise<void>
   /**
    * Ends the session ON THIS DEVICE, unconditionally, then asks the server to
@@ -255,6 +346,12 @@ export interface DataGateway {
   signOut(): Promise<void>
   /** Changes the caller's own Auth password. Does not clear the forced flag. */
   changeOwnPassword(newPassword: string): Promise<void>
+  /**
+   * Signs this device in with the session an invitation link delivered to the
+   * invited person (Phase 12). The tokens come from that person's own e-mail;
+   * they never pass through an administrator.
+   */
+  adoptInvitationSession(accessToken: string, refreshToken: string): Promise<void>
   /**
    * Observes sign-in, sign-out, token refresh and session replacement —
    * including those made in another tab, which Supabase relays over a
@@ -447,6 +544,92 @@ function toProfile(row: ProfileRow): Profile {
     mustChangePassword: row.must_change_password,
     version: row.version,
   }
+}
+
+const ROLES: readonly string[] = ['OWNER', 'ADMIN', 'MEMBER']
+const STATUSES: readonly string[] = ['ACTIVE', 'DISABLED']
+const INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/
+
+/**
+ * The member projection `app_private.member_json` builds, checked field by
+ * field. It arrives as a jsonb VALUE rather than as view rows, so nothing
+ * about its shape is guaranteed by PostgREST; a malformed answer is refused
+ * rather than rendered.
+ */
+function toMember(value: unknown): OrganizationMember {
+  const row = value as Record<string, unknown> | null
+  const nullableText = (field: unknown) => field === null || typeof field === 'string'
+  if (
+    row === null || typeof row !== 'object' || Array.isArray(row) ||
+    typeof row.userId !== 'string' ||
+    !nullableText(row.displayName) || !nullableText(row.email) ||
+    typeof row.role !== 'string' || !ROLES.includes(row.role) ||
+    typeof row.status !== 'string' || !STATUSES.includes(row.status) ||
+    typeof row.version !== 'number' || !Number.isInteger(row.version) ||
+    typeof row.createdAt !== 'string' || !INSTANT.test(row.createdAt) ||
+    typeof row.updatedAt !== 'string' || !INSTANT.test(row.updatedAt)
+  ) {
+    throw new CloudError('UNEXPECTED', 'the server returned a member in an unexpected shape')
+  }
+  return {
+    userId: row.userId,
+    displayName: row.displayName as string | null,
+    email: row.email as string | null,
+    role: row.role as MembershipRole,
+    status: row.status as MembershipStatus,
+    version: row.version,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  }
+}
+
+interface ProvisioningAttemptRow {
+  request_id: string
+  organization_id: string
+  email: string
+  requested_role: MembershipRole
+  status: ProvisioningAttemptStatus
+  failure_reason: string | null
+  created_at: string
+  updated_at: string
+}
+
+/** How many in-flight attempts the admin screen shows; `total` reports the rest. */
+const PROVISIONING_ATTEMPT_DISPLAY_LIMIT = 50
+
+/**
+ * Turns an Edge Function failure into the application's vocabulary.
+ *
+ * The functions answer `{ code }` with an HTTP status (`adminContext.ts`), so
+ * the code is read from the body when there is one and the status decides
+ * otherwise. A request that never reached the function is a transport
+ * failure, not a verdict.
+ */
+async function edgeFunctionFailure(error: unknown): Promise<CloudError> {
+  if (error instanceof FunctionsFetchError) {
+    return cloudErrorFromTransport(error, isOnline())
+  }
+  if (error instanceof FunctionsRelayError) {
+    return new CloudError('SERVER_UNAVAILABLE', 'the function relay did not answer')
+  }
+  if (error instanceof FunctionsHttpError) {
+    const response = error.context as Response | undefined
+    const status = response?.status ?? 0
+    let code: unknown
+    try {
+      code = ((await response?.json()) as { code?: unknown } | undefined)?.code
+    } catch {
+      code = undefined
+    }
+    if (code === 'PROVISIONING_IN_FLIGHT') return new CloudError('PROVISIONING_IN_FLIGHT', 'an attempt with this request id is still in flight')
+    if (status === 401) return new CloudError('SESSION_EXPIRED', 'the function refused the session')
+    if (status === 403 || code === 'FORBIDDEN') return new CloudError('FORBIDDEN', 'the caller is not permitted to do this')
+    if (code === 'DUPLICATE_KEY') return new CloudError('DUPLICATE_KEY', 'the request id was used for a different invitation')
+    if (code === 'RECORD_NOT_FOUND') return new CloudError('RECORD_NOT_FOUND', 'the record does not exist')
+    if (status === 400 || code === 'RECORD_INVALID') return new CloudError('RECORD_INVALID', 'the request was refused as invalid')
+    return new CloudError('SERVER_UNAVAILABLE', 'the function did not complete')
+  }
+  return new CloudError('UNEXPECTED', 'the function call failed')
 }
 
 function isOnline(): boolean {
@@ -841,6 +1024,114 @@ export function createDataGateway(client: CloudClient, options: DataGatewayOptio
     },
   }
 
+  async function invokeFunction<T>(name: string, body: Record<string, unknown>): Promise<T> {
+    let result: { data: unknown; error: unknown }
+    try {
+      result = await client.functions.invoke(name, { body })
+    } catch (cause) {
+      throw cloudErrorFromTransport(cause, isOnline())
+    }
+    if (result.error) {
+      throw await edgeFunctionFailure(result.error)
+    }
+    if (result.data === null || typeof result.data !== 'object') {
+      throw new CloudError('UNEXPECTED', 'the function returned no result')
+    }
+    return result.data as T
+  }
+
+  const admin: AdministrationGateway = {
+    async listMembers(organizationId) {
+      return mutate(organizationId, async () => {
+        const value = await run<unknown>(() =>
+          client.rpc('list_organization_members', { p_organization_id: organizationId }),
+        )
+        if (!Array.isArray(value)) {
+          throw new CloudError('UNEXPECTED', 'the member list was not an array')
+        }
+        const members = value.map(toMember)
+        if (new Set(members.map((member) => member.userId)).size !== members.length) {
+          throw new CloudError('UNEXPECTED', 'the member list named a member twice')
+        }
+        return members.sort((left, right) => compareText(left.userId, right.userId))
+      })
+    },
+
+    async setMemberRole(organizationId, userId, expectedVersion, role) {
+      return mutate(organizationId, async () => toMember(await run<unknown>(() => client.rpc('set_member_role', {
+        p_organization_id: organizationId,
+        p_user_id: userId,
+        p_expected_version: expectedVersion,
+        p_role: role,
+      }))))
+    },
+
+    async setMemberStatus(organizationId, userId, expectedVersion, status) {
+      return mutate(organizationId, async () => toMember(await run<unknown>(() => client.rpc('set_member_status', {
+        p_organization_id: organizationId,
+        p_user_id: userId,
+        p_expected_version: expectedVersion,
+        p_status: status,
+      }))))
+    },
+
+    async listInFlightProvisioningAttempts(organizationId) {
+      // A display list, not a completeness-critical read: it is capped well
+      // below `max_rows` and the exact total is reported beside it, so the
+      // screen can say "and N more" instead of implying it showed them all.
+      const { data, count } = await execute<ProvisioningAttemptRow[]>(() =>
+        client
+          .from('provisioning_attempts')
+          .select('request_id,organization_id,email,requested_role,status,failure_reason,created_at,updated_at', { count: 'exact' })
+          .eq('organization_id', organizationId)
+          .eq('status', 'IN_FLIGHT')
+          .order('created_at', { ascending: false })
+          .order('request_id', { ascending: true })
+          .limit(PROVISIONING_ATTEMPT_DISPLAY_LIMIT) as unknown as PromiseLike<PostgrestOutcome<ProvisioningAttemptRow[]>>,
+      )
+      if (count === null) {
+        throw new CloudError('UNEXPECTED', 'the server did not report how many attempts exist')
+      }
+      return {
+        total: count,
+        attempts: data.map((row) => ({
+          requestId: row.request_id,
+          organizationId: row.organization_id,
+          email: row.email,
+          requestedRole: row.requested_role,
+          status: row.status,
+          failureReason: row.failure_reason,
+          createdAt: row.created_at,
+          updatedAt: row.updated_at,
+        })),
+      }
+    },
+
+    async clearProvisioningAttempt(organizationId, requestId) {
+      await mutate(organizationId, () => run<unknown>(() => client.rpc('clear_provisioning_attempt', {
+        p_organization_id: organizationId,
+        p_request_id: requestId,
+      })))
+    },
+
+    async provisionMember(input) {
+      return mutate(input.organizationId, async () => {
+        const body = await invokeFunction<{ status?: unknown }>('admin-provision-user', {
+          request_id: input.requestId,
+          organization_id: input.organizationId,
+          email: input.email,
+          display_name: input.displayName,
+          role: input.role,
+        })
+        if (body.status !== 'SUCCEEDED' && body.status !== 'ALREADY_SUCCEEDED') {
+          throw new CloudError('UNEXPECTED', 'the provisioning function returned an unknown status')
+        }
+        // Only the status is passed on, whatever else a server might send.
+        return { status: body.status }
+      })
+    },
+  }
+
   /** Network trouble while talking to Auth is not a verdict about the session. */
   function authFailure(error: unknown, whenRefused: CloudError): CloudError {
     if (isAuthRetryableFetchError(error)) {
@@ -889,10 +1180,25 @@ export function createDataGateway(client: CloudClient, options: DataGatewayOptio
     }
   }
 
+  async function currentUserEmail(): Promise<string | null> {
+    let result: Awaited<ReturnType<typeof client.auth.getSession>>
+    try {
+      result = await client.auth.getSession()
+    } catch (cause) {
+      throw cloudErrorFromTransport(cause, isOnline())
+    }
+    if (result.error) {
+      throw authFailure(result.error, new CloudError('SESSION_EXPIRED', 'the session could not be refreshed'))
+    }
+    return result.data.session?.user.email ?? null
+  }
+
   return {
     identity,
     catalog,
+    admin,
     currentUserId,
+    currentUserEmail,
 
     async signInWithPassword(email, password) {
       let result: Awaited<ReturnType<typeof client.auth.signInWithPassword>>
@@ -964,6 +1270,18 @@ export function createDataGateway(client: CloudClient, options: DataGatewayOptio
       }
       if (result.error) {
         throw authFailure(result.error, new CloudError('RECORD_INVALID', 'the password was refused'))
+      }
+    },
+
+    async adoptInvitationSession(accessToken, refreshToken) {
+      let result: Awaited<ReturnType<typeof client.auth.setSession>>
+      try {
+        result = await client.auth.setSession({ access_token: accessToken, refresh_token: refreshToken })
+      } catch (cause) {
+        throw cloudErrorFromTransport(cause, isOnline())
+      }
+      if (result.error || !result.data.session) {
+        throw authFailure(result.error, new CloudError('SESSION_EXPIRED', 'the invitation link is no longer valid'))
       }
     },
 

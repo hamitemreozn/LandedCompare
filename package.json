@@ -15,7 +15,8 @@
     "db:test": "supabase test db",
     "db:lint": "supabase db lint --level warning",
     "verify:hosted": "node scripts/verify-hosted.mjs",
-    "db:advisors": "supabase db advisors --linked --type security --level warn --fail-on warn"
+    "db:advisors": "node scripts/check-security-advisors.mjs",
+    "db:advisors:raw": "supabase db advisors --linked --type security --level warn --fail-on warn"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.117.0",

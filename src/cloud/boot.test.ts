@@ -44,6 +44,7 @@ function fakeGateway(state: FakeState = {}): DataGateway {
 
   return {
     catalog: {} as DataGateway['catalog'],
+    admin: {} as DataGateway['admin'],
     currentUserId: async () => {
       if (state.failWith) {
         throw state.failWith
@@ -64,6 +65,8 @@ function fakeGateway(state: FakeState = {}): DataGateway {
     signOut: async () => {},
     onAuthChange: () => () => {},
     changeOwnPassword: async () => {},
+    adoptInvitationSession: async () => {},
+    currentUserEmail: async () => null,
   }
 }
 
@@ -137,31 +140,6 @@ describe('bootstrapCloudSession', () => {
     expect(result.phase).toBe('NO_MEMBERSHIP')
   })
 
-  it('selects one organisation deterministically when a user belongs to several', async () => {
-    // The MVP interface assumes one active membership and selects it without a
-    // picker. The DATA MODEL permits several — a join table costs nothing today
-    // where a single column would cost a migration the first time it is wrong —
-    // so the choice is made explicitly here rather than by pretending the
-    // second row cannot exist, and it does not depend on server row order.
-    const second: Membership = {
-      organizationId: ORG_B,
-      userId: USER,
-      role: 'MEMBER',
-      status: 'ACTIVE',
-    }
-    const organizationB: Organization = { ...ORGANIZATION, id: ORG_B, name: 'Deneme Şirketi B' }
-
-    const forward = await bootstrapCloudSession(
-      fakeGateway({ memberships: [MEMBERSHIP, second], organizations: [ORGANIZATION, organizationB] }),
-    )
-    const reversed = await bootstrapCloudSession(
-      fakeGateway({ memberships: [second, MEMBERSHIP], organizations: [organizationB, ORGANIZATION] }),
-    )
-
-    expect(forward).toEqual(reversed)
-    expect(forward).toMatchObject({ phase: 'READY', role: 'OWNER' })
-  })
-
   it('ignores DISABLED memberships when choosing', async () => {
     const disabledFirst: Membership = {
       organizationId: '00000000-0000-4000-8000-000000000000',
@@ -216,6 +194,97 @@ describe('bootstrapCloudSession', () => {
   })
 })
 
+describe('organisation selection (Audit A, A-L7)', () => {
+  const ORG_C = '33333333-3333-4333-8333-333333333333'
+  const organizationB: Organization = { ...ORGANIZATION, id: ORG_B, name: 'Deneme Şirketi B' }
+  const organizationC: Organization = { ...ORGANIZATION, id: ORG_C, name: 'Alfa Ltd' }
+  const inB: Membership = { organizationId: ORG_B, userId: USER, role: 'MEMBER', status: 'ACTIVE' }
+  const inC: Membership = { organizationId: ORG_C, userId: USER, role: 'ADMIN', status: 'ACTIVE' }
+  const two = { memberships: [MEMBERSHIP, inB], organizations: [ORGANIZATION, organizationB] }
+
+  it('zero ACTIVE memberships: NO_MEMBERSHIP, whatever was remembered', async () => {
+    const result = await bootstrapCloudSession(
+      fakeGateway({ memberships: [{ ...MEMBERSHIP, status: 'DISABLED' }], organizations: [] }),
+      { preferredOrganizationId: () => ORG_A },
+    )
+    expect(result).toMatchObject({ phase: 'NO_MEMBERSHIP', deactivatedOrganizationIds: [ORG_A] })
+  })
+
+  it('exactly one ACTIVE membership: entered automatically, with no selector', async () => {
+    const result = await bootstrapCloudSession(fakeGateway(), {})
+    expect(result).toMatchObject({ phase: 'READY', organization: { id: ORG_A }, previousSelectionUnavailable: false })
+    expect(result.phase === 'READY' && result.choices.map((choice) => choice.organization.id)).toEqual([ORG_A])
+  })
+
+  it('several ACTIVE memberships and nothing remembered: the user chooses, and nothing is entered', async () => {
+    const result = await bootstrapCloudSession(fakeGateway(two), {})
+    expect(result).toMatchObject({ phase: 'ORGANIZATION_SELECTION', userId: USER, previousSelectionUnavailable: false })
+    expect(result).not.toHaveProperty('organization')
+  })
+
+  it('lists the choices by name, then id, whatever order the server returned', async () => {
+    const forward = await bootstrapCloudSession(
+      fakeGateway({ memberships: [MEMBERSHIP, inB, inC], organizations: [ORGANIZATION, organizationB, organizationC] }),
+    )
+    const reversed = await bootstrapCloudSession(
+      fakeGateway({ memberships: [inC, inB, MEMBERSHIP], organizations: [organizationC, organizationB, ORGANIZATION] }),
+    )
+    expect(forward).toEqual(reversed)
+    expect(forward.phase === 'ORGANIZATION_SELECTION' && forward.choices.map((choice) => [choice.organization.name, choice.role])).toEqual([
+      ['Alfa Ltd', 'ADMIN'],
+      ['Deneme Şirketi A', 'OWNER'],
+      ['Deneme Şirketi B', 'MEMBER'],
+    ])
+  })
+
+  it('a remembered choice that is still ACTIVE is entered, with its own role', async () => {
+    const result = await bootstrapCloudSession(fakeGateway(two), { preferredOrganizationId: () => ORG_B })
+    expect(result).toMatchObject({ phase: 'READY', organization: { id: ORG_B }, role: 'MEMBER', previousSelectionUnavailable: false })
+  })
+
+  it('the preference is asked for THIS user only', async () => {
+    const asked: string[] = []
+    await bootstrapCloudSession(fakeGateway(two), { preferredOrganizationId: (userId) => { asked.push(userId); return undefined } })
+    expect(asked).toEqual([USER])
+  })
+
+  it('a stale choice (an organisation the user was never, or is no longer, in) fails closed to the selector', async () => {
+    const result = await bootstrapCloudSession(fakeGateway(two), {
+      preferredOrganizationId: () => '99999999-9999-4999-8999-999999999999',
+    })
+    expect(result).toMatchObject({ phase: 'ORGANIZATION_SELECTION', previousSelectionUnavailable: true })
+  })
+
+  it('a remembered choice whose membership was DISABLED is not entered', async () => {
+    const result = await bootstrapCloudSession(
+      fakeGateway({ memberships: [MEMBERSHIP, { ...inB, status: 'DISABLED' }, inC], organizations: [ORGANIZATION, organizationC] }),
+      { preferredOrganizationId: () => ORG_B },
+    )
+    expect(result).toMatchObject({ phase: 'ORGANIZATION_SELECTION', previousSelectionUnavailable: true })
+    expect(result.phase === 'ORGANIZATION_SELECTION' && result.choices.map((choice) => choice.organization.id)).toEqual([ORG_C, ORG_A])
+  })
+
+  it('the remembered choice was removed and ONE membership remains: entered, and the change is reported', async () => {
+    const result = await bootstrapCloudSession(fakeGateway(), { preferredOrganizationId: () => ORG_B })
+    expect(result).toMatchObject({ phase: 'READY', organization: { id: ORG_A }, previousSelectionUnavailable: true })
+  })
+
+  it('"switch company" shows the selector even though the remembered choice is valid', async () => {
+    const result = await bootstrapCloudSession(fakeGateway(two), { preferredOrganizationId: () => ORG_A, forceSelection: true })
+    expect(result).toMatchObject({ phase: 'ORGANIZATION_SELECTION', previousSelectionUnavailable: false })
+  })
+
+  it('"switch company" with only one membership left simply enters it', async () => {
+    const result = await bootstrapCloudSession(fakeGateway(), { forceSelection: true })
+    expect(result).toMatchObject({ phase: 'READY', organization: { id: ORG_A } })
+  })
+
+  it('an ACTIVE membership among several whose organisation is invisible is a server fault, not a smaller list', async () => {
+    const result = await bootstrapCloudSession(fakeGateway({ memberships: [MEMBERSHIP, inB], organizations: [ORGANIZATION] }))
+    expect(result).toEqual({ phase: 'UNAVAILABLE', code: 'SERVER_UNAVAILABLE', userId: USER })
+  })
+})
+
 /**
  * A session that belongs to user A when the boot starts and to user B from
  * the moment the profile has been read — another tab signing in as B, while
@@ -233,6 +302,7 @@ function replacedMidBoot(switches: number): { gateway: DataGateway; identityRead
     identityReads: () => reads,
     gateway: {
       catalog: {} as DataGateway['catalog'],
+      admin: {} as DataGateway['admin'],
       currentUserId: async () => { reads += 1; return who() },
       identity: {
         readOwnProfile: async () => {
@@ -248,6 +318,8 @@ function replacedMidBoot(switches: number): { gateway: DataGateway; identityRead
       signInWithPassword: async () => {},
       signOut: async () => {},
       changeOwnPassword: async () => {},
+      adoptInvitationSession: async () => {},
+      currentUserEmail: async () => null,
       onAuthChange: () => () => {},
     },
   }

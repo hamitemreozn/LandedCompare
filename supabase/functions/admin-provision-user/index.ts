@@ -7,10 +7,10 @@
  * ---------------------------------------------------------------------------
  * This is not one transaction, and it is not described as one
  *
- * `auth.admin.createUser()` is an HTTP call to the Auth service. The profile
- * and membership rows are a PostgreSQL write. Between them sit a network, a
- * timeout, and this function, which can be killed mid-execution. They do not
- * commit together.
+ * `auth.admin.inviteUserByEmail()` is an HTTP call to the Auth service. The
+ * profile and membership rows are a PostgreSQL write. Between them sit a
+ * network, a timeout, and this function, which can be killed mid-execution.
+ * They do not commit together.
  *
  * So the workflow is designed to be IDEMPOTENT instead: running it again with
  * the same `request_id` converges on one valid final state rather than
@@ -20,16 +20,57 @@
  *   1 CLAIM THE ATTEMPT    api.begin_provisioning — which is ALSO where the
  *                          database proves the caller is an OWNER/ADMIN of the
  *                          named organisation, BEFORE step 2 touches Auth
- *   2 RESOLVE THE USER     the non-transactional step: find or create
+ *   2 RESOLVE THE USER     the non-transactional step: find, or INVITE
  *   3 LINK                 api.complete_provisioning — profile + membership +
  *                          admin event + attempt status, in one transaction
- *   4 COMPENSATE           delete ONLY an auth user this attempt created
- *   5 RETURN               status, user id, and a password exactly once
+ *   4 ON FAILURE           mark the attempt FAILED; delete NOTHING
+ *   5 RETURN               { status, request_id } — the same shape always
  *
- * Two properties fall out of that and are the reason it is safe: no path ever
- * deletes an auth user it did not create in the same attempt, and the only
- * thing that is ever left half-done is a `provisioning_attempts` row, which is
- * inert.
+ * ## No administrator ever holds a credential (Phase 12, final correction)
+ *
+ * An Auth identity is GLOBAL: one person, one password, for every
+ * organisation they belong to. An earlier version created a NEW account with
+ * a generated password and returned it to the inviting administrator — so if
+ * a second organisation linked the same address before the person changed
+ * that password, the first administrator could sign in as them there. The
+ * forced-change flag could not prevent it: it is an onboarding screen, and a
+ * direct API call never sees it.
+ *
+ * Now a new address receives an INVITATION, sent by Auth to that address and
+ * nowhere else. The person opens it, is signed in by it, and chooses their own
+ * password. This function never generates, sees, returns or logs a password,
+ * an invitation link, an OTP or a token. An EXISTING account is linked and its
+ * credential is never touched.
+ *
+ *   address unknown to Auth          → invite (creates the account, e-mails the
+ *                                      person), then link
+ *   address known, never confirmed   → re-send the invitation to the person
+ *                                      (a previous invitation may have been
+ *                                      lost), then link
+ *   address known and confirmed      → link only
+ *
+ * The invitation link lands on the project's configured Site URL, or on
+ * `LANDEDCOMPARE_INVITE_REDIRECT_URL` when the operator sets one — never on a
+ * URL taken from the request, which would let a caller redirect the person's
+ * session tokens anywhere. Auth itself refuses a redirect outside its allow
+ * list.
+ *
+ * ## Why there is no compensating delete (P12-H2)
+ *
+ * Between creating an account and a failed link, ANOTHER organisation's
+ * provisioning can find the account by its address and link it; deleting it
+ * then would remove a person another company just gave access to. So a failed
+ * attempt leaves the account in place, without a membership — exactly what
+ * `app_private.orphaned_auth_identities` reports — and the operator purge
+ * deletes it only after re-proving, under a row lock in the database, that no
+ * membership and no in-flight attempt exists. A retry links it.
+ *
+ * ## What the caller learns (P12-M2)
+ *
+ * `{ status, request_id }` — identical whether the address was new or
+ * already had an account. No user id, no "created" flag, no credential, and
+ * one failure reason (`LINK_FAILED`) whichever case it was. Nothing about
+ * other organisations is returned.
  *
  * Deliberately NOT built: a job queue. Every step is a single call with a
  * bounded runtime, the retry is a human pressing a button again, and an
@@ -39,7 +80,7 @@
 import {
   AdminError,
   fromPostgrest,
-  generateTemporaryPassword,
+  inviteRedirectUrl,
   jsonResponse,
   resolveCaller,
   serveAdminFunction,
@@ -127,55 +168,45 @@ serveAdminFunction(async (request) => {
   }
 
   if (claimStatus === 'ALREADY_SUCCEEDED') {
-    // Case B. The stored outcome, returned again. No password: it was shown
-    // once, at the moment it was generated, and this is not that moment.
+    // Case B. The stored outcome, returned again — the same shape as the
+    // first answer, so a retry learns nothing new either.
     return jsonResponse(200, {
       status: 'ALREADY_SUCCEEDED',
       request_id: requestId,
-      user_id: (claim.data as { user_id?: string }).user_id ?? null,
-      temporary_password: null,
     })
   }
 
   // ── 2  RESOLVE THE AUTH USER — the non-transactional step ───────────────
   let userId: string
   let createdHere = false
-  let temporaryPassword: string | null = null
 
   const existing = await findUserByEmail(service, email)
 
-  if (existing) {
-    // Case C. The account exists and is not this attempt's to re-credential:
-    // it is linked, and NO password is returned. Resetting it is the separate,
-    // explicit `admin-reset-password` action, precisely so that an
-    // administrator re-entering an address cannot silently change a
-    // colleague's password.
-    userId = existing
+  if (existing && existing.confirmed) {
+    // Case C. The account exists and belongs to its owner, who has already
+    // set it up. It is linked; its credential is not this function's to
+    // touch, by any path.
+    userId = existing.id
   } else {
-    const password = generateTemporaryPassword()
-    const created = await service.auth.admin.createUser({
-      email,
-      password,
-      // Asserted by an administrator who knows this person, rather than proven
-      // by a click on a link that the Free plan cannot deliver. That is a
-      // stronger guarantee, and the design does not pretend otherwise.
-      email_confirm: true,
-    })
+    // A new address, or an account whose invitation was never accepted (a
+    // lost e-mail, another organisation's pending invitation). Auth sends the
+    // invitation to the PERSON; nothing that could open the account comes
+    // back here.
+    const redirectTo = inviteRedirectUrl()
+    const invited = await service.auth.admin.inviteUserByEmail(email, redirectTo ? { redirectTo } : undefined)
 
-    if (created.error || !created.data.user) {
-      // A race with another administrator can land here with "already
-      // registered". Re-read rather than fail: the outcome we want is that the
-      // account exists and is linked, and it now does.
+    if (invited.error || !invited.data.user) {
+      // "Already registered" is a race with another administrator, or a
+      // confirmation that landed in between: re-read and link what exists.
       const raced = await findUserByEmail(service, email)
       if (!raced) {
-        await failAttempt(service, requestId, 'AUTH_CREATE_FAILED')
-        throw new AdminError(502, 'SERVER_UNAVAILABLE', 'the account could not be created')
+        await failAttempt(service, requestId, 'INVITATION_FAILED')
+        throw new AdminError(502, 'SERVER_UNAVAILABLE', 'the invitation could not be sent')
       }
-      userId = raced
+      userId = raced.id
     } else {
-      userId = created.data.user.id
-      createdHere = true
-      temporaryPassword = password
+      userId = invited.data.user.id
+      createdHere = !existing
     }
   }
 
@@ -188,28 +219,19 @@ serveAdminFunction(async (request) => {
   })
 
   if (link.error) {
-    // ── 4  COMPENSATE ─────────────────────────────────────────────────────
-    // ONLY a user this attempt created. This single condition is what makes
-    // case C safe: an administrator who mistypes an address into an existing
-    // colleague's account, and whose link then fails, does not lose that
-    // colleague's account.
-    if (createdHere) {
-      await service.auth.admin.deleteUser(userId).catch((cause) => {
-        console.error('compensating delete failed', cause)
-      })
-    }
+    // ── 4  ON FAILURE ─────────────────────────────────────────────────────
+    // Nothing is deleted — see "Why there is no compensating delete". One
+    // reason for every case: whether this attempt created the account is not
+    // something the organisation's administrators need, and the attempt row
+    // is readable by them.
     await failAttempt(service, requestId, 'LINK_FAILED')
     throw fromPostgrest(link.error)
   }
 
-  // ── 5  RETURN. The password appears here and nowhere else — it is not
-  // stored in plaintext, not written to `admin_events`, and not logged.
+  // ── 5  RETURN — the same shape for a new address and an existing account.
   return jsonResponse(200, {
     status: 'SUCCEEDED',
     request_id: requestId,
-    user_id: userId,
-    account_created: createdHere,
-    temporary_password: temporaryPassword,
   })
 })
 
@@ -225,7 +247,7 @@ serveAdminFunction(async (request) => {
 async function findUserByEmail(
   service: ReturnType<typeof serviceClient>,
   email: string,
-): Promise<string | null> {
+): Promise<{ id: string; confirmed: boolean } | null> {
   for (let page = 1; page <= 20; page += 1) {
     const { data, error } = await service.auth.admin.listUsers({ page, perPage: 200 })
     if (error) {
@@ -233,7 +255,7 @@ async function findUserByEmail(
     }
     const match = data.users.find((user) => (user.email ?? '').toLowerCase() === email)
     if (match) {
-      return match.id
+      return { id: match.id, confirmed: Boolean(match.email_confirmed_at) }
     }
     if (data.users.length < 200) {
       return null

@@ -63,6 +63,12 @@ export type CloudErrorCode =
   | 'ORGANIZATION_LOCKED'
   /** The build was never configured with a project URL and publishable key. */
   | 'NOT_CONFIGURED'
+  /**
+   * An invitation with this request id is still running (§4 case B/E). Refused
+   * rather than raced; the remedy is to wait, or for an OWNER to clear a
+   * stuck attempt explicitly.
+   */
+  | 'PROVISIONING_IN_FLIGHT'
   /** A concurrent edit; the existing code, the existing sentence. */
   | 'STALE_WRITE'
   | 'DUPLICATE_KEY'

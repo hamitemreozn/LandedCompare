@@ -174,6 +174,8 @@ help, it is marked **OPTIONAL FUTURE** and the design works without it.
 Two independent reasons point the same way, which is why this is a firm decision
 rather than a preference.
 
+*Phase 12 reverses reason one for invitations (§31.7): an administrator-known password is a cross-organisation credential leak, so new accounts are invited by e-mail and the hosted project needs a custom SMTP provider. Reason two still holds for everything else.*
+
 **Reason one — the email constraint.** Supabase's built-in email service sends at
 most 2 messages per hour *and only to addresses belonging to the Supabase
 organisation's own team members*. An invitation sent to `muhasebe@akgunmedikal…`
@@ -189,49 +191,64 @@ password is an HTTPS request. It behaves identically in a browser tab, a Tauri
 webview on Windows, and a Tauri webview on macOS, with no platform-conditional
 code at all.
 
-### The MVP flow, end to end
+### The flow, end to end (Phase 12 — supersedes the Phase 10 password hand-over)
 
 ```text
-ADMIN                                  EMPLOYEE
-─────                                  ────────
-1. Kullanıcılar → "Kullanıcı ekle"
+ADMIN (organisation X)                 THE PERSON (address U)
+──────────────────────                 ──────────────────────
+1. Şirket → "Kullanıcı ekle"
    e-posta, ad, rol
         │
         ▼
 2. Edge Function: admin-provision-user
    (idempotent — see below)
    ├ verifies the caller's JWT
-   ├ verifies caller is OWNER/ADMIN of the target org
-   ├ ensures an auth user exists for the e-mail
-   ├ RPC: profile + membership in one DB transaction
-   └ returns the generated password ONCE
-        │
-        ▼
-3. Admin reads the password to the
-   employee, in person or by phone   ───►  4. Signs in: e-posta + parola
-                                                │
-                                                ▼
-                                           5. Forced password change
-                                              (must_change_password = true)
-                                                │
-                                                ▼
-                                           6. Normal use
+   ├ begin_provisioning: caller is OWNER/ADMIN of X
+   ├ U unknown to Auth, or never accepted
+   │     → auth.admin.inviteUserByEmail(U)  ───►  3. Auth e-mails U an invitation
+   ├ U known and set up → link only                  (to U's own address only)
+   ├ complete_provisioning: profile (if missing)          │
+   │   + membership + admin event, one transaction        ▼
+   └ returns { status, request_id }            4. U opens the link: signed in by it,
+     — the same for new and existing U             the application asks U to
+        │                                          CHOOSE a password
+        ▼                                                 │
+   "U now has access to this company."                    ▼
+   No password, token, link or user id              5. Normal use
+   ever reaches the administrator.
 ```
 
-Why the password is handed over out of band: it is the only delivery channel that
-exists at $0, and for three people in one office it is *better* than email — the
-credential never sits in a mailbox. The password is shown once, is not stored
-anywhere in the database in plaintext, and is useless after step 5.
+**No administrator ever learns a usable credential for anyone.** An Auth
+identity is global — one person, one password, every organisation they belong
+to. The Phase 10 design generated a password for a new account and returned it
+to the inviting administrator for hand-over; if a second organisation linked the
+same address before the person changed it, the first administrator could sign
+in as them in the second organisation, and the forced-change flag could not
+stop a direct API call. That design is removed (§31.7). *Historical text:*
+~~"returns the generated password ONCE … Admin reads the password to the
+employee, in person or by phone … Why the password is handed over out of band:
+it is the only delivery channel that exists at $0."~~
+
+**What this costs, stated plainly.** An invitation is an e-mail, so the hosted
+project needs a real SMTP provider (§3: the built-in sender reaches only the
+Supabase team's own addresses) and a Site URL at which the application is served,
+so the link can land somewhere that accepts it. Until both are configured, a new
+address cannot be onboarded on the hosted project; existing accounts are
+unaffected. [Deployment](DEPLOYMENT.md) has the checklist.
 
 ### Provisioning is not one transaction, and must not be described as one
 
-Step 2 crosses a boundary a database transaction cannot span. `auth.admin
-.createUser()` is an **HTTP call to the Auth service**, and the profile and
-membership rows are a **PostgreSQL write**. Between them sits a network, a
-timeout, and an Edge Function that can be killed mid-execution. An earlier draft
-wrote them on one line as though they committed together; they do not, and the
-consequences are not hypothetical — the most likely one is an admin pressing the
-button twice.
+*This section describes the CURRENT workflow (Phase 12). The Phase 10 version —
+`createUser` with an administrator-known password, and a compensating
+`deleteUser` — is gone; it survives only in the fenced historical note at the
+end of this section.*
+
+Step 2 crosses a boundary a database transaction cannot span.
+`auth.admin.inviteUserByEmail()` is an **HTTP call to the Auth service**, and
+the profile and membership rows are a **PostgreSQL write**. Between them sits a
+network, a timeout, and an Edge Function that can be killed mid-execution. They
+do not commit together, and the most likely consequence is an admin pressing
+the button twice.
 
 So the workflow is designed to be **idempotent**: running it again with the same
 input converges on one valid final state rather than producing a second one.
@@ -240,88 +257,111 @@ input converges on one valid final state rather than producing a second one.
 admin-provision-user(email, display_name, role, organization_id, request_id)
 │
 ├─ 0  AUTHORISE
-│     verify JWT → verify OWNER/ADMIN of organization_id
-│     (a caller who fails here never reaches the Auth Admin API)
+│     verify JWT → resolve the caller
 │
-├─ 1  CLAIM THE ATTEMPT
-│     RPC begin_provisioning(organization_id, email, request_id)
+├─ 1  CLAIM THE ATTEMPT (and prove OWNER/ADMIN of organization_id)
+│     RPC begin_provisioning(organization_id, email, request_id, actor)
 │     inserts into provisioning_attempts (request_id PK)
 │       → conflict, status SUCCEEDED → return the stored outcome, stop
 │       → conflict, status IN_FLIGHT  → return BUSY, stop (no double create)
+│       → conflict, status FAILED     → re-claim and continue
 │       → inserted                    → continue
+│     (a caller who fails here never reaches the Auth Admin API)
 │
 ├─ 2  RESOLVE THE AUTH USER          ← the non-transactional step
-│     listUsers / getUserByEmail on the normalised address
-│       → exists     : created_here = false,  password = null
-│       → not exists : createUser({ email, password, email_confirm: true })
-│                      created_here = true
-│       → createUser fails with "already registered" (a race with another
-│         admin): re-read, treat as exists
+│     listUsers on the normalised address
+│       → exists AND confirmed     : link only — no e-mail, no credential change
+│       → exists, never confirmed  : inviteUserByEmail again (to that address;
+│                                    a previous invitation may have been lost)
+│       → does not exist           : inviteUserByEmail — Auth creates the account
+│                                    and e-mails the person, and nobody else
+│       → invite refused as "already registered" (a race): re-read, link
+│       → invite fails otherwise   : attempt FAILED (INVITATION_FAILED), stop
+│     created_here = the account did not exist before this attempt
 │
 ├─ 3  LINK, TRANSACTIONALLY
-│     RPC complete_provisioning(request_id, user_id, display_name, role)
-│       one transaction:
-│         insert profiles      … on conflict (user_id) do update display_name
-│         insert memberships   … on conflict (organization_id, user_id)
-│                                do update set role = excluded.role,
-│                                              status = 'ACTIVE'
-│         insert admin_events  (actor, subject, organisation, role)
+│     RPC complete_provisioning(request_id, user_id, display_name, created_here)
+│       one transaction, under the organisation's membership lock:
+│         re-prove the actor; an OWNER grant needs an OWNER now
+│         insert profiles  … on conflict (user_id) DO NOTHING — the profile is
+│                          global and never overwritten; a NEW profile's
+│                          onboarding flag comes from the Auth record
+│                          (not accepted yet, or invitation-born), never from
+│                          created_here
+│         insert memberships … on conflict (organization_id, user_id)
+│                            do update set role, status = 'ACTIVE'
+│         insert admin_events (actor, subject, organisation, role — no
+│                            "account created" bit)
 │         update provisioning_attempts set status = 'SUCCEEDED'
 │
-├─ 4  COMPENSATE ON FAILURE
-│     if step 3 fails AND created_here = true:
-│         auth.admin.deleteUser(user_id)        ← only ever the user THIS
-│         mark the attempt FAILED                 attempt created
-│     if step 3 fails AND created_here = false:
-│         mark the attempt FAILED, delete nothing
+├─ 4  ON FAILURE
+│     mark the attempt FAILED (LINK_FAILED — one reason in every case).
+│     DELETE NOTHING: another organisation may already have linked the
+│     account. An account nobody links stays an orphan for the operator purge.
 │
-└─ 5  RETURN  { status, user_id, temporary_password? }
+└─ 5  RETURN  { status, request_id } — the same for a new and an existing address
 ```
 
 `provisioning_attempts` is a small table — `request_id uuid primary key`,
-`organization_id`, `email`, `status`, `created_at` — and it is the whole
-idempotency mechanism. The client generates `request_id` once per press of the
-button and reuses it on retry, exactly as it already generates entity UUIDs.
+`organization_id`, `email`, `status`, `created_here` (server-only), `created_at`
+— and it is the whole idempotency mechanism. The client generates `request_id`
+once per press of the button and reuses it on retry, exactly as it already
+generates entity UUIDs.
 
-#### The five failure cases, and what each one does
+#### The failure cases, and what each one does
 
 | | Situation | Outcome |
 | --- | --- | --- |
-| **A** | Auth user created, profile/membership write fails | step 4 deletes the auth user it created, attempt marked `FAILED`. **Nothing is left behind**, and a retry starts clean |
-| **B** | Request times out after the user was created; admin retries with the same `request_id` | step 1 finds the attempt. If it had reached `SUCCEEDED`, the stored outcome is returned and nothing is created. If it is still `IN_FLIGHT`, the retry is refused as `BUSY` rather than racing the first attempt |
-| **C** | E-mail already exists in Auth | step 2 resolves it instead of creating it, `created_here = false`, and step 3 links it. **No password is returned** — the account is not this attempt's to re-credential. Resetting it is the separate, explicit action below |
-| **D** | Membership already exists | `on conflict … do update` sets the role and re-activates. Re-inviting a disabled colleague is the same operation as inviting them, which is the behaviour an admin expects |
-| **E** | Edge Function crashes between steps 2 and 3 | the attempt is left `IN_FLIGHT`. A retry with the same `request_id` returns `BUSY`; a **new** `request_id` resolves the now-existing user through case C and links it, converging on the correct final state. A stale `IN_FLIGHT` attempt is visible to an OWNER and can be cleared explicitly — never by a timeout that a slow run could trip |
+| **A** | The invitation created the account, the link step fails | attempt `FAILED` (`LINK_FAILED`); the account is **kept** (never deleted by the function). The next request — same or new `request_id` — finds it still unaccepted, re-invites it, links it, and the new profile requires password setup because the Auth record says the invitation was never accepted |
+| **B** | Request times out after the invitation; admin retries with the same `request_id` | step 1 finds the attempt: `SUCCEEDED` → the stored outcome, nothing new, no second e-mail; `IN_FLIGHT` → `BUSY`, not raced |
+| **C** | The address already has a set-up account | linked; **no e-mail and no credential** — the account belongs to its owner, in every organisation |
+| **D** | Membership already exists | `on conflict … do update` sets the role and re-activates |
+| **E** | Edge Function crashes between steps 2 and 3 | the attempt stays `IN_FLIGHT`; a retry with the same id returns `BUSY`; a **new** id re-invites (still unaccepted) or links (accepted) and converges. An OWNER clears a stale attempt explicitly, never by a timeout |
+| **F** | Auth cannot send the invitation | attempt `FAILED` (`INVITATION_FAILED`), no account kept by Auth, no membership, one safe error |
 
-Two properties fall out of this and are worth naming: **no path ever deletes an
-auth user it did not create in the same attempt** (which is what makes case C
-safe), and **the only thing that is ever "half done" is a `provisioning_attempts`
-row**, which is inert.
+Two properties fall out of this: **no path in the product deletes an Auth
+identity** (only the operator purge, under its own live checks — §31.2), and
+**nothing that could open an account ever reaches an administrator**.
+
+> **HISTORICAL — Phase 10, removed in Phase 12. Not the current architecture.**
+> Step 2 used `createUser({ email, password, email_confirm: true })` and returned
+> the generated password to the administrator; step 4 deleted the account with
+> `deleteUser` when the link failed and this attempt had created it; the answer
+> was `{ status, user_id, temporary_password? }`. Each of those was found unsafe
+> in Phase 12's independent review — an administrator-known credential opens
+> the person's other organisations, and a compensating delete can remove an
+> account another organisation has just linked (§31.6, §31.7).
 
 **Not built: a job queue.** Every step is a single call with a bounded runtime,
 the retry is a human pressing a button again, and the convergence argument above
 needs no scheduler. A queue would add infrastructure to make an operation that
 happens three times a year slightly more automatic.
 
-**Password reset** is a separate, explicit action on the same Edge Function —
-`admin-reset-password(user_id)` — which calls `auth.admin.updateUserById` with a
-new temporary password and sets `must_change_password`. It is deliberately not
-folded into provisioning: case C must not silently reset a colleague's password
-because an admin re-entered an address. There is no self-service reset in the
-MVP, and the UI says so rather than offering a "Şifremi unuttum" link that would
-silently do nothing.
+**Password reset — superseded in Phase 12 (P12-B1, §31.6).** The design below
+was built in Phase 10 and **removed** in Phase 12, because an Auth identity is
+global: an administrator of organisation X who could replace — and receive — a
+member's password could sign in as that person inside organisation Y. No
+organisation capability now changes the credential of an existing identity,
+and since §31.7 no administrator receives a credential for a new one either —
+new people are invited by e-mail and choose their own password. *Historical text:* ~~a separate, explicit action on the same Edge
+Function — `admin-reset-password(user_id)` — which calls
+`auth.admin.updateUserById` with a new temporary password and sets
+`must_change_password`.~~ There is no self-service reset in the MVP, and the UI
+says so rather than offering a "Şifremi unuttum" link that would silently do
+nothing; a forgotten password is recovered by the operator
+([Deployment](DEPLOYMENT.md)).
 
 **The secret key never leaves the Edge Function.** Every step above that touches
 the Auth Admin API runs server-side with `sb_secret_…` from Edge Function
 secrets. The client sends an email, a name, a role and a `request_id`, and
-receives a status and possibly a one-time password. It never holds a credential
-capable of creating a user, and could not perform any of steps 2–4 itself (§19).
+receives `{ status, request_id }`. It never holds a credential capable of
+creating a user or opening an account, and could not perform any of steps 2–4
+itself (§19).
 
-**Email verification** is set to confirmed at creation (`email_confirm: true`).
-This is honest here and would not be in a public product: the address is not being
-proven to belong to the person, it is being *asserted by an administrator who
-knows them*. That is a stronger guarantee than a click on a link, and the design
-does not pretend otherwise.
+**Email verification** is now PROVEN, not asserted: the invitation link is the
+proof that the person controls the address (Phase 12). *Historical:* Phase 10
+created accounts already confirmed (`email_confirm: true`), on the
+administrator's word.
 
 **Public sign-up is disabled** (`[auth] enable_signup = false`). Without it,
 anyone could create an `auth.users` row. Such a user would have no membership and
@@ -399,8 +439,9 @@ and the status. Primary key `(organization_id, user_id)`, so a user belongs to a
 organisation at most once. **A user may belong to several organisations**: that is
 the natural shape of a join table and costs nothing today, where a
 `users.organization_id` column would cost a migration the first time it is wrong.
-The MVP interface assumes exactly one active membership and selects it
-automatically without an organisation picker.
+One ACTIVE membership is entered automatically; with several, the user chooses,
+and the choice is remembered on the device only as a preference that the boot
+re-validates against live membership every time (Phase 12, §31.3).
 
 **`profiles`** — one row per user, holding the display name. This is *not* a third
 tenancy concept; it exists because `auth.users` lives in the `auth` schema and is
@@ -1325,7 +1366,8 @@ Every row below is an object in `api`. Nothing else is reachable.
 | Organisation import / restore | **Edge Function + RPC** | privileged, destructive, OWNER-only, needs a pre-restore archive |
 | Provision / disable a user | **Edge Function** | creating an `auth.users` row requires the Admin API and the secret key |
 
-Two Edge Functions in total. Everything else is a view or a `plpgsql` function in
+One Edge Function in total since Phase 12 (`admin-provision-user`; the Phase 10
+`admin-reset-password` was removed — §31.6). Everything else is a view or a `plpgsql` function in
 `api`, which means the deployment surface is *the database migrations* —
 versioned, reviewable, and testable locally. **And it means the client surface is
 enumerable**: `\dv api.*` and `\df api.*` list the entire API, which is a property
@@ -2451,7 +2493,7 @@ application code to deploy — the server-side logic is database migrations.
 | React bundle — browser **and Tauri** | project URL, **publishable key** (`sb_publishable_…`) | anything else |
 | Committed `.env` / repository | nothing secret | every secret |
 | Build-time env (`VITE_…`) | project URL, publishable key — these end up in the bundle by definition | secrets |
-| **Edge Function secrets** (`supabase secrets set`) | SMTP credentials if ever added. **Not the secret key** — the platform injects that itself; see below | — |
+| **Edge Function secrets** (`supabase secrets set`) | function-specific third-party credentials, if a future function needs them. **Not the secret key** — the platform injects that itself; see below. Hosted Auth SMTP is configured on the platform, not copied here | client or bundle credentials |
 | Developer machine / CI | database connection string for migrations, Supabase access token | — never shipped to a client |
 
 Current key model, verified September 2026: Supabase issues **publishable keys**
@@ -2661,7 +2703,7 @@ interface hiding a button.
 | 21b | **A canonical table is directly addressable, bypassing the API projection** — `GET /rest/v1/products` returns `numeric` as a JSON number, destroying exact decimals, and skips every cast and normalisation the read path relies on | Canonical tables live in **`app_data`, which is not in the exposed-schema list**. PostgREST answers `PGRST106` for any schema outside it, and there is no header, embedding or foreign-key expansion that reaches one. `api` holds no base tables (**P13**), RPCs return the `api` view rather than the table, and **B5/B6/B7** prove over HTTP that the only route returns an exact string (§7, §8, §10) |
 | 22 | **An OWNER writes during a restore from a second tab** | The write gate is not a role exemption. It is a trigger on every business table requiring *both* that the caller holds the lock *and* that execution is inside the restore transaction (`app.restore_in_progress`, set transaction-locally by the restore RPC alone). A second session satisfies the first condition and cannot satisfy the second (§16) |
 | 23 | **A write already in flight commits across the restore boundary** | The gate is acquired in a **committed** transaction before the destructive one, and every writer takes `FOR SHARE` on the organisation row. The restore's `FOR UPDATE` cannot be granted until they have all finished, so acquiring it proves the drain is complete (§16) |
-| 24 | **Double-provisioning, or an orphaned Auth user** — the Auth Admin API and the database are not one transaction | `request_id` idempotency, an `IN_FLIGHT`/`SUCCEEDED` attempt record, and compensating deletion of **only** an Auth user this attempt created. Retries converge on one valid final state; a pre-existing account is linked, never re-credentialled (§4) |
+| 24 | **Double-provisioning, or an orphaned Auth user** — the Auth Admin API and the database are not one transaction | `request_id` idempotency and an `IN_FLIGHT`/`SUCCEEDED` attempt record. Nothing is deleted on failure: a failed link RETAINS the invited identity (reason `LINK_FAILED`), and a new request re-invites and links it; a true orphan is removed only by the operator purge (§31.2, §31.6). Retries converge on one valid final state; a pre-existing account is linked, never re-credentialled (§4). *(Phase 10 used a compensating delete here; removed in Phase 12.)* |
 
 ---
 
@@ -2901,8 +2943,8 @@ design reads as a design and this reads as a report against it.
 | §7 | RLS enabled **and forced** on all six, the four-policy pattern where a client writes, explicit per-object grants, no `delete` grant and no `DELETE` policy anywhere |
 | §7 | Stamping, tenant-immutability, append-only and write-gate triggers; `stamp_row` overwrites rather than validates |
 | §8 | `api.update_own_profile` and `api.acknowledge_password_change`, both `SECURITY INVOKER`, both requiring `p_expected_version`, both returning `setof api.profiles` — the view, never the table |
-| §4 | `api.begin_provisioning` / `complete_provisioning` / `fail_provisioning` / `begin_password_reset` / `complete_password_reset`, `SECURITY DEFINER`, granted to `service_role` alone |
-| §4 | The `admin-provision-user` and `admin-reset-password` Edge Functions, including the compensating delete that only ever removes an auth user the same attempt created |
+| §4 | `api.begin_provisioning` / `complete_provisioning` / `fail_provisioning` / `begin_password_reset` / `complete_password_reset`, `SECURITY DEFINER`, granted to `service_role` alone *(historical: the two reset RPCs are dropped in Phase 12 — §31.6)* |
+| §4 | The `admin-provision-user` and `admin-reset-password` Edge Functions, including the compensating delete that only ever removes an auth user the same attempt created *(historical: the reset function and the compensating delete are removed in Phase 12 — §31.6)* |
 | §16 | The write gate's **enforcement** — columns, `assert_write_allowed`, and the trigger — attached to `counters`, the one organisation-scoped table Phase 10 has that a restore would replace. Phase 11 attaches it with every business table; Phase 21 owns the restore that acquires and releases it |
 | §19 | `npm run build` greps the production bundle for `sb_secret_` and `service_role` and fails on a hit. Verified by planting one. *Audit A (A-M4) later showed the plain-text marker cannot see a JWT-form legacy key; the scan now decodes it — §30* |
 | §19 | The Edge Functions read the server credential from the platform-injected `SUPABASE_SECRET_KEYS`. There is **no project secret to set** — see the correction below |
@@ -2953,7 +2995,7 @@ class-conditional assertion is then about it automatically.
 | **The hostile-precision fixture** (`12345678901234567890.0047` asserted as an exact string) | **Phase 11**, as §7 already says — Phase 10 has no financial column, and a fixture table invented to hold one would be the "table whose shape is guessed a phase early" §11 refuses. What Phase 10 establishes instead is the *boundary the fixture lands on*: `app_data` has no HTTP route (proved over HTTP), and pgTAP **P15** fails the build the day an `api` view or RPC exposes a `numeric`, `real`, `double precision` or `money` column without casting it to text. The contract cannot be broken quietly between now and the phase that proves it with a value |
 | **The `INSERT` `with check` tenant guard, on a real business table** | Phase 10 owns no organisation-scoped table a client may write. The **pattern** is proved instead, by a probe table built inside a rolled-back pgTAP transaction carrying the exact four-policy shape and exercised by a real `authenticated` session against the real helpers — because the pattern is fixed now and every later table inherits whatever is wrong with it |
 | **Acquiring and releasing the write gate** | **Phase 21**, with the restore it exists for. Phase 10 built and tested the enforcement, including threat 22 — the lock holder's own second session is refused |
-| **Organisation administration UI** (invite, disable, re-role, reset) | **Phase 12**. The Edge Functions and the `admin_events` behind it exist and are tested; there is no screen |
+| **Organisation administration UI** (invite, disable, re-role, reset) | **Phase 12** — built; see §31 |
 | **`api.update_own_profile` reaching a screen** | **Phase 11/12**, with the seam switch |
 | **Realtime, Storage, a second organisation, self-service password reset** | Unchanged: §23, §3, §20 and §4 respectively |
 
@@ -3131,11 +3173,13 @@ documentation statements above were corrected (A-L8, A-L9).
 adds the visible-identifier constraints, the typed import helpers and the
 strict `api.import_catalog`. It is proved from an empty local database and is
 **not yet applied to the hosted project**; that is a separate, reviewed
-deployment step. Applied migrations were not edited.
+deployment step. Applied migrations were not edited. *(Historical: it has
+since been deployed — hosted history is 12/12 and Audit A's verdict is PASS.)*
 
 **Deferred, and recorded:** the cross-tenant UUID existence oracle (A-L5),
 provisioned-user deletion (A-L6) and the organisation selector (A-L7) belong to
-Phase 12 or later; opaque external codes are unchanged by design.
+Phase 12 or later; opaque external codes are unchanged by design. *A-L6 and
+A-L7 are resolved in Phase 12 — §31.2 and §31.3.*
 
 ### 30.1 Correction pass 2 (source review of pass 1)
 
@@ -3171,3 +3215,349 @@ downgraded, disabled or removed membership aborts with nothing deleted and
 nothing marked, and the application reboots from live state. The automatic
 retirement of an EMPTY legacy database requires no role, but is bound in the
 same way to the boot that observed it and to that boot's user.
+
+---
+
+## 31. Phase 12 implementation status — organisation administration, portable backup, A-L6, A-L7
+
+**Current deployment state.** Local and hosted histories match at **13/13**,
+with no pending or hosted-only migration. The Phase 12 migration
+`20260925120000_phase12_organization_administration.sql` is deployed; Audit A
+remains PASS.
+
+Phase 12 is implemented in the working tree against the Audit A checkpoint
+(`109f99e`), deployed, uncommitted and under final release review, including
+its security correction pass (§31.6). Its one forward migration is proved from
+an empty local database and is present exactly once in the matching hosted
+history. No table, column or policy was added; the twelve earlier migrations
+are unchanged.
+
+### 31.1 Organisation administration
+
+The company screen (`#/organization`, "Şirket") shows every member the
+company, their live role and their access. For an OWNER or ADMIN it also
+lists the members with e-mail, adds a member, changes a role, disables or
+restores access (no password reset — §31.6), lists unfinished invitations, and
+downloads the portable backup. What the screen offers is decided from the
+caller's LIVE membership on every load; what actually happens is decided by
+the server:
+
+| Path | Kind | Authority, re-proved from `auth.uid()` in the body |
+| --- | --- | --- |
+| `api.list_organization_members(org)` | invoker wrapper → `app_private.organization_members` (definer) | ACTIVE OWNER/ADMIN of `org` |
+| `api.set_member_role(org, user, p_expected_version, role)` | invoker → `app_private.change_member_role` (definer) | as above; ADMIN may not touch an OWNER nor grant OWNER; nobody changes their own membership |
+| `api.set_member_status(org, user, p_expected_version, status)` | invoker → `app_private.change_member_status` (definer) | as above |
+| `api.clear_provisioning_attempt(org, request_id)` | invoker → `app_private.clear_provisioning_attempt` (definer) | ACTIVE OWNER only (§4 case E) |
+| provision | `admin-provision-user`, corrected in §31.6 (no compensating delete; no existence detail in its answer) | `begin_provisioning`; `complete_provisioning` re-authorises OWNER grants after its lock |
+| ~~reset password~~ | **removed** (§31.6, P12-B1) | the two reset RPCs are dropped |
+
+**Why a definer body in `app_private` behind an invoker wrapper in `api`.**
+Listing colleagues and changing a membership need privileges no client holds
+(other users' `memberships` rows; a table with no client write path), which is
+the case §8 permits SECURITY DEFINER for. §28 had already decided the screen
+would reach the table "through a function that re-proves OWNER/ADMIN, not by
+widening the policy" — `memberships` keeps its helper-free own-rows policy and
+no write grant (pgTAP S7), and `admin_events` keeps exactly one INSERT policy
+(P12b). The honest statement of the split: the invoker wrapper does not narrow
+who can REACH the definer body; the in-body authority check is the control,
+and it is exercised for OWNER, ADMIN, MEMBER, another tenant's OWNER and an
+anonymous caller in pgTAP and over HTTP. What it buys is that no SECURITY
+DEFINER function sits in an exposed schema (pgTAP S6), so the hosted
+advisor's WARN gate stays meaningful.
+
+**Serialisation and the last OWNER.** Every path that changes a role or a
+status — the two functions above and `api.complete_provisioning` — takes one
+per-organisation transaction advisory lock and re-proves authority after it,
+so two OWNERs demoting each other at once cannot both succeed. Refusing
+self-changes makes "remove the last active OWNER" unreachable; a last-owner
+guard is kept as a second line. `complete_provisioning` is replaced (with
+`create or replace`, keeping its grants) only to add those two guards: an
+administrator re-inviting their own address can no longer change their own
+role, which was previously a self-demotion path (§4 case D).
+
+Every effective change writes one `admin_events` row (`MEMBER_ROLE_CHANGED`
+with old and new role, `MEMBER_DISABLED`, `MEMBER_REENABLED`); no-ops and
+refusals write none. Mutations require `p_expected_version` with no default
+(P20 extended as S5).
+
+### 31.2 A-L6 — the provisioned-user lifecycle
+
+An Auth identity is global; a membership is per organisation. The lifecycle
+is therefore split at that boundary:
+
+| Act | Who | What changes | What does NOT change |
+| --- | --- | --- | --- |
+| Disable membership in X | OWNER/ADMIN of X | the X membership becomes `DISABLED`; RLS withdraws X on the next request, with the same token | the Auth identity, its password and sessions, its profile, its memberships elsewhere |
+| A provisioning that fails after creating the account | nobody | the attempt is marked `FAILED` (`LINK_FAILED`); the account is **kept** (§31.6, P12-H2); inviting the address again re-invites and links it (§31.8); only a true orphan is operator-purged | the account — another organisation may already have linked it |
+| "Remove" from X | — | is the same act. Membership rows are never deleted: the row lets the boot say "your access was deactivated", keeps the audit trail readable, and makes re-enabling one call | — |
+| Re-invite a disabled address | OWNER/ADMIN of X | links the existing account and re-activates (§4 case D); **no password** is returned | the account's password, and its global profile (§31.6, P12-M1) |
+| Profile | the user | one per identity, kept while the identity exists | — |
+| Delete an Auth identity | **operator only** | — | — |
+| Orphan (no membership anywhere) | operator | `app_private.orphaned_auth_identities()` reports; `app_private.purge_orphaned_auth_identity(id)` deletes | refuses any identity with a membership of ANY status or an in-flight provisioning attempt for its address |
+
+**Why deletion is not an organisation capability.** Whether an identity
+belongs to another organisation is another tenant's fact: an OWNER who could
+ask "may I delete this person" would learn it, and an OWNER who could delete
+without asking could remove a colleague's access to a different company. The
+Admin API it would need also holds the secret key. So an OWNER disables; an
+operator, on a superuser connection, purges true orphans — since §31.6, the
+accounts a failed provisioning deliberately leaves behind. Both operator functions are
+revoked from every Data API role including `service_role` (pgTAP S4; HTTP:
+no route), and `src/cloud/privilegedBoundary.test.ts` fails if any runtime
+module names the Auth Admin API, a server credential variable or an operator
+function. The procedure is in [Deployment](DEPLOYMENT.md).
+
+### 31.3 A-L7 — deterministic multi-organisation behaviour
+
+`bootstrapCloudSession` now decides from LIVE memberships:
+
+| ACTIVE memberships | Result |
+| --- | --- |
+| 0 | `NO_MEMBERSHIP` (and "deactivated" when a DISABLED one exists) |
+| 1 | entered automatically; a stale remembered choice is reported in the shell |
+| 2+ with a remembered choice that is still ACTIVE | entered |
+| 2+ with none, a stale one, or "switch company" | `ORGANIZATION_SELECTION` — nothing business-related is mounted |
+
+The remembered choice is `landedcompare.selectedOrganization` in
+`localStorage`: `{ userId, organizationId }`, separate from the session key,
+honoured only for the same user and only if it names a current ACTIVE
+membership. It is a preference, never authority: RLS authorises every request
+from live membership regardless, and no JWT claim is read. Selecting or
+switching writes it and reboots; the runtime's gateway is bound to the one
+organisation it was built for and refuses — before sending — any call naming
+another (`ORGANIZATION_CHANGED`), and the shell is keyed by organisation, so
+no screen state survives a switch. A membership withdrawn while in use
+produces `NO_MEMBERSHIP` from the gateway, the runtime reboots, and the boot
+re-decides. Another tab switching company arrives as a `storage` event and
+this tab follows, so a device shows one company at a time.
+
+### 31.4 The portable organisation backup (§16-A, delivered)
+
+`src/backup/cloud/` — the Phase 8 envelope, re-pointed at a cloud payload:
+
+```text
+magic "LandedCompareBackup" · backupFormatVersion 2 · kind "ORGANIZATION_EXPORT"
+schemaVersion 1 · compatibility.cloudSchemaMigration "20260925120000"
+appVersion · createdAt · source { organizationId, exportedBy }
+entityCounts { customerStatuses, customers, members, products, suppliers }
+integrity { SHA-256, scope "data", value }
+data { organization, customerStatuses, customers, members, products, suppliers }
+```
+
+- **Sections.** Organisation metadata (id, name, version, updatedAt);
+  products; suppliers; customers; customer statuses; and the members manifest
+  (user id, display name, e-mail, role, status — no credential). Records carry
+  `organizationId`, `version`, `createdBy`/`updatedBy` and timestamps.
+- **Not included, deliberately.** Passwords, tokens, hashes, keys, Auth
+  internals; `admin_events` and `provisioning_attempts` (administration
+  history, not company data); `counters` (no allocation exists before Phase
+  16; the restore that must carry them is Phase 21).
+- **Exact values.** `unitsPerPurchaseUnit.value` is the server's
+  `numeric::text`, byte for byte (`"1.20"` stays `"1.20"`); external codes are
+  copied exactly. Nothing becomes a JavaScript number.
+- **Completeness.** Catalogue sections use the audited `readAll`; the members
+  manifest is one JSON value, which `max_rows` cannot truncate. Any failure —
+  transport, a lost membership, a MEMBER's refusal on the manifest — throws;
+  the file is built only after every read, then read BACK through the strict
+  parser, and only then offered for download. Customers are read before
+  customer statuses, so the file is referentially closed.
+- **Consistency.** Per section, the id set is exact at its reconciliation
+  count; across sections it is not one atomic snapshot (§30.1's honest scope).
+- **Determinism.** Sorted keys; every section sorted by its stable id.
+  Equivalent exports differ only in `createdAt`; their checksums are equal.
+- **Validation** (`parseCloudBackup`): size and depth before parsing,
+  prototype-safe parsing, magic, wrapper version (a Phase 8 device file is
+  refused as unsupported), kind, payload version, manifest shape, every
+  section present, counts against payload, checksum, then every record —
+  unknown fields, uuids, instants, versions, required visible text and lengths
+  by the server's rules, exact decimals, duplicate ids, id order, foreign
+  organisation, and customer → status references.
+- **Who.** OWNER and ADMIN (§6). A MEMBER's export fails on the server.
+
+It is not an infrastructure backup and the screen says so; the operator's dump
+set (§16-B) is unchanged. The checksum detects corruption and truncation; it
+does not prove who wrote the file.
+
+### 31.5 Deferred from the Phase 12 plan, honestly
+
+| Item | Why, and where |
+| --- | --- |
+| Restore / import of an organisation backup | Phase 21, as §16 says. The parser exists so the file is provably usable |
+| The 7-day export staleness reminder | needs a durable "last exported" fact (an `admin_events` type or a column) — a schema change not required for the backup itself; next administration increment or Phase 21 |
+| Tauri file-save path | Tauri packaging is not started; the browser download is the path |
+| Own-profile screen (display-name edit) | `api.update_own_profile` exists; no Phase 12 requirement depended on a screen for it |
+| Renaming the organisation | no write path exists; not required by the pilot |
+| A-L5 (cross-tenant UUID existence oracle) | unchanged; the new functions do not add one — authority is proved before any subject is looked up |
+
+
+### 31.6 Security correction pass (independent review, before any deployment)
+
+An independent source review failed the first Phase 12 implementation. Each
+finding is fixed in the same (still undeployed) Phase 12 migration and the one
+remaining Edge Function; nothing in A-L7 or the portable backup changed.
+
+| Finding | Was | Is |
+| --- | --- | --- |
+| **P12-B1** global password takeover (BLOCKER) | `admin-reset-password` let an OWNER/ADMIN of X set — and receive — a new password for any ACTIVE member of X. The identity is global, so X could sign in as a person who also belongs to Y | The function is removed from the repository and `api.begin_password_reset` / `complete_password_reset` are **dropped**, so a still-deployed copy fails at its first RPC before touching Auth. No organisation capability changes an existing identity's credential. *(This pass still allowed a temporary password for an account the request itself created; §31.7 removed that too.)* The company screen has no reset action. A forgotten password is an operator procedure on the global identity ([Deployment](DEPLOYMENT.md)) |
+| **P12-H1** stale OWNER grant | `complete_provisioning` re-read the actor's role after its lock but did not re-apply "an OWNER grant needs an OWNER" | After the lock and the re-read: a requested `OWNER` requires the actor to be an `OWNER` now. An OWNER demoted to ADMIN mid-invitation gets `FORBIDDEN`; nothing is granted |
+| **P12-H2** cross-organisation compensation delete | on a failed link the Edge Function deleted the account it had created — even if another organisation had linked it in between | No deletion. The attempt is marked `FAILED` (reason `LINK_FAILED`; an earlier draft of this pass used `LINK_FAILED_ACCOUNT_RETAINED`, removed in §31.7 because it told the caller whether the account was new); the account, with no membership, is what `orphaned_auth_identities()` reports; the operator purge deletes it only after re-proving under a row lock that no membership of any status and no in-flight attempt (by address or subject) exists. *Found while proving it:* a link made by provisioning leaves a SUCCEEDED attempt and an append-only `admin_events` row referencing the account, and GoTrue's delete then fails as a whole — an incidental guard. The fix does not rely on it, and the regression suite includes a link that leaves neither record |
+| **P12-M1** global profile overwrite | re-inviting an address set `display_name` to what the inviting organisation typed | `on conflict do nothing`: the profile is created when missing and otherwise untouched, name and password flag alike |
+| **P12-M2** account-existence oracle | the answer carried `account_created`, `user_id`, and the UI said "already had an account; password not changed" | The answer is `{status, request_id, temporary_password}`, and one success sentence covers every case. *(Superseded by §31.7: there is no temporary password any more, the answer is `{status, request_id}`, and `auth_user_created` was removed from the audit row.)* Also unavoidable, and documented: after linking, the roster shows the person's existing global display name rather than the one typed. The `MEMBER_PROVISIONED` event's `auth_user_created` flag, readable by that organisation's OWNER/ADMIN, carries the same single bit. Nothing about other organisations is returned anywhere |
+| **P12-M3** test gaps | — | Real stack: `security/credentialBoundary.security.test.ts` (U in X and Y; X's OWNER and ADMIN try every credential action; hash unchanged, U's own password works, no response string signs in as U); `security/phase12Corrections.security.test.ts` (stale OWNER via service-role RPCs and via a held real Edge Function run; compensation interleavings with and without audit records; orphan retention and operator purge; profile preservation seen from Y; foreign-vs-nonexistent response equality; stale versions for role and status; two OWNERs demoting or disabling each other concurrently). pgTAP 090 adds the deterministic H1, M1 and B1 assertions. `privilegedBoundary.test.ts` now also fails if an Edge Function calls `deleteUser` or `updateUserById` |
+| **P12-L1** fragile UI test | `waitFor(() => querySelector(...))` returned `null` at once instead of retrying | the query asserts, so `waitFor` retries until the row exists |
+
+*Historical — this pass left one residual:* the temporary password of a newly
+created account was known to the administrator who created it until its owner
+changed it, and a second organisation linking that address in the meantime
+exposed the person there. An independent review rejected that as a blocker, and
+§31.7 removes it: there is no temporary password any more.
+
+### 31.7 Final credential correction — invitations, not passwords
+
+**The property:** an organisation administrator never learns a usable global
+Auth credential for anybody. Nothing in the product can generate, return,
+display, store or log a password, an invitation link, an OTP or a token for
+another person.
+
+| | NEW address | EXISTING account |
+| --- | --- | --- |
+| Auth | `inviteUserByEmail` — creates the account and e-mails the invitation to that address only. An account whose invitation was never accepted is re-invited (to its own address) | untouched — no e-mail, no credential change |
+| Database | `complete_provisioning`: profile created with the onboarding flag read from the Auth record (§31.8), membership, audit row | membership linked / re-enabled; the global profile is kept as it is |
+| Administrator receives | `{ "status": "SUCCEEDED", "request_id": "…" }` | the same |
+| The person | opens the link → is signed in by it → the application asks them to choose a password (`src/app/invitationLink.ts`: the fragment is read once, removed from the URL at once, and only `invite`/`recovery` links are accepted) | signs in as before |
+
+- **Redirect.** The link lands on the project's Site URL, or on
+  `LANDEDCOMPARE_INVITE_REDIRECT_URL` if the operator sets it on the Edge
+  Function (https, or http to loopback); never on a URL from the request. Auth
+  refuses anything outside its allow list.
+- **`must_change_password`** is onboarding UX only: it is true for an invited
+  account that has no password yet (and for an operator-initiated recovery),
+  so the application asks the person to choose one. It is **not** a security
+  boundary, nothing on the server consults it, and `api.profiles` now projects
+  it — with the profile timestamps and version — to its owner only, so a
+  colleague cannot read how new an account is.
+- **Uniformity.** The answer is `{ status, request_id }` in both cases; the
+  failure reason on the attempt row (readable by OWNER/ADMIN) is `LINK_FAILED`
+  in both cases; the `MEMBER_PROVISIONED` audit row no longer carries
+  `auth_user_created`. What still differs, and cannot be made not to: an
+  invitation e-mail is sent only when the address needed one (visible to the
+  mailbox owner, not the administrator); an invitation that Auth cannot send
+  fails the request (`SERVER_UNAVAILABLE`), which an existing account's link
+  never does; after linking, the roster shows the person's existing global
+  display name; and a new-address request takes longer (an e-mail is sent).
+- **Failure.** Invitation refused by Auth → the attempt is `FAILED`
+  (`INVITATION_FAILED`), no membership, a retry fails or succeeds the same
+  way. Link refused after an invitation created the account → attempt
+  `FAILED` (`LINK_FAILED`), the account is kept (never deleted by the
+  function), reported by `orphaned_auth_identities()`, purgeable by the
+  operator. Retries with the same `request_id` return the stored outcome and
+  send no second invitation.
+- **Purge vs. link.** Proven for both lock orders: a link holding the identity
+  makes a concurrent purge wait and then refuse on the membership; a purge
+  holding the deleted identity makes a concurrent link wait and then fail on
+  the foreign key. An in-flight attempt for the address makes the purge refuse
+  outright.
+- **Recovery.** A forgotten password: the operator raises the onboarding flag
+  and sends a recovery e-mail from the dashboard; the person opens it and
+  chooses a new password. No administrator, and not the operator, learns it.
+- **Deployment prerequisites — completed.** Custom SMTP is enabled and
+  operational; `auth.site_url` and the redirect allow-list contain
+  `https://landedcompare.vercel.app`; the Phase 12 migration and corrected
+  invitation-based `admin-provision-user` are deployed; `admin-reset-password`
+  and the legacy password-reset RPCs are absent. See
+  [Deployment](DEPLOYMENT.md).
+
+### 31.8 Final onboarding correction — password setup comes from the Auth record
+
+**The defect.** One fact, `created_here`, was doing two jobs: *did this attempt
+create the Auth account* (lifecycle) and *must the person still choose a
+password* (onboarding). They diverge on the retained orphan: an invitation
+creates the account, the link step fails, the account is kept (§31.6); the next
+request finds it, re-invites it — and, not having created it, set
+`created_here = false`, so the profile it then created did NOT ask for a
+password. The person accepted the invitation and was never shown the
+password-setup screen.
+
+**The correction.** `complete_provisioning` keeps `p_created_here` for the
+lifecycle record only (the server-only `provisioning_attempts.created_here`)
+and derives onboarding from the Auth record, inside the same transaction:
+
+| Auth state of the identity (read by the database from `auth.users`) | Profile missing → new profile's onboarding flag | Profile exists |
+| --- | --- | --- |
+| invitation not accepted (`email_confirmed_at is null`) — a fresh invitation, or a retained orphan being re-invited | **required** | untouched |
+| invitation-born (`invited_at is not null`), accepted, never onboarded in this product (no profile) | **required** | untouched |
+| established — confirmed and not invitation-born (created by the operator, or before Phase 12) | not required | untouched |
+
+Why these columns and not the password hash: GoTrue writes a random hash into
+`encrypted_password` the moment an invitation is accepted, so "has a password"
+cannot be read reliably after acceptance (measured on the pinned local stack).
+A profile exists only once the product has linked the person, and onboarding
+happens only in the application after that — so an invitation-born identity
+with no profile cannot have chosen a password through this product. The one
+over-approximation is an operator-invited account that chose a password
+elsewhere before its first link: it is asked to choose one once more.
+
+The signal never leaves the server: it lands in the profile, which
+`api.profiles` projects to its owner only; the provisioning answer is still
+`{ status, request_id }` and the failure reason is still `LINK_FAILED`.
+
+**Login CSRF (hardened, residual recorded — superseded in detail by §31.9).**
+A link carries a session for the account it was issued to; someone could send
+you a link to THEIR account. The application removes the link's material from
+the URL before anything else and, when an account is already signed in on the
+device, replaces nothing without asking. §31.9 records the final rule: the
+question is asked for EVERY link while any session exists, because the
+comparison this section originally made against the link's decoded `sub` used
+unverified claims and could be forged.
+
+**Query-carried Auth material.** Not reachable in this product: invitations
+are implicit-flow (no `?code=`), and GoTrue returns tokens and errors in the
+fragment (measured). Auth-shaped query parameters are nevertheless removed
+from the address and never accepted.
+
+### 31.9 Final login-CSRF correction — unverified claims decide nothing
+
+**The defect.** §31.8's confirmation was skipped when the link's access token
+named the account already signed in. That name came from decoding the token
+WITHOUT verifying it. The attack: A is signed in; attacker B writes an expired
+access-token-shaped JWT claiming `sub = A` and pairs it with B's own, genuine
+refresh token. The application read `sub = A`, skipped the question and handed
+the pair to `setSession`; Auth, finding the access token expired, refreshed
+with B's genuine refresh token and returned B's verified session. A was
+silently switched to B. Reproduced on the local stack before the fix (the
+real App, with the old shortcut restored, booted into B's company without a
+question).
+
+**The rule now** (`useApplicationBoot`):
+
+| What Auth says about this device | What happens to an `invite` / `recovery` link |
+| --- | --- |
+| a session exists — ANY account, including one the link names | nothing is replaced; the person is asked. "Stay signed in as A" drops the link and leaves A's session untouched; only an explicit "continue with the link" hands the pair to Auth, which then decides whose session it is. The application then shows that verified account |
+| confirmed: no session | the link is adopted; the password-setup screen names the account from the VERIFIED session ("Hesap: …") and offers "this is not my account — sign out" |
+| the session could not be read (network, Auth error) | fail closed: the link is held, not used, and nothing is treated as "nobody is signed in". A "link could not be checked" screen offers try-again (asks Auth again) or ignore-the-link |
+
+**Decoded claims are display hints only.** The parser no longer exposes a
+subject at all; it exposes one `unverifiedEmailHint`, shown as what the link
+SAYS ("the link says it is for …; this cannot be checked until it is used").
+It controls no confirmation, adoption, tenant, membership or other security
+decision. After adoption, identity comes from the verified Auth session.
+
+**Fragment hygiene.** A fragment that is not an application route (`#/…`) and
+carries any Auth-shaped key — `access_token`, `refresh_token`,
+`provider_token`, `provider_refresh_token`, `code`, `token`, `token_hash`,
+`error`, `error_code`, `error_description`, `expires_in`, `expires_at`,
+`token_type` — is removed from the address. Exactly one shape is adopted: the
+implicit invite / recovery redirect as GoTrue produces it (`access_token`,
+`refresh_token`, `expires_in`, `expires_at`, `token_type=bearer`, `type`, and
+GoTrue's empty `sb` marker), each key once, with a JWT-shaped access token.
+Anything else — a provider token, a PKCE code, a token hash, an error, a
+partial or duplicated fragment, an unknown key — is scrubbed and ignored. No
+new sign-in flow is supported by this.
+
+**Residual (accepted, LOW for the pilot).** On a device where NOBODY is
+signed in, a forwarded or planted link to someone else's account is still
+adopted automatically. The mitigation is that the password-setup screen names
+the verified account before any password is chosen or data entered, with a
+"not my account — sign out" action. This is NOT eliminated. Eliminating it
+needs a server-bound invitation protocol (PKCE-style), which admin
+invitations do not support; deferred as post-pilot hardening.

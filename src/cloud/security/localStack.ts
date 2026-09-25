@@ -170,3 +170,132 @@ export const SEED = {
   ownerB: { email: 'owner-b@example.test', id: 'bbbbbbbb-0000-4000-8000-000000000001' },
   memberB: { email: 'member-b@example.test', id: 'bbbbbbbb-0000-4000-8000-000000000002' },
 } as const
+
+/**
+ * Calls an RPC exactly as the `admin-provision-user` Edge Function does: with
+ * the local stack's secret key, as `service_role`. Used to hold a provisioning
+ * workflow BETWEEN its two database steps — a pause a real Edge Function run
+ * cannot be made to take on demand — so an interleaving can be asserted
+ * deterministically against the real PostgREST path the function uses.
+ */
+export async function serviceRpc(fn: string, body: Record<string, unknown>): Promise<RawResponse> {
+  const { apiUrl, secretKey } = localStack()
+  return send(`${apiUrl}/rest/v1/rpc/${fn}`, {
+    method: 'POST',
+    headers: { apikey: secretKey, Authorization: `Bearer ${secretKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+// ---------------------------------------------------------------------------
+// The invited person's mailbox — TESTS ONLY
+//
+// The local stack delivers Auth e-mail to Mailpit (`[local_smtp]`, port 54324).
+// These helpers play the INVITED PERSON: they read that person's own mailbox
+// and follow the link Auth sent them. Nothing here is available to — or
+// modelled on — the application or an administrator; that separation is the
+// property the credential-boundary suite asserts.
+// ---------------------------------------------------------------------------
+
+const MAILPIT = 'http://127.0.0.1:54324'
+
+interface MailSummary {
+  readonly ID: string
+  readonly Subject: string
+  readonly To: readonly { Address: string }[]
+}
+
+/** Every message Auth sent to `email`, newest first. */
+export async function mailTo(email: string): Promise<MailSummary[]> {
+  const response = await fetch(`${MAILPIT}/api/v1/search?query=${encodeURIComponent(`to:"${email}"`)}`)
+  const body = (await response.json()) as { messages?: MailSummary[] }
+  return body.messages ?? []
+}
+
+/** Waits for, and returns, the newest invitation link sent to `email`. */
+export async function invitationLinkFor(email: string, timeoutMs = 10_000): Promise<string> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const invitation = (await mailTo(email)).find((message) => /invited/i.test(message.Subject))
+    if (invitation) {
+      const message = (await (await fetch(`${MAILPIT}/api/v1/message/${invitation.ID}`)).json()) as { Text: string }
+      const link = /(https?:\/\/\S+\/auth\/v1\/verify\?[^\s)]+)/.exec(message.Text)?.[1]
+      if (link) return link
+    }
+    await new Promise((resolve) => setTimeout(resolve, 200))
+  }
+  throw new Error(`no invitation reached ${email}`)
+}
+
+/**
+ * The invited person opens their link and chooses their own password, exactly
+ * as a browser would: Auth verifies the token and redirects with the session
+ * in the fragment; the session sets the password.
+ */
+/**
+ * Follows the link the way a browser does (without running the page) and
+ * returns the URL fragment Auth redirects to — `#access_token=…&type=invite`.
+ */
+export async function invitationFragment(link: string): Promise<string> {
+  const verified = await fetch(link, { redirect: 'manual' })
+  const location = verified.headers.get('location') ?? ''
+  const fragment = location.includes('#') ? `#${location.split('#')[1]}` : ''
+  if (!/[#&]access_token=/.test(fragment)) {
+    throw new Error(`the invitation did not verify: ${verified.status} ${location.slice(0, 120)}`)
+  }
+  return fragment
+}
+
+export async function acceptInvitation(link: string, password: string): Promise<void> {
+  const { apiUrl, publishableKey } = localStack()
+  const fragment = new URLSearchParams((await invitationFragment(link)).slice(1))
+  const accessToken = fragment.get('access_token')
+  if (fragment.get('type') !== 'invite' || !accessToken) {
+    throw new Error('the invitation link was not an invitation')
+  }
+  const updated = await fetch(`${apiUrl}/auth/v1/user`, {
+    method: 'PUT',
+    headers: { apikey: publishableKey, Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password }),
+  })
+  if (updated.status !== 200) {
+    throw new Error(`the invited person could not set a password: ${updated.status}`)
+  }
+}
+
+/** A request to a GoTrue endpoint, as the given caller (or anonymously). */
+export function auth(path: string, options: RestOptions = {}): Promise<RawResponse> {
+  const { apiUrl, publishableKey } = localStack()
+  return send(`${apiUrl}/auth/v1/${path}`, {
+    method: options.method ?? 'POST',
+    headers: {
+      apikey: publishableKey,
+      'Content-Type': 'application/json',
+      ...(options.token ? { Authorization: `Bearer ${options.token}` } : {}),
+      ...options.headers,
+    },
+    ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
+  })
+}
+
+/**
+ * A test-only trigger on an `app_data` table, created in `public` under an
+ * `lc_test_` name and returned with its own remover. Used to force a failure
+ * or a pause INSIDE a server transaction deterministically; never part of a
+ * migration.
+ */
+export async function testHook(
+  table: string,
+  when: string,
+  body: string,
+  options: { events?: string; timing?: 'before' | 'after' } = {},
+): Promise<() => Promise<void>> {
+  const name = `lc_test_${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`
+  await sql(
+    `create function public.${name}() returns trigger language plpgsql as $h$ begin if ${when} then ${body} end if; return new; end $h$; ` +
+      `create trigger ${name} ${options.timing ?? 'before'} ${options.events ?? 'insert'} on app_data.${table} for each row execute function public.${name}();`,
+  )
+  return async () => {
+    await sql(`drop function if exists public.${name}() cascade;`)
+  }
+}

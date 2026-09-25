@@ -1061,6 +1061,52 @@ a.stat:focus-visible {
   }
 }
 
+/* ── Organisation selector (Phase 12) ──────────────────────────────────── */
+
+.choice-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.choice-list__option {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  font: inherit;
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.choice-list__option:hover {
+  border-color: var(--accent-500);
+  background: var(--accent-50);
+}
+
+.choice-list__option:focus-visible {
+  outline: 2px solid var(--accent-600);
+  outline-offset: 2px;
+}
+
+.choice-list__name {
+  font-weight: var(--weight-semibold);
+}
+
+.choice-list__meta {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+
 /* ── Utility ───────────────────────────────────────────────────────────── */
 
 .visually-hidden {

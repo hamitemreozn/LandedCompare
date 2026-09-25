@@ -26,7 +26,7 @@
  * the cloud boot and catalogue gateway.
  */
 
-export const ROUTE_IDS = ['dashboard', 'products', 'suppliers', 'customers', 'customer-statuses'] as const
+export const ROUTE_IDS = ['dashboard', 'products', 'suppliers', 'customers', 'customer-statuses', 'organization'] as const
 
 export type RouteId = (typeof ROUTE_IDS)[number]
 

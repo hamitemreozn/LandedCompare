@@ -1004,20 +1004,32 @@ decisions don't accidentally violate them:
 
 ## Phase 10 foundation and Phase 11 active catalogue
 
+**Current status.** Phases 10 and 11 and the Audit A remediation are committed
+and deployed; **Audit A = PASS**. Phase 12 is implemented, deployed and under
+final pre-commit review: local and hosted migration histories match at 13/13,
+with no pending or hosted-only migration.
+
 Canonical design: [Cloud & Multi-User
 Architecture](CLOUD_MULTIUSER_ARCHITECTURE.md), with an implementation report in
-its historical §28 and Phase 11 report in §29. This section records only what
-changed in the *module boundaries*.
+its historical §28, the Phase 11 report in §29, Audit A in §30 and Phase 12 in
+§31. This section records only what changed in the *module boundaries*.
 
 ### Two new source trees, and only one of them is TypeScript
 
 ```text
 supabase/                  the server, and it is entirely declarative
   config.toml              exposed schemas, auth policy — security controls
-  migrations/*.sql         the canonical schema history. Eleven files through Phase 11
+  migrations/*.sql         the canonical schema history. All thirteen are applied
+                           locally and hosted; the thirteenth is Phase 12
   tests/*.test.sql         pgTAP: the catalogue and behavioural assertions
-  functions/               two Edge Functions, the only server-side code
+  functions/               one Edge Function (admin-provision-user: invite a new
+                           address by e-mail, or link an existing account), the
+                           only server-side code; admin-reset-password was removed
+                           in Phase 12 — no administrator ever holds a credential
   seed.sql                 local development fixture. Synthetic, never pushed
+
+src/app/invitationLink.ts  reads an Auth invitation/recovery link's session from
+                           the URL fragment once, and removes it (Phase 12)
 
 src/cloud/                 the client side of the boundary
   config.ts                build-time configuration, and the key-safety check

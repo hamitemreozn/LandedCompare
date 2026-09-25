@@ -7,7 +7,27 @@ the water?"* — built around an audited, deterministic landed-cost engine and a
 append-only inventory movement ledger, shared by the handful of people in one
 company who need to see the same numbers.
 
-**Status.** Phase 11 is implemented in the working tree. The running client now
+**Status.** Phases 10, 11 and 12 and the Audit A remediation are implemented
+and deployed. Phase 12 remains uncommitted and is under final release review.
+
+**Current deployment state (authoritative).** Local and hosted migration
+histories match at **13/13**, with no pending or hosted-only migration;
+`20260925120000_phase12_organization_administration.sql` is deployed. Vercel
+production serves the current frontend at `https://landedcompare.vercel.app`.
+The corrected, invitation-based `admin-provision-user` is the only deployed
+Edge Function; `admin-reset-password` and the legacy password-reset RPCs are
+absent. The production Site URL and redirect configuration are correct, and
+custom SMTP is enabled and operational.
+
+Final validation passes with 92 unit-test files / 1,329 tests, 9 database-test
+files / 256 assertions, 17 behavioural-security files / 141 tests, and 18/18
+hosted checks. The repository security-advisor release gate passes; the raw
+advisor retains exactly the accepted Supabase Free-plan warning
+`auth_leaked_password_protection`. The final NO_MEMBERSHIP sign-out, Customer
+Status list-order wording and result-count alignment are deployed and were
+manually accepted in production.
+
+The running client
 boots through Supabase Auth, resolves live organisation membership, and reads
 and mutates products, suppliers, customers and configurable customer statuses
 through `DataGateway`. PostgreSQL is the sole authoritative catalogue after the
@@ -15,10 +35,10 @@ one-time cutover; IndexedDB is opened only to validate, back up and import a
 legacy Phase 9 catalogue, then it is deleted. There is no offline business-data
 fallback or write queue.
 
-The four Phase 11 migrations are also deployed to the linked hosted project;
-local and remote history match 11/11, the hosted advisor WARN gate is clean and
-the anonymous HTTP posture verification passes 18/18. No real pilot account,
-organisation or business data has been created.
+*Historical, at the Phase 11 deployment:* local and remote history matched
+11/11, the hosted advisor WARN gate was clean and the anonymous HTTP posture
+verification passed 18/18. No real pilot account, organisation or business
+data has been created.
 
 **Audit A remediation, passes 1 and 2** (see
 [Cloud & Multi-User Architecture](docs/CLOUD_MULTIUSER_ARCHITECTURE.md) §30):
@@ -28,8 +48,20 @@ proof with exact decimal equality; auth and membership changes that end a stale
 runtime, including the migration actions and the boot itself; sign-out that
 clears the device even offline; secret guards that decode JWT-form keys; and
 regression tests proved able to fail. Its forward migration
-(`20260924120000_audit_a_remediation.sql`) is verified locally and is **not yet
-deployed** to the hosted project.
+(`20260924120000_audit_a_remediation.sql`) **is deployed** to the hosted
+project; Audit A's final verdict is PASS.
+
+**Phase 12** adds the company screen — members, roles, access,
+invitations — the portable organisation backup, deterministic
+multi-organisation selection, and the provisioned-user lifecycle. An Auth
+identity is global, so **no company administrator ever sets, resets or learns
+anyone's password**: a new person is invited by e-mail and chooses their own
+password, and an existing account is linked untouched. An invitation or
+recovery link never replaces an account already signed in on the device
+without an explicit choice (§31.9). The hosted SMTP, Site URL and redirect
+prerequisites are complete, and the invitation flow is operational (see [Cloud
+& Multi-User Architecture](docs/CLOUD_MULTIUSER_ARCHITECTURE.md) §31.7 and
+[Deployment](docs/DEPLOYMENT.md)).
 
 The calculation and comparison engine (Phases 0–5), the
 Turkish/English i18n foundation (Phase 6), the local persistence layer (Phase 7

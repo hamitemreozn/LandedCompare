@@ -231,9 +231,8 @@ otp_expiry = 3600
 enabled = true
 verify_jwt = true
 
-[functions.admin-reset-password]
-enabled = true
-verify_jwt = true
+# `admin-reset-password` was removed in Phase 12 (P12-B1): an organisation
+# administrator must not replace the password of a global Auth identity.
 
 [edge_runtime]
 enabled = true

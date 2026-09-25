@@ -7,6 +7,7 @@ import {
   type LegacyCatalogCounts,
   type LegacyMigrationError,
   type MembershipRole,
+  type OrganizationChoice,
 } from '../../cloud'
 import { CLOUD_ERROR_TRANSLATION_KEY } from '../../i18n/persistenceText'
 import { ConfirmDialog } from '../../ui/ConfirmDialog'
@@ -47,11 +48,18 @@ export function CloudFailureScreen({
   code,
   deactivated,
   onRetry,
+  onSignOut,
 }: {
   readonly code: CloudErrorCode
   /** A membership exists and was switched off — a different sentence from "never attached". */
   readonly deactivated?: boolean
   readonly onRetry: () => void
+  /**
+   * NO_MEMBERSHIP has no membership to retry into — the account may simply be
+   * the wrong one. Offered there so the person can sign out and sign in with
+   * another account, rather than being stuck staring at a dead end.
+   */
+  readonly onSignOut?: () => Promise<void>
 }) {
   const { t } = useTranslation()
   const key = code === 'NO_MEMBERSHIP' && deactivated ? 'cloudError.membershipDeactivated' : CLOUD_ERROR_KEYS[code]
@@ -60,7 +68,132 @@ export function CloudFailureScreen({
       <h1 className="boot__title" role="alert">{t('boot.failureTitle')}</h1>
       <p className="boot__text">{t(key)}</p>
       <p className="boot__code">{t('boot.errorCode')}: {code}</p>
-      <button type="button" className="button button--primary" onClick={onRetry}>{t('common.retry')}</button>
+      <div className="form-actions">
+        {code === 'NO_MEMBERSHIP' && onSignOut !== undefined ? (
+          <button type="button" className="button" onClick={() => void onSignOut()}>{t('cloudAuth.signOut')}</button>
+        ) : null}
+        <span className="form-actions__spacer" />
+        <button type="button" className="button button--primary" onClick={onRetry}>{t('common.retry')}</button>
+      </div>
+    </BootPanel>
+  )
+}
+
+/**
+ * The organisation selector (Audit A, A-L7): shown only when the user has
+ * several ACTIVE memberships and no still-valid choice. Nothing business
+ * related is mounted behind it; choosing one boots again, and the boot enters
+ * the choice only if it is still an ACTIVE membership on the server.
+ */
+export function OrganizationSelectionScreen({
+  choices,
+  previousSelectionUnavailable,
+  onSelect,
+  onSignOut,
+}: {
+  readonly choices: readonly OrganizationChoice[]
+  readonly previousSelectionUnavailable: boolean
+  readonly onSelect: (organizationId: string) => void
+  readonly onSignOut: () => Promise<void>
+}) {
+  const { t } = useTranslation()
+  return (
+    <BootPanel>
+      <h1 className="boot__title">{t('organizationSelection.title')}</h1>
+      <p className="boot__text">{t('organizationSelection.body')}</p>
+      {previousSelectionUnavailable ? (
+        <Banner tone="warning" label={t('common.warning')}>{t('organizationSelection.previousUnavailable')}</Banner>
+      ) : null}
+      <ul className="choice-list" aria-label={t('organizationSelection.listLabel')}>
+        {choices.map((choice) => (
+          <li key={choice.organization.id}>
+            <button
+              type="button"
+              className="choice-list__option"
+              data-organization-id={choice.organization.id}
+              onClick={() => onSelect(choice.organization.id)}
+            >
+              <span className="choice-list__name">{choice.organization.name}</span>
+              <span className="choice-list__meta">
+                {t('organizationSelection.roleLabel', { role: t(`organization.roles.${choice.role}`) })}
+              </span>
+            </button>
+          </li>
+        ))}
+      </ul>
+      <div className="form-actions">
+        <span className="form-actions__spacer" />
+        <button type="button" className="button" onClick={() => void onSignOut()}>{t('cloudAuth.signOut')}</button>
+      </div>
+    </BootPanel>
+  )
+}
+
+/**
+ * An invitation or recovery link arrived while an account is already signed
+ * in on this device — always asked, whoever the link claims to be for.
+ * Nothing changes until the person chooses; "stay" drops the link and keeps
+ * the current session untouched. The account the link names is decoded
+ * WITHOUT verification and is shown as what the link SAYS, nothing more.
+ */
+export function InvitationConfirmationScreen({
+  linkType,
+  invitedEmailHint,
+  currentEmail,
+  onAccept,
+  onDecline,
+}: {
+  readonly linkType: 'invite' | 'recovery'
+  /** Unverified display hint from the link. Never a security input. */
+  readonly invitedEmailHint: string | null
+  readonly currentEmail: string | null
+  readonly onAccept: () => void
+  readonly onDecline: () => void
+}) {
+  const { t } = useTranslation()
+  const invited = invitedEmailHint ?? t('invitationConfirmation.unknownAccount')
+  const current = currentEmail ?? t('invitationConfirmation.unknownAccount')
+  return (
+    <BootPanel>
+      <h1 className="boot__title">{t('invitationConfirmation.title')}</h1>
+      <p className="boot__text" data-testid="invitation-confirmation">
+        {t(linkType === 'invite' ? 'invitationConfirmation.bodyInvite' : 'invitationConfirmation.bodyRecovery', { invited, current })}
+      </p>
+      <p className="field__hint">{t('invitationConfirmation.warning', { current })}</p>
+      <div className="form-actions">
+        <button type="button" className="button" onClick={onAccept}>{t('invitationConfirmation.accept')}</button>
+        <span className="form-actions__spacer" />
+        <button type="button" className="button button--primary" onClick={onDecline}>{t('invitationConfirmation.decline', { current })}</button>
+      </div>
+    </BootPanel>
+  )
+}
+
+/**
+ * An invitation or recovery link arrived and Auth could not say whether an
+ * account is already signed in here. The link was NOT used and nothing was
+ * replaced: the person can ask again, or drop the link.
+ */
+export function InvitationCheckFailedScreen({
+  code,
+  onRetry,
+  onIgnore,
+}: {
+  readonly code: CloudErrorCode
+  readonly onRetry: () => void
+  readonly onIgnore: () => void
+}) {
+  const { t } = useTranslation()
+  return (
+    <BootPanel>
+      <h1 className="boot__title" role="alert">{t('invitationConfirmation.checkFailedTitle')}</h1>
+      <p className="boot__text" data-testid="invitation-check-failed">{t('invitationConfirmation.checkFailedBody')}</p>
+      <p className="boot__code">{t('boot.errorCode')}: {code}</p>
+      <div className="form-actions">
+        <button type="button" className="button" onClick={onIgnore}>{t('invitationConfirmation.ignore')}</button>
+        <span className="form-actions__spacer" />
+        <button type="button" className="button button--primary" onClick={onRetry}>{t('common.retry')}</button>
+      </div>
     </BootPanel>
   )
 }
@@ -114,8 +247,13 @@ export function SignInScreen({
 
 export function PasswordChangeScreen({
   onChange,
+  accountEmail,
+  onSignOut,
 }: {
   readonly onChange: (password: string) => Promise<void>
+  /** Whose password this is — shown so a link to someone else's account is noticed. */
+  readonly accountEmail?: string | null
+  readonly onSignOut?: () => Promise<void>
 }) {
   const { t } = useTranslation()
   const [password, setPassword] = useState('')
@@ -136,11 +274,19 @@ export function PasswordChangeScreen({
   return (
     <BootPanel>
       <h1 className="boot__title">{t('cloudAuth.mustChangePasswordTitle')}</h1>
+      {accountEmail ? (
+        <p className="boot__text" data-testid="password-account">{t('cloudAuth.passwordForAccount', { email: accountEmail })}</p>
+      ) : null}
       <p className="boot__text">{t('cloudAuth.mustChangePasswordHint')}</p>
       {failure !== undefined ? <Banner tone="danger" label={t('common.error')}>{t('cloudError.unexpected')}</Banner> : null}
       <form onSubmit={(event) => void submit(event)}>
         <TextField label={t('cloudAuth.newPasswordLabel')} value={password} onChange={setPassword} required autoFocus type="password" />
         <div className="form-actions">
+          {onSignOut ? (
+            <button type="button" className="button" disabled={busy} onClick={() => void onSignOut()}>
+              {t('cloudAuth.notMyAccount')}
+            </button>
+          ) : null}
           <span className="form-actions__spacer" />
           <button type="submit" className="button button--primary" disabled={busy || password.length < 8}>
             {busy ? t('common.saving') : t('cloudAuth.changePassword')}

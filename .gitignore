@@ -26,6 +26,9 @@ dist-ssr
 supabase/.branches
 supabase/.temp
 
+# Vercel CLI working state: local project-link metadata, never source.
+.vercel/
+
 # A safety net, NOT a sanctioned location. Pre-deployment dumps must be written
 # OUTSIDE this repository entirely — `data.sql` carries `auth.users` today and
 # will carry the company's real business data as soon as the pilot has any, and

@@ -643,13 +643,13 @@ The script refuses to run if handed a secret key: `service_role` bypasses the
 posture every check exists to confirm, so all twelve would pass while proving
 nothing.
 
-### `npm run db:advisors` — Supabase's own security advisor
+### `npm run db:advisors` — hosted security-advisor release gate
 
-Against the local database it reports exactly two INFO findings, both of them
-intentional: `app_data.counters` and `app_private.managed_table` have RLS enabled
-with no policy, which for a SERVER_ONLY table is the configuration rather than an
-oversight. At `--level warn --fail-on warn` the result is "No issues found", so
-the hosted step is an enforceable gate rather than a report somebody reads.
+The gate prints Supabase's raw hosted security-advisor output, fails every ERROR,
+and fails every WARN except the single documented
+`auth_leaked_password_protection` exception. It also fails if a second warning
+appears or the known warning changes identity. `npm run db:advisors:raw` runs the
+uninterpreted advisor command for direct visibility.
 
 ### The guard on the build
 
@@ -775,3 +775,119 @@ holds the session (with a control: it still happens, for any role, when the
 user does). Removing the live membership re-read turned both real-stack
 downgrade tests and the deterministic one red; removing the empty-database
 check turned its test red.
+
+## Phase 12 — organisation administration, portable backup, A-L6, A-L7
+
+*Historical — the first Phase 12 implementation, before its security
+correction pass:* 89 files, 1,296 unit tests; 234 pgTAP assertions; 115 HTTP
+tests in fourteen files. Current totals are in the next section.
+
+| Area | Where | What it proves |
+| --- | --- | --- |
+| Posture of the new surface | pgTAP `090_phase12_administration.test.sql` S1–S7 | `api` wrappers are invoker, the four bodies are definer in `app_private`; `authenticated` may execute, `anon` and `service_role` may not; internal helpers and the A-L6 operator functions are executable by no Data API role; both mutations require `p_expected_version` without default; no definer function in `api` is executable by a user role; `memberships` keeps one helper-free policy and SELECT-only grant |
+| Membership authority | pgTAP 090; HTTP `security/organizationAdministration.security.test.ts` | MEMBER refused on list and change (403, `FORBIDDEN`); another tenant's OWNER refused, including for a non-existent subject (no existence oracle); ADMIN manages MEMBER/ADMIN, never an OWNER, never grants OWNER; nobody changes themselves; stale version → `STALE_WRITE`; one `admin_events` row per effective change, none for no-ops or refusals; no route writes `memberships`; the real gateway maps the same answers |
+| A-L6 | pgTAP 090; HTTP admin suite; `cloud/privilegedBoundary.test.ts` | disabling a shared identity in A ends A on the next request with the SAME token and leaves B, the Auth identity, the profile and the password intact; re-inviting links without a password and re-enables (and, since the correction pass, without a user id or a "created" flag in the answer); an OWNER re-inviting their own address as MEMBER is refused and stays OWNER; the orphan report and purge refuse DISABLED-only, in-flight and active identities and purge a true orphan; neither has a route for any role; no runtime module names the Auth Admin API, a server credential or an operator function |
+| A-L7 | `cloud/boot.test.ts`; `app/multiOrganization.test.tsx`; `app/organizationPreference.test.ts`; `cloud/guardedGateway.test.ts`; HTTP `app/multiOrganization.security.test.ts` | 0 / 1 / 2+ ACTIVE memberships; valid, stale, foreign-user and malformed preferences; the selected membership DISABLED while in use (one left → entered with a notice; two left → selector without it); A → B keeps nothing of A (a MutationObserver checks every moment against the real server); the gateway refuses a call naming another organisation before sending it; another tab's switch is followed; the preference key is namespaced and never touches the session key |
+| Portable backup format | `backup/cloud/format.test.ts` | envelope, version, counts; exact decimals as strings (hostile precision, trailing zeros); opaque codes exact; determinism; 1,205 records in a section; no credential text; refusal of wrong magic, v1 device files, newer payload, unknown fields, missing sections, count mismatch, checksum mismatch, duplicate ids, order, JSON-number or non-canonical decimals, invisible required text, foreign organisation, dangling status reference, prototype keys |
+| Portable backup export | `backup/cloud/exportOrganization.test.ts`; HTTP `security/portableBackup.security.test.ts` | 1,002 products past `max_rows` = 1000, equal to the database by id; ADMIN may export, MEMBER is refused by the server; a transport failure or a membership withdrawn mid-section produces no file; malformed server data is refused by the read-back; the session's access and refresh tokens are absent from the file |
+| Screen | `features/organization/OrganizationScreen.test.tsx`; `cloud/gatewayAdministration.test.ts` | OWNER/ADMIN/MEMBER views in TR and EN; confirmations before every change; one neutral success sentence for a new and an existing address, no password panel and no reset action; the invitation request id reused on retry and renewed for a new invitation; a server refusal offers a reload of authority; a failed export starts no download; Edge Function failures mapped to the application vocabulary through the real supabase-js client |
+
+
+## Phase 12 — security correction pass
+
+*Historical totals at this pass:* 89 files, 1,299 unit tests; 242 pgTAP
+assertions; 126 HTTP tests in sixteen files. Current totals are in the final
+section below. At this pass the totals line read:
+**89 files, 1,299 unit tests** (three consecutive full runs
+green); **242 pgTAP assertions in nine files**; **126 HTTP tests in sixteen
+files**; lint, typecheck, build (bundle secret scan included) and `db:lint`
+clean; thirteen migrations from empty (`supabase db reset`, which the security
+suite also runs first) — twelve of them are the hosted history, the Phase 12
+migration is local only.
+
+| Finding | Tests | Perturbation proved red |
+| --- | --- | --- |
+| P12-B1 password takeover | `security/credentialBoundary.security.test.ts`: U belongs to X and Y; X's OWNER and ADMIN call the removed reset function, the removed reset RPCs, re-provision U under every role, disable/enable and re-role U; U's bcrypt hash is unchanged, U's own password works, no response carries a password and no string X received signs in as U. Also pgTAP 090 (the RPCs do not exist), `privilegedBoundary.test.ts` (no reset path in the browser, no `updateUserById` in any Edge Function), `gatewayAdministration.test.ts`, the screen test | restoring `admin-reset-password` and its RPCs: the hash changed — red |
+| P12-H1 stale OWNER grant | `phase12Corrections`: claim as OWNER → demote to ADMIN → complete, over the service-role RPC path; and a real Edge Function run held (test-only trigger, `pg_sleep`) inside `begin_provisioning` after its role check while the actor is demoted. Both 403, nothing granted. pgTAP 090 repeats it deterministically | removing the post-lock OWNER check: both returned 200 — red |
+| P12-H2 compensation delete | `phase12Corrections`: A creates U, A's link is held and then fails, B links U meanwhile — via provisioning, and via a link that leaves no attempt/event record; U and B's membership survive. A failed provisioning keeps an orphan the operator purge then removes. `privilegedBoundary.test.ts`: no `deleteUser` in any Edge Function | restoring the compensating delete: the bare-link interleaving lost U and B's membership, the orphan test found no orphan, the source guard named the call — red. (The provisioning-link interleaving stays green even then, because the SUCCEEDED attempt and the append-only event referencing U make GoTrue's delete fail; that incidental guard is why the bare-link variant exists) |
+| P12-M1 profile overwrite | `phase12Corrections` (Y sees the unchanged name, flag and version after X invites U under another name); pgTAP 090 | — |
+| P12-M2 existence oracle | provisioning security suite (answer keys exactly `request_id`, `status` since the final correction); `gatewayAdministration.test.ts` (legacy fields not passed on); screen test (one success sentence, no "already had an account" wording) | — |
+| P12-M3 response equivalence, stale version, last OWNER | `phase12Corrections`: another tenant's OWNER gets byte-identical answers for a real member and a random id, and for a real and a random organisation; an OWNER gets identical `RECORD_NOT_FOUND` for another company's member and a random id; stale version refused for status and role with nothing changed; two OWNERs demoting — and disabling — each other concurrently (updates held 1.5 s) yield exactly one 200 and one 403, one OWNER left | making the advisory lock a no-op: both requests returned 200 — red |
+| P12-L1 fragile UI test | the member-row query asserts inside `waitFor`; five repeated runs of the screen and multi-organisation files green | — |
+
+Every perturbation was reverted and the files compared byte for byte with
+their pre-perturbation copies; no test trigger (`public.lc_test_*`) remains.
+
+The exhaustive settlement-grid test in `comparison/AuthoritativeTotal.test.ts`
+(4,608 cases, ~1.3 s alone, ~4 s in a loaded full run) now declares a 20 s
+budget instead of relying on the 5 s default; its assertions are unchanged.
+
+## Phase 12 — final credential correction
+
+*Historical totals at this pass:* 90 files, 1,307 unit tests; 247 pgTAP
+assertions; 135 HTTP tests in sixteen files. Current totals are in the final
+onboarding section below. At this pass the totals line read:
+**90 files, 1,307 unit tests** (two consecutive full runs
+green); **247 pgTAP assertions in nine files**; **135 HTTP tests in sixteen
+files** (two consecutive full runs green, the second against a mailbox holding
+the first run's mail); lint, typecheck, build (bundle secret scan) and
+`db:lint` clean; thirteen migrations from empty — twelve hosted, the Phase 12
+migration local only.
+
+The property under test: **an organisation administrator never learns a usable
+global credential for anybody.** New addresses are invited by Auth; the tests
+play the invited person through the local mail capture (Mailpit, port 54324,
+`localStack.ts` — tests only).
+
+| Area | Tests |
+| --- | --- |
+| Exact cross-tenant scenario | `security/credentialBoundary.security.test.ts`: X's OWNER provisions a new address U → the invitation reaches U's mailbox only, and X's answer is exactly `{status, request_id}` without the invitation token → Y links U before U accepts → X's OWNER and ADMIN try the removed reset function and RPCs, re-provisioning under every role, and GoTrue's `recover`, `otp`, `invite`, `admin/generate_link` (invite and recovery) and `admin/users/:id` with their own tokens → every string X received is tried as a password, followed as a link and presented as a bearer token: none authenticates as U → U accepts from U's own mailbox, chooses a password and signs in → U sees exactly X and Y → the candidates still fail |
+| Existing account | the same file: linked with the same answer, password hash unchanged, no e-mail sent, own password still works |
+| Uniformity | same file: new and existing answers have identical shape and status; `MEMBER_PROVISIONED` details are exactly `email`, `request_id`, `role`; `api.provisioning_attempts` exposes no `created_here`; a colleague reading `api.profiles` sees no onboarding flag, version or timestamps (also pgTAP 090) |
+| Retry / idempotency | same file: the same `request_id` returns `ALREADY_SUCCEEDED` in the same shape and sends no second invitation; provisioning suite case B |
+| Invitation failure / orphans | `security/phase12Corrections.security.test.ts`: an address Auth cannot mail fails with one safe error, no account, no membership, attempt `FAILED:INVITATION_FAILED`, and a retry fails the same way; a failed link gives `LINK_FAILED` whether the account was just invited or already existed, and the invited account stays as an operator-purgeable orphan |
+| Purge vs. link | same file: link first (held after its foreign-key lock) → the purge waits, then refuses on the membership; an in-flight attempt → the purge refuses; purge first (held before commit) → the link waits, then fails on the foreign key; no committed membership references a deleted identity |
+| Accepting a link in the app | `app/invitationLink.test.tsx`: an `invite` (or operator `recovery`) fragment is read once and removed from the URL, the session adopted, and the person asked to choose a password; expired links end at sign-in; magic-link and other fragments are never adopted |
+| Source guards | `cloud/privilegedBoundary.test.ts`: no Edge Function calls `createUser`, `generateLink`, `updateUserById` or `deleteUser`, or mentions a temporary password; provisioning uses `inviteUserByEmail`; the redirect comes from `LANDEDCOMPARE_INVITE_REDIRECT_URL`, never the request |
+| TR/EN | `i18n/resources/parity.test.ts` after removing the password panel keys |
+
+**Perturbation proof** (each reverted and compared byte for byte afterwards):
+
+| Perturbation in `admin-provision-user` | Caught by |
+| --- | --- |
+| A — after the invitation, set a generated password and return it as `temporary_password` | credential-boundary test red on the answer's shape (three tests) |
+| A2 — the same password smuggled into `request_id`, shape unchanged | red: the account was confirmed behind the person's back (the unaccepted-invitation check) |
+| B — `generateLink({ type: 'invite' })` and the resulting link smuggled into `request_id`, shape unchanged | red at the direct check: following the link X received yielded U's session |
+
+## Phase 12 — final onboarding and login-CSRF corrections (current totals)
+
+Current result (after the advisor-policy remediation): **92 files, 1,329 unit tests**;
+**256 pgTAP assertions in nine files**; **141 HTTP tests in seventeen files**;
+lint, typecheck, build (bundle secret scan) and `db:lint` clean; **18/18 hosted
+checks**; thirteen migrations from a clean reset and a matching hosted history
+of **13/13**, with no pending migration. *At the onboarding pass (§31.8) the
+line read: 90 files, 1,314 unit tests; 256 pgTAP assertions; 139 HTTP tests in
+seventeen files.*
+
+The deployed pilot evidence is consistent with those suites: real OWNER
+onboarding and additional-user provisioning succeeded, cross-device changes
+were observed, and the portable organisation backup downloaded successfully.
+The final NO_MEMBERSHIP sign-out, Customer Status “Liste sırası” / “List order”
+wording and result-count footer alignment were manually accepted in production.
+
+| Area | Tests |
+| --- | --- |
+| Failed-link orphan → new request → re-invitation → password setup | `app/invitationOnboarding.security.test.ts` (real App, real stack, Mailpit): the invitation succeeds and the link is forced to fail → identity kept, no membership, no profile, purgeable orphan → a new request re-invites (second e-mail) and links → profile requires password setup while the attempt records `created_here = false` → U opens the latest invitation in the application, is named ("Hesap: …") and asked to choose a password → sets it → the shell opens → U signs in with it. Every administrator response is `{status, request_id}` without credential material |
+| Established account | same file: a confirmed, non-invited account with no profile is linked with no password setup, no e-mail, and signs straight into the shell; pgTAP 090 covers established / re-invited orphan / accepted-but-never-onboarded / fresh, and an existing profile left untouched |
+| Retry / idempotency | same file: the SAME request id after a failed link re-claims and converges once; repeating it returns `ALREADY_SUCCEEDED`; a new id adds nothing; one identity, one membership, one profile, one attempt row; reason `LINK_FAILED` |
+| Login CSRF | same file, D (real invitation for B while A is signed in: confirmation shown, "stay" keeps A's session, continuing is explicit) and E (§31.9, invite AND recovery: A signed in; the link pairs a FORGED expired JWT claiming `sub = A` / A's e-mail with B's GENUINE refresh token → confirmation shown, A still A, no shell mounted, Auth never asked to rotate B's token; "stay" keeps A and B's token still unrotated; the same link with an explicit "continue" → Auth resolves the pair to B, the shell shows B's company, B's token rotated once); `app/invitationLink.test.tsx` (invite and recovery: a link naming another account asks; a link whose claims name the signed-in account ITSELF still asks; "stay" keeps the account; only "continue" adopts; "not my account" signs out; account named on the password screen from the verified session) |
+| Session read failure | `app/invitationLink.test.tsx`: invite and recovery with the current-session lookup throwing → "link could not be checked" screen, no adoption, no password screen, retry while still failing changes nothing; once Auth answers, a signed-in device is asked; "ignore the link" boots the existing session untouched |
+| URL hygiene | `app/invitationLink.test.tsx`: fragment removed at once; the exact GoTrue redirect (incl. its empty `sb` marker) is the only shape adopted; `provider_token`, `provider_refresh_token`, `code`, `token`, `token_hash`, `error`, `error_description`, `expires_in`/`token_type`-only, partial, duplicated, non-JWT, non-bearer, unknown-key and non-empty-`sb` fragments are scrubbed and not adopted; application routes (`#/…`, including `#/products?code=…`) untouched; Auth-shaped QUERY parameters stripped and never accepted; the parser exposes no subject claim at all |
+
+**Perturbation proof** (each reverted and compared byte for byte afterwards):
+
+| Perturbation | Caught by |
+| --- | --- |
+| `complete_provisioning` derives the onboarding flag from `p_created_here` again (the old defect) | the orphan-retry regression: the re-invited orphan's profile had `must_change_password = false` — red |
+| the "different account already signed in" check disabled in `useApplicationBoot` | the real-stack login-CSRF test (no confirmation shown) and three unit tests — red |
+| §31.9: the old shortcut restored — "if the link's decoded `sub` equals the signed-in user, skip confirmation" | the real-stack forged-claim regression E, invite and recovery (no confirmation shown) and three unit tests (the two "claims name the signed-in account itself" cases and "once Auth answers") — red. A one-off probe under the same perturbation (not kept) confirmed the actual attack: the real App booted straight into B's company with no question and `currentUserId()` = B |

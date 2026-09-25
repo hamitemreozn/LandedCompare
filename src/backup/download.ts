@@ -47,8 +47,14 @@ export interface DownloadOptions {
   readonly urlFactory?: ObjectUrlFactory
 }
 
+/**
+ * What a download needs: the exact bytes and a filename. Both the Phase 8
+ * device backup and the Phase 12 organisation backup satisfy it.
+ */
+export type DownloadableBackup = Pick<BackupArtifact, 'json' | 'filename'>
+
 /** The file's bytes as a `Blob`, typed and UTF-8. Useful on its own for tests. */
-export function toBackupBlob(artifact: BackupArtifact): Blob {
+export function toBackupBlob(artifact: DownloadableBackup): Blob {
   return new Blob([artifact.json], { type: 'application/json' })
 }
 
@@ -60,7 +66,7 @@ export function toBackupBlob(artifact: BackupArtifact): Blob {
  * "this browser cannot download" from "the backup could not be generated" —
  * two different problems with two different messages.
  */
-export function downloadBackup(artifact: BackupArtifact, options: DownloadOptions = {}): void {
+export function downloadBackup(artifact: DownloadableBackup, options: DownloadOptions = {}): void {
   const host =
     options.document ?? (globalThis as { document?: DownloadHost }).document ?? undefined
   const urls = options.urlFactory ?? (globalThis as { URL?: ObjectUrlFactory }).URL ?? undefined

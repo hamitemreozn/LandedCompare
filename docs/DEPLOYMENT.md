@@ -2,6 +2,26 @@
 
 ## Current status
 
+**Current deployment state (authoritative).** Local and hosted migration
+histories match at **13/13**, with no pending or hosted-only migration;
+`20260925120000_phase12_organization_administration.sql` is deployed. Phase 12
+(organisation administration, portable backup, A-L6, A-L7, and its security
+correction pass) remains uncommitted and under final review. The corrected,
+invitation-based `admin-provision-user` is ACTIVE; `admin-reset-password` and
+the legacy password-reset RPC surface are absent. The Site URL and exact
+redirect allow-list are `https://landedcompare.vercel.app`, and custom SMTP is
+enabled and operational.
+
+Final verification completed with 92 unit-test files / 1,329 tests, 9 database
+test files / 256 assertions, 17 behavioural-security files / 141 tests, and
+18/18 hosted checks. Vercel production serves the verified current frontend.
+Real OWNER onboarding, additional-user provisioning, portable backup and the
+cross-device multi-user pilot smoke test succeeded. The final NO_MEMBERSHIP
+sign-out, Customer Status list-order wording and result-count alignment were
+manually accepted in production.
+
+*The paragraphs below record each earlier deployment as it happened.*
+
 Phase 10 is deployed to the linked hosted Supabase project: all seven foundation
 migrations, the `api`-only exposure posture, disabled public signup, both Edge
 Functions, the advisor WARN gate and the current eighteen anonymous hosted checks are
@@ -11,8 +31,10 @@ data.
 Phase 11 connects the running client to that foundation. Products, suppliers,
 customers and configurable customer statuses are canonical in PostgreSQL;
 IndexedDB participates only in the explicit one-time legacy cutover. All three
-Phase 11 migrations are deployed; local and remote history match 11/11, the
-hosted advisor WARN gate is clean and anonymous HTTP verification passes 18/18.
+Phase 11 migrations are deployed; at that deployment local and remote history
+matched 11/11, the hosted advisor WARN gate was clean and anonymous HTTP
+verification passed 18/18. The Audit A remediation migration was deployed
+afterwards (12/12).
 
 ---
 
@@ -177,10 +199,15 @@ npx supabase db push --linked
 npx supabase config diff
 npx supabase config push
 
-# 7  Deploy the two Edge Functions. There is NO secret to set — see
+# 7  Deploy the Edge Function. There is NO secret to set — see
 #    "Secret handling" below.
 npx supabase functions deploy admin-provision-user
-npx supabase functions deploy admin-reset-password
+#
+#    Phase 12 deployment ONLY: remove the function Phase 12 retired. Until the
+#    Phase 12 migration is applied it can still reset a colleague's global
+#    password; after it, it fails at its first RPC and changes nothing, and
+#    this removes it outright. Apply the migration (step 5) BEFORE this step.
+npx supabase functions delete admin-reset-password
 ```
 
 ### Verify, rather than assume
@@ -189,9 +216,9 @@ npx supabase functions deploy admin-reset-password
 # 8  Migration history: local and remote must agree.
 npx supabase migration list --linked
 
-# 9  Supabase's own security advisor against the hosted database.
-npm run db:advisors        # supabase db advisors --linked --type security
-                           #   --level warn --fail-on warn
+# 9  Repository gate over Supabase's hosted security-advisor output.
+npm run db:advisors        # strict policy, including one documented exception
+npm run db:advisors:raw    # uninterpreted advisor output for visibility
 
 # 10 The configuration, asked of the server over real HTTP.
 SUPABASE_URL=https://<project-ref>.supabase.co \
@@ -316,10 +343,11 @@ production auth service.
 
 It is recorded here rather than silently dropped: **raising the hosted minimum
 is a reasonable change, and it should be made as its own reviewed decision.**
-The exposure is small — accounts are provisioned with 18-character generated
-passwords (§4) and only a user's own later choice is governed by the minimum —
-but it is a real, if minor, weakness and it should be somebody's explicit call
-rather than a side effect of a deployment.
+Since Phase 12 every password is the person's own choice (accounts are
+invited, never given a generated password), so the minimum governs every
+password in the system. That makes this decision more relevant, not less; it
+should still be somebody's explicit call rather than a side effect of a
+deployment.
 
 ### Secret handling
 
@@ -349,8 +377,10 @@ record and touches no Deno global, which is what lets
 `src/cloud/serverSecretKey.test.ts` unit-test every shape with no runtime and no
 real credential.
 
-What still belongs in Edge Function secrets, if it is ever added: SMTP
-credentials. Nothing else.
+What belongs in Edge Function secrets, if it is ever added: credentials for a
+third-party service used directly by a future function. The operational SMTP
+credentials belong to hosted Auth configuration; they are not copied into an
+Edge Function secret. Nothing else.
 
 ### Backup semantics — what each dump command actually contains
 
@@ -415,9 +445,99 @@ midnight are four statements and a mistake. `EXECUTE` is revoked from every Data
 API role including `service_role`; it is reachable only from a superuser
 connection.
 
-**Not yet, and not without being asked:** no real customer, supplier or
-product data, and no employee accounts. Phase 11 builds and proves the import
-path, and entering the real catalogue is better done after it than before it.
+### Phase 12 hosted preconditions — completed
+
+Phase 12 onboards a new person by an Auth **invitation e-mail** — no
+administrator ever holds a password. The controlled hosted preflight and
+deployment are complete:
+
+1. Custom SMTP is configured and was positively verified through real OWNER
+   and additional-user invitation/onboarding flows.
+2. `auth.site_url` is `https://landedcompare.vercel.app`.
+3. The redirect allow-list contains the exact production origin
+   `https://landedcompare.vercel.app`.
+4. The corrected `admin-provision-user` is deployed and uses the Auth
+   invitation flow; its deployed source was verified against the local source.
+5. `admin-reset-password` and the legacy password-reset RPCs are absent.
+6. Local and hosted migration history is 13/13 with no pending migration, and
+   the anonymous hosted verifier passes 18/18 checks.
+
+**Security-advisor accepted pilot residual.** The raw advisor reports
+`auth_leaked_password_protection`: leaked-password protection is unavailable on
+the Supabase Free plan. The warning remains visible and is the gate's only
+accepted WARN. Public signup remains disabled, invitation-based onboarding is
+enforced, and existing password/auth controls are unchanged. When the project
+moves to a plan that supports leaked-password protection, enable it and remove
+this exception.
+
+**Invitation links on a shared device — accepted residual.** With a session
+already on the device, every invitation or recovery link asks before replacing
+it; if the session cannot be read, the link is held, not used. On a device
+where nobody is signed in, a forwarded link is adopted automatically and the
+password screen names the verified account with a "not my account — sign out"
+action. That anonymous-device residual is accepted as LOW for the pilot and
+is not eliminated ([Cloud & Multi-User Architecture](CLOUD_MULTIUSER_ARCHITECTURE.md)
+§31.9).
+
+### Orphaned Auth identities (A-L6) — an operator procedure
+
+Removing someone from the company is an OWNER/ADMIN action in the application
+(`DISABLED`), and it never deletes the person's Auth account: the account is
+global and may belong to another organisation
+([Cloud & Multi-User Architecture](CLOUD_MULTIUSER_ARCHITECTURE.md) §31.2).
+Deleting an Auth identity is reserved for the operator, and only for a true
+orphan — an account with no membership anywhere. Provisioning never deletes an
+identity: when the invitation succeeds and the link step then fails, the Auth
+identity is RETAINED on purpose (attempt `FAILED`, reason `LINK_FAILED`),
+because another organisation may already have linked it. A retained identity
+is normally converged by inviting the same address again (a new request
+re-invites it and links it); only one that is truly orphaned — no membership
+of any status, no in-flight attempt — is a candidate for the purge below.
+
+From a superuser connection (the SQL editor of the hosted project, or `psql`
+against the local stack):
+
+```sql
+-- 1  Report. Read-only. Lists every identity with no ACTIVE membership.
+select * from app_private.orphaned_auth_identities();
+
+-- 2  Purge ONE identity the report marks eligible_for_purge = true.
+--    Refused for an identity with a membership of any status, or one an
+--    in-flight provisioning attempt is about to link. A provisioning whose
+--    link step fails KEEPS the identity it invited (attempt FAILED, reason
+--    LINK_FAILED); if nobody re-invites the address, these are the usual
+--    orphans.
+select app_private.purge_orphaned_auth_identity('<user id>');
+```
+
+An identity with only `DISABLED` memberships is not an orphan: it is a person
+whose access was withdrawn, and the membership row is the record of that. Leave
+it. Neither function is reachable over the Data API by any role, including the
+secret key.
+
+### A forgotten password — an operator procedure
+
+No company administrator can reset a password: an account is global, and the
+person may belong to more than one company (Phase 12). Nobody — not an
+administrator and not the operator — sets or learns the new password; the person
+chooses it:
+
+1. Confirm the request with the person directly, by a channel you already trust.
+2. Raise the onboarding flag, so the application asks them to choose a password
+   when the recovery link signs them in:
+
+```sql
+update app_data.profiles set must_change_password = true where user_id = '<user id>';
+```
+
+3. In the Supabase dashboard, Authentication → Users → the person → **Send
+   password recovery**. The e-mail goes to the person's own address through the
+   configured SMTP provider; its link lands on the application, which accepts a
+   `recovery` link exactly like an invitation and asks for a new password.
+
+The pilot is active with the real OWNER and an additional user. Do not create
+further production users or enter, import or alter production business data
+without explicit authorisation.
 
 ---
 

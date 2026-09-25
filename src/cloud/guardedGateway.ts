@@ -20,18 +20,45 @@
  *
  * Nothing here weakens a server control: RLS still decides every row. This
  * only stops the client from presenting one identity's answer as another's.
+ *
+ * ## …and to one organisation (Phase 12, A-L7)
+ *
+ * A user may now be an ACTIVE member of several organisations, and the
+ * runtime is built for exactly one of them. When `expectedOrganizationId` is
+ * given, a catalogue or administration call naming any OTHER organisation is
+ * refused before it is sent and reported as `ORGANIZATION_CHANGED`, so the
+ * application reboots instead of rendering company B's answer inside company
+ * A's screen. The server would authorise such a call — the user IS a member of
+ * B — which is exactly why the client has to refuse it: the question is not
+ * "may this user read B" but "is B the company this screen is showing".
  */
 import { CloudError, isCloudError } from './errors'
-import type { CatalogGateway, DataGateway, IdentityGateway } from './gateway'
+import type { AdministrationGateway, CatalogGateway, DataGateway, IdentityGateway } from './gateway'
 
-export type IdentityLoss = 'SIGNED_OUT' | 'IDENTITY_CHANGED' | 'NO_MEMBERSHIP' | 'SESSION_EXPIRED'
+export type IdentityLoss =
+  | 'SIGNED_OUT'
+  | 'IDENTITY_CHANGED'
+  | 'NO_MEMBERSHIP'
+  | 'SESSION_EXPIRED'
+  | 'ORGANIZATION_CHANGED'
 
 type AnyFunction = (...args: never[]) => Promise<unknown>
+
+/** The organisation a call names: its first argument, or the `organizationId` of an input object. */
+function organizationOf(args: readonly unknown[]): string | undefined {
+  const first = args[0]
+  if (typeof first === 'string') return first
+  if (first !== null && typeof first === 'object' && typeof (first as { organizationId?: unknown }).organizationId === 'string') {
+    return (first as { organizationId: string }).organizationId
+  }
+  return undefined
+}
 
 export function guardRuntimeGateway(
   gateway: DataGateway,
   expectedUserId: string,
   onLoss: (loss: IdentityLoss) => void,
+  expectedOrganizationId?: string,
 ): DataGateway {
   async function assertIdentity(): Promise<void> {
     let current: string | null
@@ -53,8 +80,15 @@ export function guardRuntimeGateway(
     }
   }
 
-  function guard<F extends AnyFunction>(operation: F): F {
+  function guard<F extends AnyFunction>(operation: F, organizationScoped: boolean): F {
     return (async (...args: Parameters<F>) => {
+      if (organizationScoped && expectedOrganizationId !== undefined) {
+        const named = organizationOf(args)
+        if (named !== expectedOrganizationId) {
+          onLoss('ORGANIZATION_CHANGED')
+          throw new CloudError('UNEXPECTED', 'the call names a different organisation from the one this screen was built for')
+        }
+      }
       await assertIdentity()
       let result: unknown
       try {
@@ -70,17 +104,18 @@ export function guardRuntimeGateway(
     }) as F
   }
 
-  function guardAll<T extends object>(target: T): T {
+  function guardAll<T extends object>(target: T, organizationScoped: boolean): T {
     const guarded: Record<string, unknown> = {}
     for (const [name, value] of Object.entries(target)) {
-      guarded[name] = typeof value === 'function' ? guard(value.bind(target) as AnyFunction) : value
+      guarded[name] = typeof value === 'function' ? guard(value.bind(target) as AnyFunction, organizationScoped) : value
     }
     return guarded as T
   }
 
   return {
     ...gateway,
-    identity: guardAll<IdentityGateway>(gateway.identity),
-    catalog: guardAll<CatalogGateway>(gateway.catalog),
+    identity: guardAll<IdentityGateway>(gateway.identity, false),
+    catalog: guardAll<CatalogGateway>(gateway.catalog, true),
+    admin: guardAll<AdministrationGateway>(gateway.admin, true),
   }
 }

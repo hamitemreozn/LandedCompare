@@ -107,6 +107,7 @@ export interface TranslationResource {
     readonly membershipDeactivated: string
     readonly organizationLocked: string
     readonly notConfigured: string
+    readonly provisioningInFlight: string
     readonly unexpected: string
   }
   readonly cloudAuth: {
@@ -120,6 +121,8 @@ export interface TranslationResource {
     readonly mustChangePasswordHint: string
     readonly newPasswordLabel: string
     readonly changePassword: string
+    readonly passwordForAccount: string
+    readonly notMyAccount: string
   }
   readonly catalogMigration: {
     readonly title: string
@@ -152,6 +155,8 @@ export interface TranslationResource {
     readonly identityLabel: string
     readonly organization: string
     readonly user: string
+    readonly switchOrganization: string
+    readonly previousSelectionUnavailable: string
   }
   readonly backupStatus: {
     readonly label: string
@@ -180,8 +185,101 @@ export interface TranslationResource {
     readonly shipments: string
     readonly inventory: string
     readonly settings: string
+    readonly administration: string
+    readonly organization: string
     readonly comingSoon: string
     readonly notAvailableYet: string
+  }
+  readonly invitationConfirmation: {
+    readonly title: string
+    readonly bodyInvite: string
+    readonly bodyRecovery: string
+    readonly warning: string
+    readonly accept: string
+    readonly decline: string
+    readonly unknownAccount: string
+    readonly checkFailedTitle: string
+    readonly checkFailedBody: string
+    readonly ignore: string
+  }
+  readonly organizationSelection: {
+    readonly title: string
+    readonly body: string
+    readonly previousUnavailable: string
+    readonly listLabel: string
+    readonly roleLabel: string
+  }
+  readonly organization: {
+    readonly title: string
+    readonly subtitle: string
+    readonly memberOnly: string
+    readonly reload: string
+    readonly info: {
+      readonly title: string
+      readonly name: string
+      readonly id: string
+      readonly yourRole: string
+      readonly yourAccess: string
+      readonly companies: string
+    }
+    readonly roles: {
+      readonly OWNER: string
+      readonly ADMIN: string
+      readonly MEMBER: string
+    }
+    readonly statuses: {
+      readonly ACTIVE: string
+      readonly DISABLED: string
+    }
+    readonly members: {
+      readonly title: string
+      readonly name: string
+      readonly email: string
+      readonly role: string
+      readonly status: string
+      readonly you: string
+      readonly noProfile: string
+      readonly roleSelectLabel: string
+      readonly disable: string
+      readonly enable: string
+      readonly confirm: string
+      readonly disableTitle: string
+      readonly disableBody: string
+      readonly disableNote: string
+      readonly enableTitle: string
+      readonly enableBody: string
+      readonly roleTitle: string
+      readonly roleBody: string
+    }
+    readonly invite: {
+      readonly title: string
+      readonly hint: string
+      readonly email: string
+      readonly displayName: string
+      readonly role: string
+      readonly submit: string
+      readonly submitting: string
+      readonly invalidEmail: string
+      readonly done: string
+    }
+    readonly attempts: {
+      readonly title: string
+      readonly body: string
+      readonly more: string
+      readonly startedAt: string
+      readonly clear: string
+    }
+    readonly backup: {
+      readonly title: string
+      readonly body: string
+      readonly scope: string
+      readonly integrity: string
+      readonly export: string
+      readonly exporting: string
+      readonly done: string
+      readonly counts: string
+      readonly failed: string
+    }
   }
   readonly dashboard: {
     readonly title: string
@@ -318,6 +416,7 @@ export interface TranslationResource {
     readonly newStatus: string
     readonly code: string
     readonly sortOrder: string
+    readonly sortOrderHint: string
     readonly hint: string
     readonly emptyTitle: string
     readonly emptyBody: string

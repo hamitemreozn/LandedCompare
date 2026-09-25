@@ -591,7 +591,8 @@ precisely why guessing now would be the expensive option.
   privilege posture** — `revoke execute … from public, anon` before any grant;
   email-and-password auth with public sign-up disabled; the **idempotent**
   `admin-provision-user` Edge Function with its `request_id` claim, transactional
-  link RPC and compensating deletion, plus `admin-reset-password` and the forced
+  link RPC and compensating deletion, plus `admin-reset-password` (both removed
+  in Phase 12's security correction pass) and the forced
   first-password-change flow; `api.update_own_profile`; the boot gate rebuilt
   around session → reachability → membership, with its explicit failure states;
   the `DataGateway` type — the one module that names the `api` schema — and the
@@ -668,7 +669,8 @@ precisely why guessing now would be the expensive option.
   *Objective:* an administrator can manage who has access, and can get the
   company's data out of the cloud.
   *Deliverables:* the user-management screen (provision, disable, re-enable,
-  change role, reset password) with `admin_events` behind it; the profile and
+  change role, ~~reset password~~ — removed: an organisation must not reset a
+  global credential) with `admin_events` behind it; the profile and
   password-change screen; **organisation export** — the read-only RPC, the
   bumped `backupFormatVersion`, and the existing envelope/canonical-JSON/checksum
   modules re-pointed at a cloud payload; the **`members` manifest** inside that
@@ -835,10 +837,25 @@ checkpoints with no production code. Phase 7 (local persistence), Phase 8
 (backup, snapshots and restore) and Phase 9 (application boot, catalog and
 parties) are implemented.
 
-**Phase 10 is deployed and Phase 11 is implemented in the working tree.** The
-catalogue tables, RLS, security-invoker projections, twelve mutation RPCs,
-OWNER-only import, cloud application boot, version concurrency, customer-status
-UI and local-database retirement path now exist. Phase 12 onward is not started.
+**Phases 10 and 11 and the Audit A remediation are committed and deployed to
+the hosted project; Audit A's verdict is PASS.** The catalogue
+tables, RLS, security-invoker projections, twelve mutation RPCs, OWNER-only
+import, cloud application boot, version concurrency, customer-status UI and
+local-database retirement path exist and are live.
+
+**Phase 12 is implemented in the working tree, deployed and pending final
+release review.** Organisation
+administration (members, roles, access, e-mail invitations — no
+administrator-known or administrator-set password of any kind), the
+portable organisation backup (`backupFormatVersion` 2) with its strict
+validator, deterministic multi-organisation selection (Audit A A-L7) and the
+provisioned-user lifecycle (A-L6) — one deployed forward migration. What
+was built, and what was deferred from the plan above (restore, the staleness
+reminder, the Tauri save path, the own-profile screen), is recorded in
+[Cloud & Multi-User Architecture](CLOUD_MULTIUSER_ARCHITECTURE.md) §31.
+Deployment state: local and hosted histories match at **13/13**, with no
+pending migration; the corrected invitation-based provisioner and final UI
+polish are deployed. Phase 13 onward is not started.
 
 **On entering pilot data — revised by Phase 9.5.** The Phase 9 wiring is done:
 `runSnapshotMaintenance()` runs on startup, `ensurePreMigrationSnapshot()` is

@@ -74,6 +74,22 @@ describe('the boot gate', () => {
     view.unmount()
   })
 
+  it('offers a real sign-out on NO_MEMBERSHIP, so a stuck account is not a dead end', async () => {
+    await setLocale('tr')
+    const user = userEvent.setup()
+    const gateway = createMemoryCloudGateway({ organizations: [] })
+    const view = render(<App options={{ gateway, inspectLegacy: false }} />)
+    await screen.findByText('Uygulama açılamadı')
+
+    const buttons = screen.getAllByRole('button').map((button) => button.textContent)
+    expect(buttons).toEqual(['Çıkış yap', 'Yeniden Dene'])
+
+    await user.click(screen.getByRole('button', { name: 'Çıkış yap' }))
+    expect(await screen.findByRole('heading', { name: 'Giriş yap' })).toBeInTheDocument()
+
+    view.unmount()
+  })
+
   it('signs in from a sessionless boot and logout returns to the sign-in gate', async () => {
     await setLocale('tr')
     const user = userEvent.setup()

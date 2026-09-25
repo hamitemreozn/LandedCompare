@@ -517,7 +517,10 @@ describe('reconciliation across the settlement grid', () => {
     }
 
     expect(cases).toBe(4608)
-  })
+    // Exhaustive and CPU-bound: ~1.3 s alone, ~4 s when the whole suite runs
+    // in parallel, against a 5 s default. The budget is widened for this one
+    // test; nothing it asserts changes.
+  }, 20_000)
 })
 
 /** Rebuilds a fixed cost in another currency — `repeated` defaults to TRY. */

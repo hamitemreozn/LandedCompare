@@ -120,9 +120,10 @@ stock.
 
 Three roles, and no more: **OWNER**, **ADMIN**, **MEMBER**. Everyone can do the
 day-to-day work; administrators additionally manage who has access and can export
-the company's data; only the owner can restore over it. Accounts are created by
-an administrator, who hands the new user a temporary password — there is no
-self-registration, and no email is involved anywhere in the flow.
+the company's data; only the owner can restore over it. An administrator adds
+a person by e-mail address; the person receives an invitation at that address
+and chooses their own password (Phase 12). No administrator ever sees or sets
+anyone's password, and there is no self-registration.
 
 **Everyone who posts stock movements, receipts or dispatches has their own
 account.** A shared warehouse login is not the operating model, and the reason is
@@ -320,9 +321,10 @@ Everything below must exist before the pilot is considered feature-complete.
 ### 5.8 Accounts and access
 
 - One company (organisation); every business record belongs to it.
-- Sign-in with email and password. Accounts are created by an administrator, who
-  hands over a temporary password the user must change on first sign-in. No
-  self-registration, no email delivery in the loop.
+- Sign-in with email and password. An administrator adds a person by address;
+  Auth e-mails that person an invitation and they choose their own password
+  (Phase 12 — requires an SMTP provider on the hosted project). No
+  self-registration; no administrator-known passwords.
 - Three roles — OWNER, ADMIN, MEMBER — with administrators managing membership
   and only the owner able to restore over company data.
 - A user can be disabled, which takes effect on their next request. Membership is

@@ -53,6 +53,7 @@ export {
 
 export {
   createDataGateway,
+  type AdministrationGateway,
   type AuthChange,
   type CatalogGateway,
   type DataGatewayOptions,
@@ -69,19 +70,28 @@ export {
   type MembershipRole,
   type MembershipStatus,
   type Organization,
+  type OrganizationMember,
   type ProductInput,
   type ProductRecord,
   type Profile,
+  type ProvisionMemberInput,
+  type ProvisionMemberResult,
+  type ProvisioningAttempt,
+  type ProvisioningAttemptList,
+  type ProvisioningAttemptStatus,
   type SupplierInput,
   type SupplierRecord,
 } from './gateway'
 
 export {
   bootstrapCloudSession,
+  type CloudBootOptions,
   type CloudBootPhase,
   type CloudBootReady,
   type CloudBootResult,
+  type CloudBootSelection,
   type CloudBootStopped,
+  type OrganizationChoice,
 } from './boot'
 
 export {

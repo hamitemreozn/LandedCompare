@@ -221,7 +221,7 @@ select results_eq(
 select ok(
   (select must_change_password from app_data.profiles
     where user_id = '5a5a5a5a-0000-4000-8000-000000000004'),
-  'an account THIS attempt created is flagged for a forced password change'
+  'an account whose invitation is not yet accepted is flagged for password setup (Phase 12: derived from the Auth record, not from who created it)'
 );
 
 select is(

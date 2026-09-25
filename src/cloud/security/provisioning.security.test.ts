@@ -20,7 +20,7 @@
  */
 
 import { beforeAll, describe, expect, it } from 'vitest'
-import { invokeFunction, SEED, signIn, sql } from './localStack'
+import { acceptInvitation, invitationLinkFor, invokeFunction, mailTo, SEED, signIn, sql } from './localStack'
 
 let ownerA: string
 let memberA: string
@@ -104,8 +104,13 @@ describe('authorisation happens before the Auth Admin API is touched', () => {
 describe('the happy path, and the retry that must not duplicate it', () => {
   const email = 'provisioned-once@example.test'
   const id = requestId('10')
+  // The local mailbox outlives `db reset`, so invitations are counted from
+  // what was already there when this file started.
+  const invitationCount = async () => (await mailTo(email)).filter((message) => /invited/i.test(message.Subject)).length
+  let invitationsBefore = 0
 
-  it('creates the account, links it, and returns the password exactly once', async () => {
+  it('invites the address, links the account, and returns no credential', async () => {
+    invitationsBefore = await invitationCount()
     const first = await invokeFunction('admin-provision-user', {
       token: ownerA,
       body: {
@@ -118,16 +123,10 @@ describe('the happy path, and the retry that must not duplicate it', () => {
     })
 
     expect(first.status).toBe(200)
-    const body = first.json as {
-      status: string
-      user_id: string
-      account_created: boolean
-      temporary_password: string | null
-    }
-
-    expect(body.status).toBe('SUCCEEDED')
-    expect(body.account_created).toBe(true)
-    expect(body.temporary_password).toBeTruthy()
+    // Phase 12: `{ status, request_id }` and nothing else — no password, no
+    // user id, no "created" flag. The person is invited by Auth, by e-mail.
+    expect(first.json).toEqual({ status: 'SUCCEEDED', request_id: id })
+    const body = { user_id: await sql(`select id::text from auth.users where email = '${email}'`) }
 
     // The four writes, verified through a connection the Data API does not
     // offer — because "did these commit together" is not a question a client
@@ -144,22 +143,20 @@ describe('the happy path, and the retry that must not duplicate it', () => {
     `)
     expect(linked).toBe('1|1|1|SUCCEEDED')
 
-    // The generated password appears in the response and nowhere else. An
-    // `admin_events` row records that the provisioning happened and who did it
-    // — never the credential.
-    const details = await sql(
-      `select details::text from app_data.admin_events where subject_user_id = '${body.user_id}'`,
-    )
-    expect(details).not.toContain(body.temporary_password!)
+    // The invitation went to the person, and only to the person.
+    await invitationLinkFor(email)
+    expect(await invitationCount()).toBe(invitationsBefore + 1)
+    for (const message of await mailTo(email)) {
+      expect(message.To.map((to) => to.Address)).toEqual([email])
+    }
   })
 
-  it('the new colleague can sign in with the password they were read out', async () => {
-    // The whole out-of-band delivery story (§4) rests on this working: the
-    // administrator reads the password down a phone, and it opens the account.
-    const created = await sql(
-      `select count(*) from auth.users where email = '${email}' and email_confirmed_at is not null`,
-    )
-    expect(created).toBe('1')
+  it('the new colleague accepts the invitation and signs in with the password they chose', async () => {
+    // The account is not usable by anyone until its owner accepts: it has no
+    // confirmed address and no password anybody knows.
+    expect(await sql(`select email_confirmed_at is null from auth.users where email = '${email}'`)).toBe('t')
+    await acceptInvitation(await invitationLinkFor(email), 'colleague-chose-this-1')
+    await expect(signIn(email, 'colleague-chose-this-1')).resolves.toMatch(/^ey/)
   })
 
   it('case B: the same request_id returns the stored outcome and no password', async () => {
@@ -175,14 +172,9 @@ describe('the happy path, and the retry that must not duplicate it', () => {
     })
 
     expect(retry.status).toBe(200)
-    const body = retry.json as { status: string; temporary_password: string | null }
-    expect(body.status).toBe('ALREADY_SUCCEEDED')
-
-    // No password, and this is the point of the case rather than a detail: the
-    // credential was shown once, at the moment it was generated. Returning it
-    // again would make "shown once" false, and returning a NEW one would
-    // silently change a password the colleague may already be using.
-    expect(body.temporary_password).toBeNull()
+    // The stored outcome, in the same shape — and no second invitation.
+    expect(retry.json).toEqual({ status: 'ALREADY_SUCCEEDED', request_id: id })
+    expect(await invitationCount()).toBe(invitationsBefore + 1)
 
     expect(await authUserCount(email)).toBe(1)
     const events = await sql(
@@ -214,21 +206,9 @@ describe('case C — the address already has an account', () => {
     })
 
     expect(response.status).toBe(200)
-    const body = response.json as {
-      status: string
-      user_id: string
-      account_created: boolean
-      temporary_password: string | null
-    }
-
-    expect(body.status).toBe('SUCCEEDED')
-    expect(body.user_id).toBe(SEED.memberB.id)
-    expect(body.account_created).toBe(false)
-    // No password: the account is not this attempt's to re-credential. This is
-    // the difference between "invite" and "reset", and folding them together
-    // would mean an administrator who re-typed an address silently locked a
-    // colleague out.
-    expect(body.temporary_password).toBeNull()
+    // The same answer a new address gets: nothing says the account existed,
+    // and nothing that could open it comes back.
+    expect(response.json).toEqual({ status: 'SUCCEEDED', request_id: requestId('20') })
 
     const after = await sql(
       `select encrypted_password from auth.users where id = '${SEED.memberB.id}'`,
@@ -316,63 +296,24 @@ describe('case E — a stuck attempt is refused rather than raced', () => {
   })
 })
 
-describe('admin-reset-password', () => {
-  it('threat: an ADMIN of one company cannot reset an account in another', async () => {
-    const before = await sql(
-      `select encrypted_password from auth.users where id = '${SEED.memberB.id}'`,
-    )
-
+describe('admin-reset-password is gone (Phase 12, P12-B1)', () => {
+  // An Auth identity is global. The Phase 10 reset let an administrator of ONE
+  // organisation replace — and receive — the password of an account that may
+  // also open another. The function and both RPCs behind it were removed; the
+  // cross-organisation regression is in `security/credentialBoundary.security.test.ts`.
+  it('no administrator can replace an existing account\'s password through it', async () => {
+    const before = await sql(`select encrypted_password from auth.users where id = '${SEED.memberA.id}'`)
     const response = await invokeFunction('admin-reset-password', {
       token: ownerA,
-      body: { organization_id: SEED.organizationA, user_id: SEED.memberB.id },
+      body: { organization_id: SEED.organizationA, user_id: SEED.memberA.id },
     })
-
-    expect(response.status).toBe(403)
-
-    const after = await sql(
-      `select encrypted_password from auth.users where id = '${SEED.memberB.id}'`,
-    )
-    expect(after).toBe(before)
+    expect(response.status).not.toBe(200)
+    expect(response.text).not.toMatch(/password|token/i)
+    expect(await sql(`select encrypted_password from auth.users where id = '${SEED.memberA.id}'`)).toBe(before)
   })
 
-  it('an OWNER resets their own colleague, and the event is recorded without the password', async () => {
-    // The subject is the account THIS suite provisioned, not a seed user.
-    // Resetting a seed password would leave the fixture in a state the other
-    // files cannot sign in to, and a suite whose files have to run in a
-    // particular order to pass is a suite that will one day pass for the wrong
-    // reason.
-    const subjectId = await sql(
-      `select id::text from auth.users where email = 'provisioned-once@example.test'`,
-    )
-    expect(subjectId).not.toBe('')
-
-    const response = await invokeFunction('admin-reset-password', {
-      token: ownerA,
-      body: { organization_id: SEED.organizationA, user_id: subjectId },
-    })
-
-    expect(response.status).toBe(200)
-    const body = response.json as { status: string; temporary_password: string }
-    expect(body.status).toBe('RESET')
-    expect(body.temporary_password).toBeTruthy()
-
-    // The reset re-raises the forced-change flag, because the password is once
-    // again one an administrator knows.
-    const flagged = await sql(
-      `select must_change_password from app_data.profiles where user_id = '${subjectId}'`,
-    )
-    expect(flagged).toBe('t')
-
-    const event = await sql(
-      `select details::text from app_data.admin_events
-        where subject_user_id = '${subjectId}' and event_type = 'PASSWORD_RESET_BY_ADMIN'`,
-    )
-    expect(event).toBe('{}')
-
-    // The new password works, which is the only way to know the reset was real
-    // rather than an event row describing a change that did not happen.
-    await expect(
-      signIn('provisioned-once@example.test', body.temporary_password),
-    ).resolves.toBeTruthy()
+  it('the RPCs it depended on no longer exist, for any caller', async () => {
+    expect(await sql(`select count(*) from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+      where n.nspname = 'api' and p.proname in ('begin_password_reset', 'complete_password_reset')`)).toBe('0')
   })
 })

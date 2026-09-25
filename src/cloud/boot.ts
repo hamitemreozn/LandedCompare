@@ -44,6 +44,11 @@ export type CloudBootPhase =
    * user has done nothing wrong and the remedy is an administrator.
    */
   | 'NO_MEMBERSHIP'
+  /**
+   * More than one ACTIVE membership, and no valid choice among them: the user
+   * picks. Nothing business-related may render until they do (A-L7).
+   */
+  | 'ORGANIZATION_SELECTION'
 
 export interface CloudBootReady {
   readonly phase: 'READY'
@@ -53,13 +58,48 @@ export interface CloudBootReady {
   readonly membership: Membership
   readonly role: MembershipRole
   /**
-   * True when the administrator issued this password and the user has not yet
-   * replaced it (§4 step 5). The shell routes to the change-password screen and
-   * nowhere else while this holds.
+   * True when an invited or recovering account still needs to establish its
+   * own password. The shell routes to the password-setup screen and nowhere
+   * else while this holds; no organisation administrator sets or receives it.
    */
   readonly mustChangePassword: boolean
   /** Set while the organisation is write-locked for a restore (§16). */
   readonly organizationLocked: boolean
+  /** Every organisation the user may currently enter, including this one. */
+  readonly choices: readonly OrganizationChoice[]
+  /**
+   * True when a previously selected organisation is no longer among the
+   * user's ACTIVE memberships and the only remaining one was entered instead.
+   * The shell says so rather than switching company silently.
+   */
+  readonly previousSelectionUnavailable: boolean
+}
+
+/** One organisation the user may enter, as the selector lists it. */
+export interface OrganizationChoice {
+  readonly organization: Organization
+  readonly role: MembershipRole
+}
+
+export interface CloudBootSelection {
+  readonly phase: 'ORGANIZATION_SELECTION'
+  readonly userId: string
+  readonly profile: Profile
+  /** Sorted by name, then id, so every device lists them in the same order. */
+  readonly choices: readonly OrganizationChoice[]
+  /** True when a remembered choice existed and is no longer valid. */
+  readonly previousSelectionUnavailable: boolean
+}
+
+export interface CloudBootOptions {
+  /**
+   * The organisation this device last selected for this user — a PREFERENCE,
+   * never authority. It is honoured only if it names one of the user's ACTIVE
+   * memberships right now; anything else is treated as no choice at all.
+   */
+  readonly preferredOrganizationId?: (userId: string) => string | undefined
+  /** Show the selector even though a valid preference exists (the "switch" action). */
+  readonly forceSelection?: boolean
 }
 
 export interface CloudBootStopped {
@@ -82,7 +122,7 @@ export interface CloudBootStopped {
   readonly userId?: string
 }
 
-export type CloudBootResult = CloudBootReady | CloudBootStopped
+export type CloudBootResult = CloudBootReady | CloudBootSelection | CloudBootStopped
 
 /**
  * How many times the sequence may start over because the session changed
@@ -101,7 +141,10 @@ export const BOOT_IDENTITY_ATTEMPTS = 3
  * propagate — they are bugs, and swallowing them into a generic error screen is
  * how a bug becomes a support ticket about Supabase.
  */
-export async function bootstrapCloudSession(gateway: DataGateway): Promise<CloudBootResult> {
+export async function bootstrapCloudSession(
+  gateway: DataGateway,
+  options: CloudBootOptions = {},
+): Promise<CloudBootResult> {
   for (let attempt = 1; attempt <= BOOT_IDENTITY_ATTEMPTS; attempt += 1) {
     // ── 1. Session ───────────────────────────────────────────────────────
     let userId: string | null
@@ -115,7 +158,7 @@ export async function bootstrapCloudSession(gateway: DataGateway): Promise<Cloud
       return { phase: 'SIGNED_OUT', code: 'SESSION_EXPIRED' }
     }
 
-    const result = await bootFor(gateway, userId)
+    const result = await bootFor(gateway, userId, options)
 
     // ── 3. The same identity at the end as at the start ──────────────────
     //
@@ -140,7 +183,7 @@ export async function bootstrapCloudSession(gateway: DataGateway): Promise<Cloud
   return { phase: 'UNAVAILABLE', code: 'UNEXPECTED' }
 }
 
-async function bootFor(gateway: DataGateway, userId: string): Promise<CloudBootResult> {
+async function bootFor(gateway: DataGateway, userId: string, options: CloudBootOptions): Promise<CloudBootResult> {
   // ── 2. Reachability and membership, in one round trip each ─────────────
   //
   // The profile read is what proves the server answered AND that the session's
@@ -158,7 +201,7 @@ async function bootFor(gateway: DataGateway, userId: string): Promise<CloudBootR
     return { ...stopped(cause), userId }
   }
 
-  const active = memberships.filter((membership) => membership.status === 'ACTIVE')
+  const active = memberships.filter((membership) => membership.status === 'ACTIVE' && membership.userId === userId)
 
   if (profile === null || active.length === 0) {
     const deactivated = memberships
@@ -173,37 +216,67 @@ async function bootFor(gateway: DataGateway, userId: string): Promise<CloudBootR
     }
   }
 
-  // The MVP interface assumes exactly one active membership and selects it
-  // without an organisation picker (§5). The DATA MODEL permits several,
-  // deliberately — a join table costs nothing today where a single column would
-  // cost a migration the first time it is wrong — so the selection is made here
-  // rather than by pretending the second row cannot exist. Ordering by
-  // organisation id makes the choice deterministic across devices instead of
-  // dependent on whatever order the server returned.
-  const membership = [...active].sort((left, right) =>
-    left.organizationId.localeCompare(right.organizationId),
-  )[0]
-
-  const organization = organizations.find((candidate) => candidate.id === membership.organizationId)
-
-  if (!organization) {
-    // An ACTIVE membership whose organisation is invisible means the two
-    // policies disagree, which is a server-side fault rather than a user state.
-    // Reporting it as "unavailable" is honest; rendering an empty product would
-    // not be.
-    return { phase: 'UNAVAILABLE', code: 'SERVER_UNAVAILABLE', userId }
+  // Every ACTIVE membership must name an organisation the same server lets
+  // the user see. Disagreement between the two policies is a server-side
+  // fault rather than a user state; reporting it as "unavailable" is honest,
+  // rendering an empty product or a nameless company would not be.
+  const choices: OrganizationChoice[] = []
+  for (const membership of active) {
+    const organization = organizations.find((candidate) => candidate.id === membership.organizationId)
+    if (!organization) {
+      return { phase: 'UNAVAILABLE', code: 'SERVER_UNAVAILABLE', userId }
+    }
+    choices.push({ organization, role: membership.role })
   }
+  // Name first, for the person reading the list; id second, so two companies
+  // with the same name still list in the same order on every device.
+  choices.sort((left, right) =>
+    compareText(left.organization.name, right.organization.name) ||
+    compareText(left.organization.id, right.organization.id),
+  )
+
+  // ── Selection (Audit A, A-L7) ───────────────────────────────────────────
+  //
+  //   exactly one ACTIVE membership  → enter it, whatever was remembered
+  //   several, and a remembered one that is still ACTIVE → enter that one
+  //   several, and none remembered, or the remembered one no longer ACTIVE,
+  //   or the user asked to switch      → the user chooses
+  //
+  // The preference is read here and nowhere else, and it is only ever
+  // compared against the live membership list just read from the server. A
+  // stale, removed or disabled choice therefore cannot be entered: it is
+  // simply not in `choices`.
+  const preferred = options.preferredOrganizationId?.(userId)
+  const remembered = preferred === undefined ? undefined : choices.find((choice) => choice.organization.id === preferred)
+  const previousSelectionUnavailable = preferred !== undefined && remembered === undefined
+
+  let selected: OrganizationChoice
+  if (choices.length === 1) {
+    selected = choices[0]
+  } else if (remembered !== undefined && options.forceSelection !== true) {
+    selected = remembered
+  } else {
+    return { phase: 'ORGANIZATION_SELECTION', userId, profile, choices, previousSelectionUnavailable }
+  }
+
+  const membership = active.find((candidate) => candidate.organizationId === selected.organization.id)!
 
   return {
     phase: 'READY',
     userId,
     profile,
-    organization,
+    organization: selected.organization,
     membership,
     role: membership.role,
     mustChangePassword: profile.mustChangePassword,
-    organizationLocked: organization.writeLocked,
+    organizationLocked: selected.organization.writeLocked,
+    choices,
+    previousSelectionUnavailable,
   }
+}
+
+function compareText(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0
 }
 
 function stopped(cause: unknown): CloudBootStopped {
