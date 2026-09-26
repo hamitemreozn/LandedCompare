@@ -115,4 +115,26 @@ describe('Tooltip', () => {
     await wait(250)
     expect(tooltip).not.toHaveAttribute('data-visible', 'true')
   })
+
+  it('defaults to top placement, with no data-side attribute', () => {
+    render(
+      <Tooltip content="Filter results">
+        <button type="button" aria-label="Filter">
+          F
+        </button>
+      </Tooltip>,
+    )
+    expect(screen.getByRole('tooltip', { hidden: true })).not.toHaveAttribute('data-side')
+  })
+
+  it('opens to the right when side="right" is requested, for a trigger flush against the viewport edge', () => {
+    render(
+      <Tooltip content="Collapse sidebar" side="right">
+        <button type="button" aria-label="Collapse sidebar">
+          «
+        </button>
+      </Tooltip>,
+    )
+    expect(screen.getByRole('tooltip', { hidden: true })).toHaveAttribute('data-side', 'right')
+  })
 })

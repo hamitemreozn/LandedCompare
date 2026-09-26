@@ -23,6 +23,7 @@ import type { SupportedLocale } from '../../i18n'
 import { ConfirmDialog } from '../../ui/ConfirmDialog'
 import { SelectField, TextField } from '../../ui/Field'
 import { Banner } from '../../ui/Feedback'
+import { Select } from '../../ui/Select'
 import { PageHeading } from '../shared/MasterDataPage'
 import { isFormValidationError } from '../shared/formError'
 import { errorCodeOf, useDataErrorMessage } from '../shared/useDataErrorMessage'
@@ -199,17 +200,16 @@ export function OrganizationScreen({ locale }: { readonly locale: SupportedLocal
                     <td className="text-muted">{member.email ?? '—'}</td>
                     <td>
                       {manageable ? (
-                        <select
-                          className="select"
-                          aria-label={t('organization.members.roleSelectLabel', { name })}
+                        <Select
+                          ariaLabel={t('organization.members.roleSelectLabel', { name })}
                           value={member.role}
                           disabled={busy}
-                          onChange={(event) => setPending({ kind: 'role', member, role: event.target.value as MembershipRole })}
-                        >
-                          {(roles.includes(member.role) ? roles : [member.role, ...roles]).map((role) => (
-                            <option key={role} value={role}>{t(`organization.roles.${role}`)}</option>
-                          ))}
-                        </select>
+                          onChange={(role) => setPending({ kind: 'role', member, role: role as MembershipRole })}
+                          options={(roles.includes(member.role) ? roles : [member.role, ...roles]).map((role) => ({
+                            value: role,
+                            label: t(`organization.roles.${role}`),
+                          }))}
+                        />
                       ) : t(`organization.roles.${member.role}`)}
                     </td>
                     <td>

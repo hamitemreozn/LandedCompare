@@ -87,7 +87,8 @@ describe('the company screen for an OWNER', () => {
     const gateway = withColleague(createMemoryCloudGateway())
     const { user } = await open(gateway)
     const select = await screen.findByRole('combobox', { name: 'Berk Demir için rol' })
-    await user.selectOptions(select, 'ADMIN')
+    await user.click(select)
+    await user.click(await screen.findByRole('option', { name: 'Yönetici' }))
     await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Onayla' }))
     await waitFor(() => expect(gateway.membersFor(TEST_ORGANIZATION_ID).get(COLLEAGUE)?.role).toBe('ADMIN'))
   })
@@ -198,12 +199,14 @@ describe('the company screen for an OWNER', () => {
 describe('the company screen for an ADMIN', () => {
   it('cannot offer OWNER, and offers nothing on an OWNER\'s row', async () => {
     const gateway = withColleague(createMemoryCloudGateway({ organizations: [{ id: TEST_ORGANIZATION_ID, name: 'Test Company', role: 'ADMIN' }] }), 'OWNER')
-    await open(gateway)
+    const { user } = await open(gateway)
     const ownerRow = await memberRow(COLLEAGUE)
     expect(within(ownerRow).queryByRole('button')).toBeNull()
     expect(within(ownerRow).queryByRole('combobox')).toBeNull()
-    const roleField = screen.getByLabelText('Rol', { selector: 'select' })
-    expect(within(roleField).queryByRole('option', { name: 'Sahip' })).toBeNull()
+    const roleField = screen.getByLabelText('Rol')
+    await user.click(roleField)
+    expect(screen.queryByRole('option', { name: 'Sahip' })).toBeNull()
+    await user.keyboard('{Escape}')
   })
 })
 

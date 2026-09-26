@@ -3,7 +3,6 @@ import type { TranslationResource } from './types'
 const en: TranslationResource = {
   common: {
     appName: 'LandedCompare',
-    appTagline: 'Total landed cost and local operations',
     save: 'Save',
     saving: 'Saving…',
     cancel: 'Cancel',
@@ -171,6 +170,12 @@ const en: TranslationResource = {
     user: 'User',
     switchOrganization: 'Switch company',
     previousSelectionUnavailable: 'The company you last used is no longer available to your account. You are now working in {{organization}}.',
+    breadcrumbLabel: 'Breadcrumb',
+    openMenu: 'Open menu',
+    closeMenu: 'Close menu',
+    collapseSidebar: 'Collapse sidebar',
+    expandSidebar: 'Expand sidebar',
+    accountMenu: 'Account menu',
   },
   backupStatus: {
     label: 'External backup',

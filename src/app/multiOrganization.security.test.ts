@@ -120,6 +120,7 @@ describe('A-L7 against the real server', () => {
     await shellShows(companies.first.name)
     await screen.findByText(companies.first.product, undefined, { timeout: 10_000 })
 
+    fireEvent.click(screen.getByRole('button', { name: 'Hesap menüsü' }))
     fireEvent.click(screen.getByRole('button', { name: 'Şirket değiştir' }))
     await choose(companies.second.id)
     await shellShows(companies.second.name)

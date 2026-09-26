@@ -48,3 +48,13 @@ export async function goTo(harness: AppHarness, navLabel: string, heading: strin
     expect(screen.getByRole('heading', { level: 1, name: heading })).toBeTruthy()
   })
 }
+
+/**
+ * Opens the top-right account menu (identity, language, switch-company,
+ * sign-out — see `src/features/shell/AccountMenu.tsx`). Its panel is
+ * `hidden` until this runs, so any test reaching into it — the language
+ * toggle, "switch company", "sign out" — has to call this first.
+ */
+export async function openAccountMenu(harness: AppHarness): Promise<void> {
+  await harness.user.click(screen.getByRole('button', { name: i18n.t('shell.accountMenu') }))
+}

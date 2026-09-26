@@ -6,7 +6,6 @@
 export interface TranslationResource {
   readonly common: {
     readonly appName: string
-    readonly appTagline: string
     readonly save: string
     readonly saving: string
     readonly cancel: string
@@ -157,6 +156,12 @@ export interface TranslationResource {
     readonly user: string
     readonly switchOrganization: string
     readonly previousSelectionUnavailable: string
+    readonly breadcrumbLabel: string
+    readonly openMenu: string
+    readonly closeMenu: string
+    readonly collapseSidebar: string
+    readonly expandSidebar: string
+    readonly accountMenu: string
   }
   readonly backupStatus: {
     readonly label: string

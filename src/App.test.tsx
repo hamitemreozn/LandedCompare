@@ -13,7 +13,7 @@ import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import App from './App'
 import i18n, { setLocale } from './i18n'
-import { goTo, renderApp, type AppHarness } from './test/appHarness'
+import { goTo, openAccountMenu, renderApp, type AppHarness } from './test/appHarness'
 import { createMemoryCloudGateway } from './test/memoryCloud'
 import { CloudError } from './cloud'
 
@@ -35,7 +35,9 @@ describe('the boot gate', () => {
     expect(screen.queryByRole('navigation')).not.toBeInTheDocument()
     expect(screen.queryByRole('table')).not.toBeInTheDocument()
 
-    await waitFor(() => expect(screen.getByRole('navigation')).toBeInTheDocument())
+    // Scoped by name: the shell now also carries a breadcrumb `<nav>`, so an
+    // unqualified query would be ambiguous once both are mounted.
+    await waitFor(() => expect(screen.getByRole('navigation', { name: 'Ana menü' })).toBeInTheDocument())
 
     view.unmount()
   })
@@ -100,6 +102,7 @@ describe('the boot gate', () => {
     await user.type(screen.getByLabelText('Parola'), 'LocalOnly!1')
     await user.click(screen.getByRole('button', { name: 'Giriş yap' }))
     expect(await screen.findByRole('navigation', { name: 'Ana menü' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Hesap menüsü' }))
     await user.click(screen.getByRole('button', { name: 'Çıkış yap' }))
     expect(await screen.findByRole('heading', { name: 'Giriş yap' })).toBeInTheDocument()
     view.unmount()
@@ -190,7 +193,7 @@ describe('the application shell', () => {
     // that does not exist.
     expect(screen.queryByRole('link', { name: /Satın Alma/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Satın Alma/ })).not.toBeInTheDocument()
-    expect(screen.getByText('Satın Alma')).toHaveAttribute('aria-disabled', 'true')
+    expect(screen.getByText('Satın Alma').closest('[aria-disabled]')).toHaveAttribute('aria-disabled', 'true')
   })
 })
 
@@ -248,7 +251,8 @@ describe('Turkish and English', () => {
 
     expect(screen.getByRole('navigation', { name: 'Ana menü' })).toBeInTheDocument()
     expect(screen.getByRole('heading', { level: 1, name: 'Genel Bakış' })).toBeInTheDocument()
-    expect(screen.getByText('Toplam İthal Maliyeti ve yerel operasyon yönetimi')).toBeInTheDocument()
+    // Phase 12.7: no marketing tagline inside the authenticated shell.
+    expect(screen.queryByText('Toplam İthal Maliyeti ve yerel operasyon yönetimi')).not.toBeInTheDocument()
   })
 
   it('renders the whole shell in English', async () => {
@@ -256,7 +260,8 @@ describe('Turkish and English', () => {
 
     expect(screen.getByRole('navigation', { name: 'Main menu' })).toBeInTheDocument()
     expect(screen.getByRole('heading', { level: 1, name: 'Overview' })).toBeInTheDocument()
-    expect(screen.getByText('Total landed cost and local operations')).toBeInTheDocument()
+    // Phase 12.7: no marketing tagline inside the authenticated shell.
+    expect(screen.queryByText('Total landed cost and local operations')).not.toBeInTheDocument()
   })
 
   it('switches language in place, keeping the screen and its data working', async () => {
@@ -268,6 +273,7 @@ describe('Turkish and English', () => {
     await harness.user.click(screen.getByRole('button', { name: 'Kaydet' }))
     await screen.findByText('Dil Testi A.Ş.')
 
+    await openAccountMenu(harness)
     await harness.user.click(screen.getByRole('button', { name: 'English' }))
 
     // The same screen, the same record, in the other language.
@@ -285,6 +291,7 @@ describe('Turkish and English', () => {
 
   it('persists the chosen language for the next start', async () => {
     harness = await renderApp({ locale: 'tr' })
+    await openAccountMenu(harness)
     await harness.user.click(screen.getByRole('button', { name: 'English' }))
 
     await waitFor(() => expect(i18n.language).toBe('en'))

@@ -97,6 +97,7 @@ describe('selecting and switching', () => {
     await shellShows('Alfa Medikal')
     expect(await screen.findByText('Supplier of Alfa Medikal')).toBeInTheDocument()
 
+    await userEvent.click(screen.getByRole('button', { name: 'Hesap menüsü' }))
     await userEvent.click(screen.getByRole('button', { name: 'Şirket değiştir' }))
     expect(await screen.findByRole('heading', { name: 'Şirket seçin' })).toBeInTheDocument()
     expect(screen.queryByText('Supplier of Alfa Medikal')).toBeNull()

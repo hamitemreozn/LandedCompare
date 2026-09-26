@@ -99,14 +99,39 @@
   --border-default: var(--palette-neutral-200);
   --border-strong: var(--palette-neutral-300);
 
-  --action-primary: var(--palette-blue-600);
-  --action-primary-hover: #2a46d6;
-  --action-primary-active: #22399f;
-  --focus-ring: var(--palette-blue-600);
+  /* Visual Polish Round 4: `--palette-blue-600` (#3557F3) is retired as an
+     application-UI colour — human review found it reappearing everywhere
+     (buttons, focus rings, selected states, links, the active-nav accent)
+     and reading as generic/oversaturated SaaS blue, and the product decision
+     is now that this exact blue is reserved for the frozen logo artwork
+     (`Brand.tsx`, `src/assets/brand/*.svg`) only. `--action-primary`/
+     `--focus-ring` move onto the calm brand navy (`--brand-primary` =
+     `--palette-indigo-700` = #1B2A55, hover/active `--palette-indigo-900` =
+     #101B33) — the same anchors `--cta-primary` already used for filled
+     buttons (Round 2), so the product now reads as one navy system rather
+     than two. `--palette-blue-600`/`--palette-blue-500` themselves are left
+     declared (still legitimate raw palette entries) but nothing in the light
+     theme references them any more; see `ui/tokens.css` for where the
+     `--accent-*` scale that used to carry blue through the rest of the app
+     now carries this navy instead. Dark-theme `--action-primary`/
+     `--focus-ring` below are deliberately NOT touched by this — they are
+     inert (no toggle activates `[data-theme='dark']` anywhere in the
+     application, see `ui/tokens.css`'s header comment), so they are not
+     currently "visible interactive UI colour" this policy governs; revisiting
+     them is real design work for whenever dark mode actually ships, not a
+     safe mechanical substitution today. */
+  --action-primary: var(--brand-primary);
+  --action-primary-hover: var(--palette-indigo-900);
+  --action-primary-active: var(--palette-indigo-900);
+  --focus-ring: var(--brand-primary);
 
   --state-disabled-bg: var(--palette-neutral-100);
   --state-disabled-text: #b3bac7;
-  --state-selected-bg: #e8edff;
+  /* Round 4, §2/§6: the selected-surface direction moved from a light-blue
+     tint to the same low-saturation neutral the segmented filter's selected
+     state and the Select primitive's selected item both now share —
+     `--palette-neutral-100` already is #EEF1F5, no new value needed. */
+  --state-selected-bg: var(--palette-neutral-100);
   --state-row-hover: #f2f4fa;
 
   /*

@@ -3,7 +3,6 @@ import type { TranslationResource } from './types'
 const tr: TranslationResource = {
   common: {
     appName: 'LandedCompare',
-    appTagline: 'Toplam İthal Maliyeti ve yerel operasyon yönetimi',
     save: 'Kaydet',
     saving: 'Kaydediliyor…',
     cancel: 'İptal',
@@ -171,6 +170,12 @@ const tr: TranslationResource = {
     user: 'Kullanıcı',
     switchOrganization: 'Şirket değiştir',
     previousSelectionUnavailable: 'En son kullandığınız şirkete hesabınızın erişimi artık yok. Şu anda {{organization}} şirketinde çalışıyorsunuz.',
+    breadcrumbLabel: 'İçerik yolu',
+    openMenu: 'Menüyü aç',
+    closeMenu: 'Menüyü kapat',
+    collapseSidebar: 'Kenar çubuğunu daralt',
+    expandSidebar: 'Kenar çubuğunu genişlet',
+    accountMenu: 'Hesap menüsü',
   },
   backupStatus: {
     label: 'Dış yedek',

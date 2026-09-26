@@ -24,6 +24,7 @@
  */
 
 import { useId, useState, type ChangeEvent, type ReactNode } from 'react'
+import { Select, type SelectOption } from './Select'
 
 interface FieldShellProps {
   readonly label: string
@@ -169,12 +170,6 @@ export function TextAreaField({
   )
 }
 
-export interface SelectOption {
-  readonly value: string
-  readonly label: string
-  readonly disabled?: boolean
-}
-
 export function SelectField({
   label,
   value,
@@ -195,21 +190,15 @@ export function SelectField({
   return (
     <FieldShell label={label} hint={hint} error={error} required={required}>
       {({ id, describedBy }) => (
-        <select
-          className="select"
+        <Select
           id={id}
           value={value}
-          aria-required={required === true ? true : undefined}
-          aria-invalid={error !== undefined ? true : undefined}
-          aria-describedby={describedBy}
-          onChange={(event: ChangeEvent<HTMLSelectElement>) => onChange(event.target.value)}
-        >
-          {options.map((option) => (
-            <option key={option.value} value={option.value} disabled={option.disabled}>
-              {option.label}
-            </option>
-          ))}
-        </select>
+          onChange={onChange}
+          options={options}
+          required={required}
+          invalid={error !== undefined}
+          describedBy={describedBy}
+        />
       )}
     </FieldShell>
   )
@@ -240,6 +229,17 @@ export function SelectField({
  * `features/shared/units.ts`. A value this list does not contain — a unit the
  * company typed itself — is shown as its own option, selected, exactly as
  * stored, and is never translated or rewritten.
+ *
+ * ## Why this one stays a native `<select>` (Round 3, §10)
+ *
+ * Every other select in the app migrated to `Select.tsx`
+ * (`@radix-ui/react-select`); this is the one documented exception. It isn't
+ * really a plain select — it's a picker that turns into a free-text field
+ * (`typingCustom`, below) and, mid-flight, can show an option that isn't in
+ * `options` at all (`showsStoredValueAsOption`, for a value the company typed
+ * that the current language's list doesn't contain). Reproducing that in
+ * `Select.tsx` would mean inventing new behaviour there for one caller, not
+ * migrating existing behaviour — exactly what this round asked not to do.
  */
 export interface UnitOption {
   /** What gets persisted. A canonical code, for the predefined units. */

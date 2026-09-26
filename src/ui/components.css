@@ -66,24 +66,58 @@ figure {
   min-height: 100vh;
 }
 
+/* Round 3, §3: collapsing frees more than the rail's own width — the content
+   column's own ceiling rises too (`--content-max`, `src/ui/tokens.css`), so
+   the gained horizontal room is actually usable on wide displays and not
+   just re-centred into the same-width page. */
+.shell:has(.sidebar--collapsed) {
+  grid-template-columns: var(--sidebar-width-collapsed) minmax(0, 1fr);
+  --content-max: 1600px;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .shell {
+    transition: grid-template-columns 160ms ease;
+  }
+}
+
 .shell__main {
   display: flex;
   flex-direction: column;
   min-width: 0;
 }
 
+/* The scrollable content region below the topbar. Deliberately not
+   width-constrained the way `.page` is inside it — an operational table
+   needs the full column, and screens that want a narrower reading measure opt
+   into `.page`'s own `--content-max` themselves. */
+.shell__content {
+  flex: 1;
+  min-width: 0;
+}
+
 .sidebar {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-6);
-  padding: var(--space-6) var(--space-4) var(--space-5);
   background: var(--surface-nav);
   color: var(--text-on-nav);
   border-inline-end: 1px solid var(--border-nav);
   position: sticky;
   top: 0;
   height: 100vh;
+}
+
+/* The scrolling content: brand + nav. */
+.sidebar__scroll {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  width: 100%;
+  height: 100%;
+  padding: var(--space-6) var(--space-4) var(--space-5);
   overflow-y: auto;
+}
+
+.sidebar__mobile-close {
+  display: none;
 }
 
 .brand {
@@ -100,20 +134,64 @@ figure {
   line-height: 0;
 }
 
+/* ── Collapse handle ───────────────────────────────────────────────────── */
+/* Round 4, §9–§10: outside `.brand` and `.sidebar__scroll` entirely (a
+   sibling of `.sidebar__scroll` in `Sidebar.tsx`) — it participates in
+   neither the brand row's layout (so it can never again crowd
+   "LandedCompare" into an ellipsis) nor the nav column's own width
+   calculation. `.sidebar` itself carries no padding/overflow of its own (see
+   above) specifically so this can overlap its edge without being clipped by
+   `.sidebar__scroll`'s scroll container. A light `--surface-elevated` disc,
+   not a dark control on the dark rail (Round 1's placement, same idea,
+   read as too easy to miss for exactly that reason) — it reads clearly
+   against both the dark sidebar and the light content it overlaps.
+   Position-fix follow-up: the absolute positioning lives on
+   `.sidebar__collapse-toggle-wrap`, not on the button itself
+   (`.sidebar__collapse-toggle`) — `Tooltip` wraps its trigger in its own
+   `position: relative` span, which would otherwise become the button's
+   containing block instead of `.sidebar`, and that span sits in normal
+   document flow after the 100vh `.sidebar__scroll`, so the button rendered
+   near the bottom of the document instead of the sidebar's edge. See
+   `Sidebar.tsx`'s inline comment at this markup. */
+.sidebar__collapse-toggle-wrap {
+  position: absolute;
+  top: calc((var(--topbar-height) - 28px) / 2);
+  inset-inline-end: -14px;
+  z-index: 10;
+}
+
+.sidebar__collapse-toggle {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-pill);
+  background: var(--surface-elevated);
+  color: var(--text-secondary);
+  box-shadow: var(--shadow-sm);
+  cursor: pointer;
+}
+
+.sidebar__collapse-toggle:hover {
+  background: var(--state-row-hover);
+}
+
+.sidebar__collapse-toggle:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
 .brand__name {
   display: block;
   font-size: var(--text-md);
   font-weight: var(--weight-semibold);
   letter-spacing: -0.015em;
   line-height: 1.2;
-}
-
-.brand__tagline {
-  display: block;
-  font-size: var(--text-xs);
-  color: var(--text-on-nav-muted);
-  line-height: 1.35;
-  margin-top: 2px;
+  flex: 1;
+  min-width: 0;
 }
 
 .nav {
@@ -141,8 +219,8 @@ figure {
 .nav__link {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: var(--space-3);
+  width: 100%;
   padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-md);
   color: var(--text-on-nav);
@@ -150,20 +228,46 @@ figure {
   font-size: var(--text-base);
   font-weight: var(--weight-medium);
   border: 1px solid transparent;
+  background: none;
+  text-align: start;
+  cursor: pointer;
+}
+
+.nav__icon {
+  flex: none;
+}
+
+.nav__label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .nav__link:hover {
   background: rgba(255, 255, 255, 0.06);
 }
 
+/* Restrained: a soft tint and a narrow accent bar, not a solid block — the
+   active row still reads as part of the same dark rail, just picked out.
+   Round 4, §8: the accent bar was `--palette-blue-500`, part of the same
+   bright-blue family the rest of the app moved off; on a dark rail, the
+   navy `--action-primary` the app moved onto would barely register against
+   `--surface-nav` (both near-black), so this reuses `--text-on-nav` (the
+   sidebar's own light on-dark colour, already frozen for this surface)
+   rather than inventing a new light-indigo token for one rule. */
 .nav__link[aria-current='page'] {
   background: rgba(255, 255, 255, 0.1);
-  border-color: var(--border-nav);
   color: #ffffff;
+  box-shadow: inset 3px 0 0 var(--text-on-nav);
 }
 
+/* F12.7-02: the dark-surface focus token, not `--focus-ring` — this outline
+   lands directly on the dark rail (`--surface-nav`), where the ordinary navy
+   ring is nearly invisible. See that token's own comment in `tokens.css`. */
 .nav__link:focus-visible {
-  outline: 2px solid var(--focus-ring);
+  outline: 2px solid var(--focus-ring-on-dark);
   outline-offset: 2px;
 }
 
@@ -177,52 +281,340 @@ figure {
   background: none;
 }
 
+/* Deliberately quiet — a disabled "coming soon" entry should read as
+   secondary information, not compete visually with real navigation. */
 .nav__soon {
-  font-size: var(--text-xs);
+  font-size: 0.6875rem;
   font-weight: var(--weight-normal);
   color: var(--text-on-nav-muted);
-  border: 1px solid var(--border-nav);
-  border-radius: var(--radius-pill);
-  padding: 1px var(--space-2);
+  opacity: 0.75;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: var(--radius-sm);
+  padding: 0 var(--space-1);
   flex: none;
 }
 
-.sidebar__footer {
-  border-top: 1px solid var(--border-nav);
-  padding-top: var(--space-4);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
+/* ── Collapsed desktop sidebar ─────────────────────────────────────────── */
+/* One navigation model drives both widths (`src/features/shell/Sidebar.tsx`);
+   collapsing only clips `.nav__label` the way `.visually-hidden` clips text
+   elsewhere — the label stays in the accessibility tree, so every icon-only
+   control keeps its accessible name, and `Tooltip` surfaces it on hover/focus. */
+.sidebar--collapsed .nav__label,
+.sidebar--collapsed .brand__name {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
 }
 
-.sidebar__identity {
-  margin: 0;
-  padding-inline: var(--space-2);
+.sidebar--collapsed .nav__heading {
+  display: none;
+}
+
+.sidebar--collapsed .nav__link {
+  justify-content: center;
+  padding-inline: 0;
+}
+
+.sidebar--collapsed .nav__soon {
+  display: none;
+}
+
+/* Collapsed: just the mark, centred — the collapse handle lives outside this
+   row entirely (Round 4, §9), so there is nothing left to make room for or
+   stack underneath it. */
+.sidebar--collapsed .brand {
+  justify-content: center;
+  padding-inline: 0;
+}
+
+/* ── Topbar ────────────────────────────────────────────────────────────── */
+/* Phase 12.7: shell chrome that sits on the light content area — as opposed
+   to the dark, frozen-brand sidebar — begins using the Phase 12.6 semantic
+   tokens directly (`src/styles/tokens.css`) rather than the pre-12.6 names in
+   this file's own `:root` (docs/DESIGN_SYSTEM.md, "Semantic token
+   migration"). The sidebar keeps its existing `--surface-nav`/`--text-on-nav`
+   tokens: those have no new-system counterpart, being specific to a dark rail. */
+.topbar {
+  background: var(--surface-card);
+  border-bottom: 1px solid var(--border-default);
+}
+
+/* Mirrors `.page`'s own `width`/`max-width`/`margin-inline`/`padding-inline`
+   exactly — the one alignment grid Round 2, §11 asked for: whichever of the
+   two ends up narrower than `--content-max` and centred, the other does too,
+   by the same amount, so the breadcrumb and the page title share a left edge
+   at every viewport width, not just below the point `--content-max` binds. */
+.topbar__inner {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  width: 100%;
+  max-width: var(--content-max);
+  margin-inline: auto;
+  min-height: var(--topbar-height);
+  padding-inline: var(--shell-gutter);
+}
+
+.topbar__leading {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+  flex: 1;
+}
+
+/* Round 3, §1/§16: the collapse control left the topbar for good (see
+   `Sidebar.tsx`) — the mobile drawer trigger is the only thing left in this
+   slot, shown only under 900px (below). */
+.topbar__menu-trigger {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  flex: none;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--surface-card);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.topbar__menu-trigger:hover {
+  background: var(--state-row-hover);
+}
+
+.topbar__menu-trigger:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+/* ── Breadcrumb ────────────────────────────────────────────────────────── */
+
+.breadcrumb {
   min-width: 0;
 }
 
-.sidebar__identity-organization {
+.breadcrumb__list {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
   margin: 0;
+  padding: 0;
+  list-style: none;
+  min-width: 0;
+}
+
+.breadcrumb__item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.breadcrumb__item--group {
+  color: var(--text-muted);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.breadcrumb__separator {
+  color: var(--border-strong);
+  flex: none;
+}
+
+.breadcrumb__item--current {
+  color: var(--text-primary);
+  font-weight: var(--weight-semibold);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── Account menu ──────────────────────────────────────────────────────── */
+/* Visual Polish Round 1, §3/§4: identity, organisation, role, language and
+   sign-out moved from a permanent sidebar footer into this one top-right
+   disclosure — see `src/features/shell/AccountMenu.tsx`'s header comment for
+   why it's hand-built rather than `role="menu"`, and why the panel is
+   `hidden` rather than unmounted. */
+.account-menu {
+  position: relative;
+  flex: none;
+}
+
+.account-menu__trigger {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: none;
+  padding: var(--space-1) var(--space-2);
+  cursor: pointer;
+  color: var(--text-primary);
+}
+
+.account-menu__trigger:hover {
+  background: var(--state-row-hover);
+}
+
+.account-menu__trigger:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+/* Hidden on desktop — text carries the identity there (§7); this is only the
+   narrow-viewport fallback, shown once `.account-menu__identity` hides. */
+.account-menu__icon {
+  display: none;
+  flex: none;
+  color: var(--text-secondary);
+}
+
+.account-menu__identity {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  min-width: 0;
+  line-height: 1.2;
+}
+
+.account-menu__name {
   font-size: var(--text-sm);
   font-weight: var(--weight-semibold);
-  color: var(--text-on-nav);
-  overflow-wrap: anywhere;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.sidebar__identity-user {
-  margin: 0;
+.account-menu__org {
   font-size: var(--text-xs);
-  color: var(--text-on-nav-muted);
-  overflow-wrap: anywhere;
+  color: var(--text-muted);
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
+.account-menu__caret {
+  flex: none;
+  color: var(--text-muted);
+}
+
+.account-menu__backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  background: transparent;
+}
+
+.account-menu__panel {
+  position: absolute;
+  top: calc(100% + var(--space-2));
+  inset-inline-end: 0;
+  z-index: 31;
+  width: 240px;
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-2);
+  background: var(--surface-card);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+}
+
+.account-menu__panel[hidden] {
+  display: none;
+}
+
+.account-menu__summary {
+  padding: var(--space-2) var(--space-3) var(--space-3);
+}
+
+.account-menu__summary-name {
+  margin: 0;
+  font-size: var(--text-base);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+
+.account-menu__summary-org {
+  margin: 2px 0 0;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+
+.account-menu__summary-role {
+  margin: 2px 0 0;
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.account-menu__separator {
+  height: 1px;
+  margin: var(--space-1) 0;
+  background: var(--border-default);
+}
+
+.account-menu__section {
+  padding: var(--space-1) var(--space-3) var(--space-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.account-menu__section-label {
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.account-menu__item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: 0;
+  border-radius: var(--radius-md);
+  background: none;
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  text-align: start;
+  cursor: pointer;
+}
+
+.account-menu__item:hover {
+  background: var(--state-row-hover);
+}
+
+.account-menu__item:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+
+/* Reused inside the account menu's language section — its only remaining
+   consumer since Visual Polish Round 1 moved it off the dark sidebar. */
 .locale-switch {
   display: flex;
   gap: var(--space-1);
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--surface-sunken);
   border-radius: var(--radius-md);
   padding: 3px;
 }
@@ -231,7 +623,7 @@ figure {
   flex: 1;
   border: 0;
   background: none;
-  color: var(--text-on-nav-muted);
+  color: var(--text-secondary);
   border-radius: var(--radius-sm);
   padding: var(--space-1) var(--space-2);
   font-size: var(--text-sm);
@@ -240,13 +632,20 @@ figure {
 }
 
 .locale-switch__option[aria-pressed='true'] {
-  background: rgba(255, 255, 255, 0.14);
-  color: #ffffff;
+  background: var(--surface-card);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-sm);
 }
 
 .locale-switch__option:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
+}
+
+/* ── Mobile navigation drawer ──────────────────────────────────────────── */
+
+.shell__backdrop {
+  display: none;
 }
 
 /* ── Page ──────────────────────────────────────────────────────────────── */
@@ -255,7 +654,7 @@ figure {
   width: 100%;
   max-width: var(--content-max);
   margin-inline: auto;
-  padding: var(--space-8) var(--space-8) var(--space-16);
+  padding: var(--space-8) var(--shell-gutter) var(--space-16);
   display: flex;
   flex-direction: column;
   gap: var(--space-6);
@@ -323,15 +722,17 @@ figure {
   cursor: not-allowed;
 }
 
+/* Round 2, §1: navy, not the interaction-blue accent — see `--cta-primary`'s
+   own comment in `src/ui/tokens.css`. */
 .button--primary {
-  background: var(--accent-600);
-  border-color: var(--accent-700);
+  background: var(--cta-primary);
+  border-color: var(--cta-primary);
   color: var(--text-on-accent);
 }
 
 .button--primary:hover:not(:disabled) {
-  background: var(--accent-700);
-  border-color: var(--accent-700);
+  background: var(--cta-primary-hover);
+  border-color: var(--cta-primary-hover);
 }
 
 .button--ghost {
@@ -344,6 +745,20 @@ figure {
 .button--ghost:hover:not(:disabled) {
   background: var(--accent-50);
   border-color: transparent;
+}
+
+/* Round 2, §2: completes the hierarchy (primary/secondary/ghost/danger) at
+   the shared level. Reserved for genuinely destructive actions — nothing in
+   the current screens is reclassified onto it this pass; it's available for
+   the next one that needs it, restrained rather than alarming. */
+.button--danger {
+  background: var(--surface-raised);
+  border-color: var(--red-600);
+  color: var(--red-700);
+}
+
+.button--danger:hover:not(:disabled) {
+  background: var(--red-100);
 }
 
 .button--small {
@@ -404,7 +819,9 @@ figure {
 }
 
 a.stat:hover {
-  border-color: var(--accent-500);
+  /* A plain hover, not a selected/focus state — neutral border, not the
+     interaction-navy accent (Round 4, §7). */
+  border-color: var(--border-strong);
   box-shadow: var(--shadow-md);
 }
 
@@ -517,13 +934,18 @@ a.stat:focus-visible {
   color: var(--red-700);
 }
 
+/* Round 4: moved off the interaction-`--accent-*` scale onto the dedicated,
+   WCAG-checked `--status-info-*` family (`styles/tokens.css`) — "info" is a
+   semantic state like warning/danger, not a shade of the app's action
+   colour, and riding on the accent scale meant this banner would have gone
+   grey along with everything else the moment that scale moved to navy. */
 .banner--info {
-  background: var(--accent-50);
-  border-color: #c5e3ea;
+  background: var(--status-info-surface);
+  border-color: var(--status-info);
 }
 
 .banner--info .banner__label {
-  color: var(--accent-700);
+  color: var(--status-info-text);
 }
 
 .banner-stack {
@@ -588,9 +1010,16 @@ a.stat:focus-visible {
   border-inline-start: 1px solid var(--border-subtle);
 }
 
+/* Round 2, §1 gave this a light selected surface with accent text instead of
+   a loud solid fill; Round 4, §5 moved the accent itself off blue (see
+   `--action-primary` in styles/tokens.css) and, separately, swapped the
+   border from that accent to the ordinary neutral `--border-strong` — a
+   "restrained neutral border", not a second navy accent competing with the
+   text colour for attention. */
 .segmented__option[aria-pressed='true'] {
-  background: var(--accent-600);
-  color: var(--text-on-accent);
+  background: var(--accent-100);
+  color: var(--accent-600);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
 }
 
 .segmented__option:focus-visible {
@@ -704,6 +1133,24 @@ a.stat:focus-visible {
   resize: vertical;
 }
 
+/* Round 2, §4: the native OS-drawn arrow sat flush against the edge with no
+   reserved space, reading as "pushed too far right" next to a text input's
+   even padding. `appearance: none` drops only that arrow — the element is
+   still a real `<select>`, so click target, keyboard operation (arrows,
+   type-ahead, Enter/Space to open) and the OS's own option list are
+   untouched — and this chevron (Lucide's `chevron-down` path, `--text-secondary`
+   baked in since a CSS background-image can't read `currentColor`) replaces
+   it, inset to match the input's own padding rhythm. */
+.select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-inline-end: 2.25rem;
+  background-image: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='24'%20height='24'%20viewBox='0%200%2024%2024'%20fill='none'%20stroke='%233c4a5e'%20stroke-width='2'%20stroke-linecap='round'%20stroke-linejoin='round'%3E%3Cpath%20d='m6%209%206%206%206-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right var(--space-3) center;
+  background-size: 16px;
+}
+
 .input::placeholder,
 .textarea::placeholder {
   color: var(--slate-400);
@@ -720,6 +1167,134 @@ a.stat:focus-visible {
 .input[aria-invalid='true'],
 .textarea[aria-invalid='true'] {
   border-color: var(--red-600);
+}
+
+/* ── Select (Radix) ────────────────────────────────────────────────────── */
+/* Round 3, §5–§8: `.select` above stays a real `<select>` for `UnitSelectField`
+   (see that component's header comment); everywhere else, a closed
+   `<select>` could be restyled but its OPEN popup was drawn by the OS, not
+   this stylesheet — `Select.tsx` replaces that popup with this, behaviour
+   from `@radix-ui/react-select`, every visual decision from LandedCompare's
+   own tokens. New primitive, so it draws from the Phase 12.6 semantic layer
+   (`src/styles/tokens.css`) throughout rather than the pre-12.6 names, the
+   same choice the shell made in Phase 12.7. */
+.select-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  min-height: 36px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface-elevated);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: var(--text-base);
+  cursor: pointer;
+}
+
+.select-trigger[data-placeholder] {
+  color: var(--text-muted);
+}
+
+.select-trigger[data-disabled] {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.select-trigger:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+  border-color: var(--accent-500);
+}
+
+.select-trigger[aria-invalid='true'] {
+  border-color: var(--red-600);
+}
+
+.select-trigger__icon {
+  display: inline-flex;
+  flex: none;
+  color: var(--text-muted);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .select-trigger__icon {
+    transition: transform 120ms ease;
+  }
+}
+
+.select-trigger[data-state='open'] .select-trigger__icon {
+  transform: rotate(180deg);
+}
+
+.select-content {
+  z-index: 50;
+  overflow: hidden;
+  min-width: var(--radix-select-trigger-width);
+  max-height: var(--radix-select-content-available-height);
+  background: var(--surface-elevated);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .select-content {
+    animation: select-content-in 120ms ease;
+  }
+}
+
+@keyframes select-content-in {
+  from {
+    opacity: 0;
+    transform: translateY(-2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.select-content__viewport {
+  padding: var(--space-1);
+}
+
+.select-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-base);
+  color: var(--text-primary);
+  cursor: pointer;
+  user-select: none;
+}
+
+.select-item[data-highlighted] {
+  background: var(--state-row-hover);
+  outline: none;
+}
+
+.select-item[data-disabled] {
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+.select-item[data-state='checked'] {
+  background: var(--state-selected-bg);
+  color: var(--action-primary);
+  font-weight: var(--weight-medium);
+}
+
+.select-item__indicator {
+  display: inline-flex;
+  flex: none;
+  color: var(--action-primary);
 }
 
 .field__hint {
@@ -773,15 +1348,16 @@ a.stat:focus-visible {
   grid-column: 1 / -1;
 }
 
+/* Round 2, §3 removed the tinted background strip; Round 3, §4 removed the
+   hairline `border-top` that replaced it too — whitespace and right
+   alignment are what separate the actions from the fields above, nothing
+   drawn. Same card surface throughout, no divider fragmenting the form. */
 .form-actions {
   display: flex;
   gap: var(--space-3);
   justify-content: flex-end;
   align-items: center;
   padding: var(--space-4) var(--space-5);
-  border-top: 1px solid var(--border-subtle);
-  background: var(--slate-50);
-  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
   flex-wrap: wrap;
 }
 
@@ -1082,7 +1658,7 @@ a.stat:focus-visible {
 }
 
 .choice-list__option:hover {
-  border-color: var(--accent-500);
+  border-color: var(--border-strong);
   background: var(--accent-50);
 }
 
@@ -1138,56 +1714,146 @@ a.stat:focus-visible {
 /* ── Narrower screens ──────────────────────────────────────────────────── */
 
 /*
- * The pilot runs on a Windows desktop, so the layout is designed for one.
- * Below roughly a small laptop the rail stops being a rail and becomes a
- * horizontal strip at the top — the content column is what matters, and 244px
- * of navigation is not worth taking from it. This is graceful degradation, not
- * a mobile design: nothing here is optimised for touch.
+ * Below roughly a small laptop, the persistent rail stops fitting: at 244px
+ * (or even the collapsed 72px) it competes with content that needs the width
+ * more. Rather than compress it into a cramped permanent strip, it becomes an
+ * off-canvas drawer — closed by default, opened from the topbar's menu
+ * button, dismissed by Escape, the backdrop, or picking a route
+ * (`src/features/shell/AppShell.tsx`). The desktop collapse preference is
+ * irrelevant here: the drawer is always full navigation width while open.
  */
 @media (max-width: 900px) {
   .shell {
     grid-template-columns: minmax(0, 1fr);
   }
 
+  .shell:has(.sidebar--collapsed) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* Re-narrows the shared gutter (§11's `--shell-gutter`) at once for both
+     `.topbar__inner` and `.page` — one token, one place to change it. */
+  :root {
+    --shell-gutter: var(--space-4);
+  }
+
+  .topbar__menu-trigger {
+    display: inline-flex;
+  }
+
   .sidebar {
+    position: fixed;
+    inset-block: 0;
+    inset-inline-start: 0;
+    width: min(280px, 84vw);
+    height: 100vh;
+    transform: translateX(-100%);
+    z-index: 40;
+    box-shadow: var(--shadow-lg);
+  }
+
+  .sidebar--mobile-open {
+    transform: translateX(0);
+  }
+
+  /* Collapsed labels stay visible in the drawer — collapsing is a desktop
+     rail preference, and the drawer is never the collapsed rail. */
+  .sidebar--collapsed .nav__label,
+  .sidebar--collapsed .brand__name {
     position: static;
+    width: auto;
     height: auto;
-    border-inline-end: 0;
-    border-bottom: 1px solid var(--border-nav);
+    padding: 0;
+    margin: 0;
+    overflow: visible;
+    clip-path: none;
   }
 
-  .nav {
-    flex-direction: row;
-    flex-wrap: wrap;
-    gap: var(--space-4);
+  .sidebar--collapsed .nav__heading {
+    display: block;
   }
 
-  .nav__group {
-    flex-direction: row;
-    flex-wrap: wrap;
+  .sidebar--collapsed .nav__link {
+    justify-content: flex-start;
+    padding-inline: var(--space-3);
   }
 
-  .nav__heading {
+  .sidebar--collapsed .nav__soon {
+    display: inline-flex;
+  }
+
+  .sidebar--collapsed .brand {
+    justify-content: flex-start;
+    padding-inline: var(--space-2);
+  }
+
+  /* Collapsing is a desktop-rail preference; the drawer is always full
+     width, so this has nothing to do here — §11. */
+  .sidebar__collapse-toggle-wrap {
     display: none;
   }
 
-  .sidebar__footer {
-    align-items: flex-start;
+  .sidebar__mobile-close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    flex: none;
+    border: 0;
+    border-radius: var(--radius-md);
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--text-on-nav);
+    cursor: pointer;
   }
 
-  /* The rail's full-width language toggle becomes a 780px-wide slab once the
-     rail is a horizontal strip. It is a two-option switch, not a banner. */
-  .locale-switch {
-    max-width: 220px;
+  .sidebar__mobile-close:hover {
+    background: rgba(255, 255, 255, 0.14);
+  }
+
+  /* F12.7-02: on the dark rail, same reasoning as `.nav__link` above. */
+  .sidebar__mobile-close:focus-visible {
+    outline: 2px solid var(--focus-ring-on-dark);
+    outline-offset: 2px;
+  }
+
+  .shell__backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(11, 21, 36, 0.5);
+    z-index: 35;
+  }
+
+  /* The account trigger falls back to a plain icon — name/company/breadcrumb
+     text all compete for the same narrow row as the mobile menu trigger, and
+     Round 2, §7 ruled out an initial-letter avatar as the replacement. */
+  .account-menu__identity,
+  .account-menu__caret {
+    display: none;
+  }
+
+  .account-menu__icon {
+    display: inline-flex;
+  }
+
+  .breadcrumb__item--group {
+    display: none;
   }
 
   .page {
-    padding: var(--space-6) var(--space-4) var(--space-12);
+    padding: var(--space-6) var(--shell-gutter) var(--space-12);
   }
 
   .detail-list__row {
     grid-template-columns: minmax(0, 1fr);
     gap: var(--space-1);
+  }
+}
+
+@media (max-width: 900px) and (prefers-reduced-motion: no-preference) {
+  .sidebar {
+    transition: transform 200ms ease;
   }
 }
 
@@ -1222,6 +1888,17 @@ a.stat:focus-visible {
 .tooltip[data-visible='true'] {
   opacity: 1;
   visibility: visible;
+}
+
+/* Opens into the content area instead of above the trigger — for a trigger
+   flush against the top of the viewport (the sidebar's collapse handle),
+   where the default top placement gets clipped. See `Tooltip.tsx`'s own
+   "Placement" comment. */
+.tooltip[data-side='right'] {
+  bottom: auto;
+  left: calc(100% + var(--space-2));
+  top: 50%;
+  transform: translateY(-50%);
 }
 
 @media (prefers-reduced-motion: no-preference) {

@@ -699,19 +699,61 @@ precisely why guessing now would be the expensive option.
   architecture without replacing the working `src/ui/components.css`
   patterns. Recorded in [Design System](DESIGN_SYSTEM.md).
   *Dependencies:* Phase 12.
-  *Risk:* low — purely additive. No screen is redesigned, no navigation
-  changes, no business logic touched.
+  *Risk (as planned):* low — purely additive. No screen is redesigned, no
+  navigation changes, no business logic touched. *As shipped:* not purely
+  additive after all — global typography, the browser favicon/brand mark,
+  and the focus-ring colour changed on every existing screen; only layout
+  structure and workflows were left untouched. See [Design
+  System](DESIGN_SYSTEM.md#what-phase-126-changed-globally-and-what-it-deliberately-did-not-touch)
+  for the accurate account.
 
-- **Phase 12.7 — Application Shell Modernization** (difficulty 4, not started).
+- **Phase 12.7 — Application Shell Modernization** (difficulty 4, implemented
+  in the working tree — not yet committed).
   *Objective:* apply the Phase 12.6 foundation to the parts of the shell that
   are visible on every screen.
-  *Deliverables:* sidebar, topbar, breadcrumb and navigation restructured onto
-  the semantic tokens and primitives; existing screens (tables, forms, cards,
-  filters, page headers) are explicitly out of scope for this phase too and
-  migrate screen-by-screen afterward.
+  *Deliverables:* the shell decomposed into `Sidebar`/`Topbar`/`Breadcrumbs`/
+  `AccountMenu` plus one declarative `navigation.ts` model driving both
+  sidebar widths and the breadcrumb; a collapsible desktop sidebar
+  (`useSidebarCollapsed`, persisted under `landedcompare.sidebarCollapsed`, an
+  edge-mounted collapse handle on the sidebar/content boundary — outside the
+  brand row and the topbar, see the Risk note below) with Lucide icons on
+  every nav entry and a restrained `aria-current` active state; a breadcrumb
+  landmark (nav group + current page) sharing one content grid with the page
+  title below it; an off-canvas mobile drawer (Escape, backdrop,
+  route-selection all close it, focus contained while open and returned to
+  the trigger on close — F12.7-01); the marketing tagline and the
+  letter-initial avatar both removed from the authenticated shell; one calm
+  brand-navy colour for every interaction/CTA surface on light backgrounds,
+  plus a separate high-contrast focus token for controls on the dark sidebar
+  rail (F12.7-02); a new `Select` primitive
+  (`@radix-ui/react-select`, the one new dependency) replacing every
+  applicable native `<select>`'s browser-native open popup; shell/button/
+  select-scoped CSS migrated onto `styles/tokens.css`'s semantic names where a
+  distinct one exists (the sidebar's own dark-rail tokens are unaffected, see
+  [Design System](DESIGN_SYSTEM.md)). Existing screens' inner content (tables,
+  most forms, cards, filters, page headers) remain out of scope and migrate
+  screen-by-screen afterward.
   *Dependencies:* Phase 12.6.
   *Risk:* the first phase that changes what the working application looks
   like; needs its own review pass separate from the token/asset foundation.
+  Went through four rounds of visual-polish review after the initial pass
+  (collapse-control placement moved three times before settling as an
+  edge-mounted sidebar handle; primary-button colour, select popups, and
+  workspace use on collapse were each revised in response to human review;
+  Round 4 additionally retired the frozen logo's bright blue, `#3557F3`, as an
+  application-UI colour everywhere it had spread — buttons, focus rings,
+  selected states, links, the active-nav accent — reserving it for the logo
+  artwork alone and moving the whole interaction-accent system onto the
+  calm brand navy already used for primary buttons. A final independent
+  audit then found three remaining issues, all remediated without touching
+  any of the above: the mobile drawer's closed/open states were CSS-only and
+  left the off-canvas content reachable by Tab and visible to assistive tech
+  regardless (F12.7-01, fixed with native `inert`, applied only below the
+  drawer's own breakpoint); the navy focus ring, correct on light surfaces,
+  read at only ~1.32:1 against the dark sidebar (F12.7-02, fixed with a
+  second, dark-surface-only focus token reusing the sidebar's own existing
+  light foreground colour); and this document itself had drifted out of date
+  in three places (F12.7-03).
 
 - **Phase 13 — Projects, Requirements, Suppliers & Quotes UI** (difficulty 7).
   *Objective:* the existing engine becomes usable.
@@ -884,12 +926,32 @@ Deployment state: local and hosted histories match at **13/13**, with no
 pending migration; the corrected invitation-based provisioner and final UI
 polish are deployed.
 
-**Phase 12.6 — Brand & Design System Foundation is implemented in the working
-tree, not yet committed.** Brand assets, self-hosted IBM Plex fonts, the
-semantic token layer and a small primitive set exist; no screen was
-redesigned. See [Design System](DESIGN_SYSTEM.md). Phase 12.7 (the visible
-shell modernization that consumes this foundation) and Phase 13 onward are
-not started.
+**Phase 12.6 — Brand & Design System Foundation is CLOSED** — committed as
+`efdb27a` (`feat(ui): establish Phase 12.6 design system foundation`). Brand
+assets, self-hosted IBM Plex fonts, the semantic token layer and a small
+primitive set exist; no screen was redesigned. See
+[Design System](DESIGN_SYSTEM.md).
+
+**Phase 12.7 — Application Shell Modernization is implemented in the working
+tree, not yet committed, and not yet reviewed.** Sidebar, topbar, breadcrumb
+and an account menu were rebuilt onto the Phase 12.6 foundation — collapsible
+sidebar with persisted preference and an edge-mounted collapse handle on the
+rail's own boundary, Lucide icons on every nav entry, an off-canvas mobile
+drawer, the tagline and the letter-initial avatar both removed from the
+authenticated shell, one calm navy colour for both primary buttons and the
+general interaction accent, and a `Select` primitive
+(`@radix-ui/react-select`) replacing native select popups — followed by four
+rounds of visual-polish review that revised several of those decisions (most
+visibly, the collapse control's placement, tried three times before this one;
+and, in the last round, retiring the frozen logo's bright blue as an
+application-UI colour everywhere it had spread). An independent audit then
+reviewed the finished shell and accepted three findings — mobile drawer
+accessibility, dark-surface focus contrast, and this document's own drift —
+all remediated (F12.7-01–03, see [Design System](DESIGN_SYSTEM.md)). Business
+screens, auth flows and domain behaviour are unchanged throughout. Do not
+treat this phase as closed until it has had a human visual review and
+been committed — see this phase's own implementation reports for what was and
+wasn't touched. Phase 13 onward remains not started.
 
 **On entering pilot data — revised by Phase 9.5.** The Phase 9 wiring is done:
 `runSnapshotMaintenance()` runs on startup, `ensurePreMigrationSnapshot()` is

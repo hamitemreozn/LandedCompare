@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { screen, waitFor, within } from '@testing-library/react'
-import { goTo, renderApp, type AppHarness } from '../../test/appHarness'
+import { goTo, openAccountMenu, renderApp, type AppHarness } from '../../test/appHarness'
 import { setLocale } from '../../i18n'
 import type { ProductRecord } from '../../cloud'
 
@@ -359,6 +359,7 @@ describe('the stock unit is asked as a question, not as a field name', () => {
     const fromTurkish = (await storedProducts())[0]!.stockUnit
 
     // The same product master, the same list, the other language.
+    await openAccountMenu(harness)
     await harness.user.click(screen.getByRole('button', { name: 'English' }))
     await screen.findByRole('heading', { level: 1, name: 'Products' })
     await harness.user.click(await screen.findByRole('button', { name: 'New product' }))
@@ -382,6 +383,7 @@ describe('the stock unit is asked as a question, not as a field name', () => {
     await screen.findByText('UNI-2')
     const before = (await storedProducts())[0]!
 
+    await openAccountMenu(harness)
     await harness.user.click(screen.getByRole('button', { name: 'English' }))
     await screen.findByRole('heading', { level: 1, name: 'Products' })
 
@@ -406,6 +408,7 @@ describe('the stock unit is asked as a question, not as a field name', () => {
     expect((await storedProducts())[0]!.stockUnit).toBe('Rulo')
 
     // And it survives the language switch unchanged, in the list and in store.
+    await openAccountMenu(harness)
     await harness.user.click(screen.getByRole('button', { name: 'English' }))
     await screen.findByRole('heading', { level: 1, name: 'Products' })
     expect(within(row('ROL-1')).getByText('Rulo')).toBeInTheDocument()
@@ -504,6 +507,7 @@ describe('the purchase-unit conversion reads itself back', () => {
     await clickNewProduct()
     await harness.user.type(screen.getByLabelText(CONVERSION_LABEL), '1,5')
 
+    await openAccountMenu(harness)
     await harness.user.click(screen.getByRole('button', { name: 'English' }))
 
     // The same quantity, written the way the new language writes it — not a

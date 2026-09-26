@@ -34,11 +34,30 @@
   --slate-100: #f1f5f9;
   --slate-50: #f7f9fc;
 
-  --accent-700: #0f5f73;
-  --accent-600: #12718a;
-  --accent-500: #1587a3;
-  --accent-100: #dff1f6;
-  --accent-50: #f0f9fb;
+  /* Visual Polish Round 1 retired the legacy teal in favour of one accent
+     scale wired to `src/styles/tokens.css`'s semantic layer. Round 4 then
+     moved that semantic layer itself off blue and onto the calm brand navy
+     (see `--action-primary`'s own comment there) — `--accent-*` didn't need
+     to change here at all for its top two steps, since it was already
+     indirect; `--accent-500`/`--accent-50` below did, since they previously
+     pointed at blue-specific palette entries directly rather than through
+     `--action-primary`. Status/success colours (`--green-*` above,
+     `--status-*` in styles/tokens.css) are a separate family, untouched. */
+  --accent-700: var(--action-primary-hover);
+  --accent-600: var(--action-primary);
+  --accent-500: var(--action-primary);
+  --accent-100: var(--state-selected-bg);
+  --accent-50: var(--palette-neutral-50);
+
+  /* Visual Polish Round 2, §1: Round 1 made `--accent-*` the fill colour of
+     every `.button--primary`, which read as too loud/generic-SaaS-blue for a
+     high-emphasis CTA. `--accent-*` (blue) stays the *interaction* accent —
+     focus ring, links, active-nav accent, icons, the segmented filter's
+     selected text. A separate `--cta-primary*` pair, wired to the frozen
+     brand navy (`--brand-primary` = `--palette-indigo-700` = #1B2A55) rather
+     than a new raw hex, is what fills a primary button. */
+  --cta-primary: var(--brand-primary);
+  --cta-primary-hover: var(--palette-indigo-900);
 
   --amber-700: #92620a;
   --amber-500: #d08700;
@@ -74,6 +93,18 @@
      integration (docs/DESIGN_SYSTEM.md); the accent used for buttons/links
      elsewhere is not touched by this phase. */
   --focus-ring: var(--action-primary);
+  /* F12.7-02: `--focus-ring` (the navy brand colour) is ~1.32:1 against the
+     dark sidebar (`--surface-nav` = `--ink-900` = #0B1524) — both are dark,
+     so a keyboard user can barely see it there. This is the one token for
+     focus on that dark rail specifically: reusing the already-approved
+     light nav foreground (`--text-on-nav`) rather than inventing a new
+     colour, since it's already proven to read clearly on `--surface-nav`. Not
+     a replacement for `--focus-ring` — light-surface controls, including the
+     ones that merely overlap the sidebar's edge (`.sidebar__collapse-toggle`,
+     whose own background is `--surface-elevated`, not the dark rail), keep
+     using that. Only controls whose focus ring lands directly on the dark
+     rail itself (`.nav__link`, `.sidebar__mobile-close`) use this one. */
+  --focus-ring-on-dark: var(--text-on-nav);
 
   /* ── Type ────────────────────────────────────────────────────────────── */
   /* Phase 12.6: the design-system UI font is IBM Plex Sans, self-hosted via
@@ -123,5 +154,21 @@
   --shadow-lg: 0 8px 28px rgba(15, 30, 55, 0.14);
 
   --sidebar-width: 244px;
-  --content-max: 1180px;
+  --sidebar-width-collapsed: 72px;
+  --topbar-height: 56px;
+  /* Round 3, §3: raised from 1180px, and made collapse-aware — see
+     `.shell:has(.sidebar--collapsed)` in `components.css`, which redeclares
+     this to 1600px. Below that width `.page`/`.topbar__inner` already fill
+     whatever room the grid gives them (their own `width: 100%`); this cap
+     only ever binds on wide/ultrawide displays, which is exactly where
+     collapsing the rail previously had no visible effect — the page was
+     already capped at the same width in both states. */
+  --content-max: 1440px;
+  /* Round 2, §11: the topbar and the page content were on two different
+     horizontal gutters (the topbar's own `--space-4`, `.page`'s `--space-8`),
+     so the breadcrumb and the page title didn't share a left edge. One token,
+     consumed by both `.topbar` and `.page` (`components.css`), fixes that
+     structurally instead of a per-screen margin — and redeclaring it inside
+     the narrow-viewport media query re-aligns both at once there too. */
+  --shell-gutter: var(--space-8);
 }

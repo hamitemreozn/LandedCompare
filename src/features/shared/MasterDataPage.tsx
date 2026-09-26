@@ -12,6 +12,7 @@
 
 import type { ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
+import { Select } from '../../ui/Select'
 import { ACTIVE_FILTERS, type ActiveFilter } from './masterData'
 
 export interface SortOption {
@@ -108,18 +109,12 @@ export function ListToolbar({
         <label className="field__label" htmlFor="master-sort">
           {t('list.sortLabel')}
         </label>
-        <select
+        <Select
           id="master-sort"
-          className="select"
           value={sort}
-          onChange={(event) => onSortChange(event.target.value)}
-        >
-          {sortOptions.map((option) => (
-            <option key={option.id} value={option.id}>
-              {option.label}
-            </option>
-          ))}
-        </select>
+          onChange={onSortChange}
+          options={sortOptions.map((option) => ({ value: option.id, label: option.label }))}
+        />
       </div>
     </div>
   )
